@@ -47,7 +47,7 @@ class SimplePLREncoder(BaseEncoder):
         self.mean_: np.ndarray | None = None
         self.scale_: np.ndarray | None = None
 
-    def fit(self, X_num: np.ndarray) -> SimplePLREncoder:
+    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> SimplePLREncoder:
         X_num = np.asarray(X_num, dtype=np.float64)
         n_features = X_num.shape[1]
         qs = np.linspace(0.0, 1.0, self.n_bins + 1)

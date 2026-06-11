@@ -121,6 +121,21 @@ Everything below v0 is a plan, not a promise of API stability.
   choice for binary tasks; future binary gains route through learned
   encoders / calibrated leaf outputs, not reweighting
 
+## Phase 13 — learned encoders (PyTorch optional) ✅ (2026-06-12)
+
+- `torch_periodic` / `torch_plr`: frequencies/projections trained by
+  supervised pretraining on the initial Newton residual, then frozen —
+  torch needed only at fit time (transform/serialization stay NumPy; saved
+  models predict without torch); native path never imports torch
+- Result (experiments/results/encoder_variants.md): learning beats the
+  frozen counterpart in 9/9 cells; torch_periodic is best-overall on 2/3
+  datasets incl. periodic_mix (0.3405 vs identity 0.3933) — the Phase 1b
+  "frozen frequencies don't work" finding is resolved as predicted
+- Defaults unchanged (torch optional); documented guidance to prefer
+  torch_periodic when the extra is installed
+- Open: binary-task evaluation, interaction-aware features, pretraining
+  hyperparameter search
+
 ## v0.1 — robustness
 
 - ~~Early stopping on eval sets~~ done in Phase 1a
@@ -214,10 +229,9 @@ Everything below v0 is a plan, not a promise of API stability.
 
 Listed here because v0 deliberately freezes the encoder:
 
-- PyTorch encoders as an optional dependency (periodic embeddings with
-  *learned* frequencies — the frozen random version demonstrably does not
-  work (encoder_variants.md) — full PLR with learned linear layer,
-  RealMLP-style blocks, category embeddings, interaction-aware features)
+- ~~PyTorch encoders (learned periodic frequencies, PLR projection)~~
+  shipped in Phase 13; still open: RealMLP-style blocks, category
+  embeddings, interaction-aware features
 - Encoder pretraining before boosting (supervised or self-supervised)
 - **Alternating optimization** (tree fitting ↔ encoder updates)
 - **Stage-wise snapshot encoders** (each tree binds to the encoder version it

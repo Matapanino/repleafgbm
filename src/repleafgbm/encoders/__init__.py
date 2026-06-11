@@ -14,11 +14,15 @@ from repleafgbm.encoders.identity import IdentityEncoder
 from repleafgbm.encoders.periodic import PeriodicEncoder
 from repleafgbm.encoders.plr import SimplePLREncoder
 from repleafgbm.encoders.projection import RandomProjectionEncoder
+from repleafgbm.encoders.torch_encoders import TorchPeriodicEncoder, TorchPLREncoder
 
 _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "identity": IdentityEncoder,
     "plr": SimplePLREncoder,
     "periodic": PeriodicEncoder,
+    # Learned encoders: torch needed only at fit time (see torch_encoders).
+    "torch_periodic": TorchPeriodicEncoder,
+    "torch_plr": TorchPLREncoder,
 }
 
 
@@ -58,6 +62,8 @@ __all__ = [
     "IdentityEncoder",
     "SimplePLREncoder",
     "PeriodicEncoder",
+    "TorchPeriodicEncoder",
+    "TorchPLREncoder",
     "RandomProjectionEncoder",
     "make_encoder",
     "encoder_from_config",

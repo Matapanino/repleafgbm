@@ -101,9 +101,10 @@ Implemented:
   training, parity-tested against the NumPy reference)
 - `leaf_model`: `"constant"`, `"embedded_linear"`, `"raw_linear"`
 - Encoders: `"identity"`, `"plr"` (simplified piecewise-linear + linear
-  term), `"periodic"` (PBLD-style frozen sinusoidal features); random
-  projection down to `max_leaf_emb_dim` as an emergency cap (warns when it
-  engages — see docs)
+  term), `"periodic"` (PBLD-style frozen sinusoidal features), and learned
+  `"torch_periodic"` / `"torch_plr"` (optional `[torch]` extra; pretrained
+  on the initial residual then frozen — torch is needed only at fit time);
+  random projection down to `max_leaf_emb_dim` as an emergency cap
 - Regression (squared error) and binary classification (logistic)
 - Early stopping (`early_stopping_rounds`, `best_iteration_`, prediction at
   the best iteration) and eval metrics: rmse, mae, logloss, auc, accuracy

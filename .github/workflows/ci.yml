@@ -34,3 +34,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pip install -e ".[dev]" ./native
       - run: python -m pytest tests/ -q  # includes the backend parity tests
+
+  torch-encoders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pytest tests/test_torch_encoders.py tests/test_encoders.py -q

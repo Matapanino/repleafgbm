@@ -47,8 +47,10 @@ embeddings.
   Owns data + metadata; lazily computes/caches embeddings.
 - `src/repleafgbm/encoders/` — `BaseEncoder` and implementations
   (identity, simple PLR with linear term, PBLD-style periodic,
-  random-projection wrapper). NumPy-only and frozen in v0; PyTorch encoders
-  are an optional-dependency future extension.
+  random-projection wrapper, and learned torch_periodic/torch_plr in
+  `torch_encoders.py`). All frozen during boosting; torch encoders import
+  torch only inside fit (transform/serialization are NumPy — keep it that
+  way), and the native path must never import torch.
 - `src/repleafgbm/core/` — objectives, metrics, histogram binning, splitter,
   tree grower, leaf models, booster, prediction, serialization.
 - `src/repleafgbm/backends/` — split-search kernels behind `BaseSplitBackend`:

@@ -23,7 +23,7 @@ class IdentityEncoder(BaseEncoder):
         self.mean_: np.ndarray | None = None
         self.scale_: np.ndarray | None = None
 
-    def fit(self, X_num: np.ndarray) -> IdentityEncoder:
+    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> IdentityEncoder:
         X_num = np.asarray(X_num, dtype=np.float64)
         self.mean_ = np.nanmean(X_num, axis=0) if X_num.size else np.zeros(X_num.shape[1])
         std = np.nanstd(X_num, axis=0) if X_num.size else np.ones(X_num.shape[1])

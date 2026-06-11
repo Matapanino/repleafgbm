@@ -268,7 +268,14 @@ class BaseRepLeafModel(BaseEstimator):
                 f"leaf_model={self.leaf_model!r} requires at least one numerical "
                 "feature; use leaf_model='constant' for all-categorical data"
             )
-        encoder.fit(X_num)
+        # Supervised pretraining target for learned encoders: the Newton
+        # residual at the initial score (y - mean for regression,
+        # y - sigmoid(F0) for binary). Unlearned encoders ignore it. The
+        # encoder is fitted once here and frozen for all of boosting.
+        objective = get_objective(self._objective_name)
+        f0 = np.full(dataset.n_rows, objective.init_score(dataset.y))
+        grad0, _ = objective.grad_hess(dataset.y, f0)
+        encoder.fit(X_num, y=-grad0)
         if encoder.output_dim > self.max_leaf_emb_dim:
             warnings.warn(
                 f"Encoder output dimension ({encoder.output_dim}) exceeds "

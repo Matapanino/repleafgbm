@@ -98,10 +98,15 @@ Encoders (all NumPy, frozen; see `encoders/`):
   `n_bins` components per feature plus, by default, an appended standardized
   linear term so leaves can extrapolate beyond the training range.
 - `periodic` — PBLD-style (RealMLP) sinusoidal features with random frozen
-  frequencies/phases plus a linear term. **Experimental**: with frozen random
-  frequencies it has not beaten `identity` on any tested signal, including
-  oscillatory ones (experiments/results/encoder_variants.md); the learned
-  version is a roadmap item.
+  frequencies/phases plus a linear term. With frozen random frequencies it
+  never beat `identity`; kept as the initialization/baseline for the learned
+  version.
+- `torch_periodic` / `torch_plr` (optional `[torch]` extra) — the learned
+  versions: parameters are pretrained on the initial Newton residual and
+  then frozen, so the v0 frozen-encoder rule holds. torch is required only
+  at fit time; transform and serialization are NumPy. Recommended first
+  choice when the extra is installed (experiments/results/
+  encoder_variants.md: best overall on 2/3 datasets).
 
 All linear leaves are fitted by Hessian-weighted ridge regression on Newton
 targets (docs/math.md). Overfitting guards, all implemented:

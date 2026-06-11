@@ -27,8 +27,14 @@ class BaseEncoder(ABC):
     name: str = "base"
 
     @abstractmethod
-    def fit(self, X_num: np.ndarray) -> BaseEncoder:
-        """Fit encoder statistics on the numerical feature matrix."""
+    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> BaseEncoder:
+        """Fit encoder parameters on the numerical feature matrix.
+
+        ``y`` is an optional supervised pretraining target (the model wrapper
+        passes the Newton residual at the initial score). Unlearned encoders
+        ignore it; learned encoders (torch extras) regress onto it before
+        freezing. Either way the encoder is frozen after fit (v0 rule).
+        """
 
     @abstractmethod
     def transform(self, X_num: np.ndarray) -> np.ndarray:
