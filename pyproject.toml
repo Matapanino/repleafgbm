@@ -9,7 +9,7 @@ description = "Representation-enhanced Leaf Gradient Boosting Machine: raw-featu
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "RepLeafGBM contributors" }]
+authors = [{ name = "Masaya Kawamata", email = "mkawamata038@gmail.com" }]
 keywords = ["gradient-boosting", "tabular", "machine-learning", "embeddings"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -34,7 +34,8 @@ bench = ["lightgbm>=4.0", "xgboost>=2.0", "catboost>=1.2"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [project.urls]
-Homepage = "https://github.com/repleafgbm/repleafgbm"
+Homepage = "https://github.com/Matapanino/repleafgbm"
+Repository = "https://github.com/Matapanino/repleafgbm"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/repleafgbm"]
