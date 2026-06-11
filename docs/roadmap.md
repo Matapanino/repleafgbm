@@ -131,10 +131,23 @@ Everything below v0 is a plan, not a promise of API stability.
   frozen counterpart in 9/9 cells; torch_periodic is best-overall on 2/3
   datasets incl. periodic_mix (0.3405 vs identity 0.3933) — the Phase 1b
   "frozen frequencies don't work" finding is resolved as predicted
-- Defaults unchanged (torch optional); documented guidance to prefer
-  torch_periodic when the extra is installed
-- Open: binary-task evaluation, interaction-aware features, pretraining
-  hyperparameter search
+- Defaults unchanged (torch optional). Phase 13's "prefer torch_periodic
+  when installed" guidance was **withdrawn in Phase 14**
+
+## Phase 14 — learned encoders on real data ✅ (2026-06-12, negative result)
+
+- 4/4 real datasets: learned encoders never beat identity; torch_periodic
+  is the worst embedded variant everywhere with a uniform overfit signature
+  (lowest train, highest test) — the synthetic oscillatory structure that
+  learned frequencies exploit is absent in these targets
+  (real_data_validation.md Phase 14)
+- Binary route from Phase 12 also closed: pretrained representations find
+  nothing on adult beyond routing + constant leaves
+- Final guidance: identity first on real data; torch encoders are
+  specialist tools for known smooth/oscillatory structure
+- Open: pretraining regularization (validation early stopping, weight
+  decay) as the one plausible fix before blaming the architecture;
+  interaction-aware features
 
 ## v0.1 — robustness
 

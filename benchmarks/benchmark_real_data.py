@@ -200,6 +200,19 @@ def run_dataset(name: str, max_rows: int, seeds: list[int]) -> tuple[dict, str, 
              dict(leaf_model="embedded_linear", encoder="plr",
                   max_leaf_emb_dim=256)),
         ]
+        try:  # learned encoders (Phase 14) when the torch extra is present
+            import torch  # noqa: F401
+
+            repleaf_configs += [
+                ("RepLeaf embedded torch_periodic (es)",
+                 dict(leaf_model="embedded_linear", encoder="torch_periodic",
+                      max_leaf_emb_dim=256)),
+                ("RepLeaf embedded torch_plr (es)",
+                 dict(leaf_model="embedded_linear", encoder="torch_plr",
+                      max_leaf_emb_dim=256)),
+            ]
+        except ImportError:
+            pass
         for label, kwargs in repleaf_configs:
             model = native_cls(
                 n_estimators=400, learning_rate=0.1, num_leaves=31,

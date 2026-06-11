@@ -104,9 +104,11 @@ Encoders (all NumPy, frozen; see `encoders/`):
 - `torch_periodic` / `torch_plr` (optional `[torch]` extra) — the learned
   versions: parameters are pretrained on the initial Newton residual and
   then frozen, so the v0 frozen-encoder rule holds. torch is required only
-  at fit time; transform and serialization are NumPy. Recommended first
-  choice when the extra is installed (experiments/results/
-  encoder_variants.md: best overall on 2/3 datasets).
+  at fit time; transform and serialization are NumPy. **Specialist tools**:
+  decisively best on targets with genuine per-feature smooth/oscillatory
+  structure (encoder_variants.md), but they overfit and lose to `identity`
+  on all real datasets tested (real_data_validation.md Phase 14) — keep
+  `identity` as the first choice on real tabular data.
 
 All linear leaves are fitted by Hessian-weighted ridge regression on Newton
 targets (docs/math.md). Overfitting guards, all implemented:

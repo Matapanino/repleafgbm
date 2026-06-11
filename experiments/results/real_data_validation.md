@@ -277,3 +277,54 @@ and rejected as the actionable cause — no reweighting/l2/Hessian-floor
 remedy beats constant leaves on adult, and defaults stay unchanged. For
 binary tasks, `leaf_model="constant"` is an equally accurate, cheaper
 alternative.
+
+## Phase 14: learned encoders on real data — the synthetic wins do not transfer
+
+Setup: the Phase 13 learned encoders (`torch_periodic`, `torch_plr`,
+pretrained on the initial Newton residual, then frozen) added to the same
+harness; identical settings/seeds as Phases 7-8b. Test metric (train in
+parentheses); reference rows repeated for context:
+
+| dataset | best RepLeaf (existing) | torch_plr | torch_periodic |
+|---|---|---|---|
+| california (rmse) | identity **0.4594** (0.2525) | 0.4628 (0.2511) | 0.4748 (0.2107) |
+| house_sales (rmse) | identity **0.1660** (0.1045) | 0.1682 (0.1037) | 0.1758 (0.0910) |
+| diamonds (rmse) | identity **0.0940** (0.0635) | 0.0953 (0.0624) | 0.0986 (0.0619) |
+| adult (logloss) | constant **0.2889** (0.2251) | 0.2923 (0.2161) | 0.2998 (0.1872) |
+
+### Conclusions
+
+1. **No transfer, 4/4.** The encoders that dominated every synthetic
+   dataset (encoder_variants.md: best overall on 2/3, +13% over identity)
+   never beat plain `identity` on real data, and `torch_periodic` is the
+   *worst* embedded variant everywhere.
+2. **The failure signature is uniform overfitting.** torch_periodic posts
+   the lowest train metric and the highest test metric in every table
+   (adult: train 0.1872 vs identity's 0.2234) — the learned sinusoids are
+   real capacity, and these targets give them noise to absorb instead of
+   the global per-feature oscillatory structure the synthetic generators
+   contained. torch_plr, whose basis is bounded and whose projection is
+   low-rank, is roughly neutral vs frozen plr (slightly better on adult,
+   slightly worse elsewhere).
+3. **The Phase 12 hypothesis for binary does not survive contact with
+   adult**: a better-pretrained representation was the conjectured gain
+   route, but pretraining on the initial residual finds nothing that
+   routing + constant leaves don't already capture (constant remains the
+   best RepLeaf binary model).
+4. **Guidance (final, corrected from Phase 13):** `identity` stays the
+   default *and* the recommended first choice on real tabular data.
+   `torch_periodic` is a specialist tool for targets with known
+   smooth/oscillatory per-feature structure (where it is decisively best —
+   synthetic results stand); it should not be reached for blindly.
+   Phase 13's "recommended first choice when installed" wording is
+   withdrawn.
+5. **Plausible fix, recorded as follow-up**: the overfit signature suggests
+   pretraining regularization — validation-based early stopping of the
+   pretraining loop, weight decay, or fewer epochs scaled to n. Worth one
+   experiment before concluding the architecture itself is at fault.
+
+### Caveats
+
+Two seeds, default pretraining hyperparameters (30 epochs, lr 0.01) on
+every dataset — the no-tuning condition mirrors how the other encoders are
+run, but the follow-up above may change the picture.

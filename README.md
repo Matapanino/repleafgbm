@@ -103,7 +103,8 @@ Implemented:
 - Encoders: `"identity"`, `"plr"` (simplified piecewise-linear + linear
   term), `"periodic"` (PBLD-style frozen sinusoidal features), and learned
   `"torch_periodic"` / `"torch_plr"` (optional `[torch]` extra; pretrained
-  on the initial residual then frozen — torch is needed only at fit time);
+  on the initial residual then frozen — torch is needed only at fit time;
+  best for known smooth/oscillatory structure, see docs for guidance);
   random projection down to `max_leaf_emb_dim` as an emergency cap
 - Regression (squared error) and binary classification (logistic)
 - Early stopping (`early_stopping_rounds`, `best_iteration_`, prediction at
