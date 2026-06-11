@@ -68,6 +68,9 @@ def save_model_dir(
     for i, lv in enumerate(booster.leaf_values_):
         leaf_arrays[f"tree_{i}_bias"] = lv.bias
         leaf_arrays[f"tree_{i}_weights"] = lv.weights
+        if lv.z_min is not None:
+            leaf_arrays[f"tree_{i}_zmin"] = lv.z_min
+            leaf_arrays[f"tree_{i}_zmax"] = lv.z_max
     np.savez(path / "leaf_params.npz", **leaf_arrays)
 
     if encoder is not None:
@@ -121,8 +124,16 @@ def load_model_dir(path: str | Path) -> dict:
     booster.trees_ = [Tree.from_dict(d) for d in ensemble["trees"]]
 
     with np.load(path / "leaf_params.npz") as data:
+        keys = set(data.files)
         booster.leaf_values_ = [
-            LeafValues(bias=data[f"tree_{i}_bias"], weights=data[f"tree_{i}_weights"])
+            LeafValues(
+                bias=data[f"tree_{i}_bias"],
+                weights=data[f"tree_{i}_weights"],
+                # Models saved before the extrapolation guard lack bounds;
+                # they load with clipping disabled (original behavior).
+                z_min=data[f"tree_{i}_zmin"] if f"tree_{i}_zmin" in keys else None,
+                z_max=data[f"tree_{i}_zmax"] if f"tree_{i}_zmax" in keys else None,
+            )
             for i in range(len(booster.trees_))
         ]
 

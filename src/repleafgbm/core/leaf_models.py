@@ -32,11 +32,21 @@ import numpy as np
 class LeafValues:
     bias: np.ndarray  # (n_leaves,)
     weights: np.ndarray  # (n_leaves, emb_dim) — emb_dim may be 0
+    #: Per-leaf embedding clip bounds, (n_leaves, emb_dim). At prediction
+    #: time Z is clipped to the range the leaf was fitted on, so beyond its
+    #: training support a leaf extrapolates as a constant — the guard that
+    #: prevents linear blow-ups on feature-space outliers (Phase 6/7,
+    #: experiments/results/real_data_validation.md). None disables clipping
+    #: (models saved before this guard existed).
+    z_min: np.ndarray | None = None
+    z_max: np.ndarray | None = None
 
     def predict(self, leaf_idx: np.ndarray, Z: np.ndarray | None) -> np.ndarray:
         out = self.bias[leaf_idx]
         if self.weights.shape[1] > 0:
             assert Z is not None, "embedding matrix required for linear leaves"
+            if self.z_min is not None:
+                Z = np.clip(Z, self.z_min[leaf_idx], self.z_max[leaf_idx])
             out = out + np.einsum("ij,ij->i", Z, self.weights[leaf_idx])
         return out
 
@@ -118,6 +128,10 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         n_leaves = len(leaf_rows)
         bias = np.zeros(n_leaves, dtype=np.float64)
         weights = np.zeros((n_leaves, emb_dim), dtype=np.float64)
+        # Extrapolation guard: bounds stay infinite (no-op) for constant
+        # leaves, whose weights are zero anyway.
+        z_min = np.full((n_leaves, emb_dim), -np.inf, dtype=np.float64)
+        z_max = np.full((n_leaves, emb_dim), np.inf, dtype=np.float64)
         min_n = max(self.min_samples_linear, emb_dim + 2)
         for i, rows in enumerate(leaf_rows):
             if rows.shape[0] < min_n:
@@ -128,7 +142,9 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
                 bias[i] = _newton_constant(grad[rows], hess[rows], self.l2)
             else:
                 bias[i], weights[i] = b, w
-        return LeafValues(bias=bias, weights=weights)
+                z_min[i] = Z[rows].min(axis=0)
+                z_max[i] = Z[rows].max(axis=0)
+        return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
 
 
 def _newton_constant(g: np.ndarray, h: np.ndarray, l2: float) -> float:

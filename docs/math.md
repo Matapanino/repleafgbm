@@ -66,6 +66,14 @@ their h-weighted means, then solve the ridge normal equations
 b = t_mean - w^T z_mean .
 ```
 
+### Extrapolation guard (prediction time)
+
+Each linear leaf stores ``z_min, z_max`` — the per-dimension range of the
+embeddings it was fitted on. Prediction uses ``clip(z, z_min_l, z_max_l)``,
+i.e. the leaf's response is the fitted affine function inside its training
+support and constant outside it. Training rows are inside by construction,
+so the training trajectory is unchanged; only out-of-support queries differ.
+
 ### Ridge-regularized fitting and fallback
 
 The system can be ill-conditioned when the leaf is small or `Z` is locally

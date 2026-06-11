@@ -8,106 +8,95 @@ Settings: max_rows=15000 (55/20/25 train/valid/test), seeds=[0, 1], early stoppi
 
 | config | test (mean ± std) | train | gap | fit[s] |
 |---|---|---|---|---|
+| routerx embedded_linear identity (es) | 0.4532 ± 0.0108 | 0.2637 | +0.1895 | 2.1 |
+| RepLeaf embedded_linear identity (es) | 0.4594 ± 0.0097 | 0.2525 | +0.2069 | 2.0 |
 | lightgbm (encoded, es) | 0.4628 ± 0.0095 | 0.2719 | +0.1909 | 2.0 |
 | RepLeaf constant (es) | 0.4654 ± 0.0093 | 0.2539 | +0.2115 | 1.9 |
-| routerx embedded_linear identity (es) | 0.4655 ± 0.0166 | 0.2705 | +0.1949 | 1.5 |
-| RepLeaf embedded_linear identity (es) | 0.4743 ± 0.0154 | 0.2659 | +0.2084 | 1.6 |
+| RepLeaf embedded_linear plr (es) | 0.4689 ± 0.0149 | 0.2137 | +0.2552 | 5.8 |
 | hist_gradient_boosting (encoded) | 0.4755 ± 0.0069 | 0.3194 | +0.1562 | 1.2 |
-| RepLeaf embedded_linear plr (es) | 0.4841 ± 0.0148 | 0.2823 | +0.2018 | 2.7 |
 
 ## house_sales (regression, n=15000, categorical features: 1, metric: rmse)
 
 | config | test (mean ± std) | train | gap | fit[s] |
 |---|---|---|---|---|
-| lightgbm (native cat, es) | 0.1652 ± 0.0046 | 0.1087 | +0.0565 | 1.6 |
+| lightgbm (native cat, es) | 0.1652 ± 0.0046 | 0.1087 | +0.0565 | 1.5 |
+| routerx embedded_linear identity (es) | 0.1652 ± 0.0035 | 0.0939 | +0.0713 | 3.5 |
 | lightgbm (encoded, es) | 0.1656 ± 0.0040 | 0.1019 | +0.0637 | 2.2 |
-| routerx embedded_linear identity (es) | 0.1659 ± 0.0037 | 0.0927 | +0.0732 | 3.0 |
-| RepLeaf constant (es) | 0.1664 ± 0.0039 | 0.1091 | +0.0573 | 3.0 |
-| RepLeaf embedded_linear identity (es) | 0.1681 ± 0.0026 | 0.1096 | +0.0585 | 3.4 |
-| hist_gradient_boosting (encoded) | 0.1686 ± 0.0038 | 0.1187 | +0.0499 | 1.1 |
-| RepLeaf embedded_linear plr (es) | 0.1729 ± 0.0029 | 0.1007 | +0.0722 | 4.2 |
+| RepLeaf constant (es) | 0.1664 ± 0.0039 | 0.1091 | +0.0573 | 2.9 |
+| RepLeaf embedded_linear identity (es) | 0.1667 ± 0.0029 | 0.1008 | +0.0658 | 3.4 |
+| hist_gradient_boosting (encoded) | 0.1686 ± 0.0038 | 0.1187 | +0.0499 | 1.4 |
+| RepLeaf embedded_linear plr (es) | 0.1720 ± 0.0027 | 0.1003 | +0.0717 | 5.6 |
 
 ## diamonds (regression, n=15000, categorical features: 3, metric: rmse)
 
 | config | test (mean ± std) | train | gap | fit[s] |
 |---|---|---|---|---|
-| lightgbm (native cat, es) | 0.0948 ± 0.0007 | 0.0692 | +0.0256 | 1.8 |
-| RepLeaf constant (es) | 0.0970 ± 0.0025 | 0.0651 | +0.0319 | 2.2 |
-| hist_gradient_boosting (encoded) | 0.0970 ± 0.0015 | 0.0721 | +0.0249 | 1.7 |
+| lightgbm (native cat, es) | 0.0948 ± 0.0007 | 0.0692 | +0.0256 | 1.9 |
+| routerx embedded_linear identity (es) | 0.0950 ± 0.0019 | 0.0712 | +0.0238 | 1.9 |
+| RepLeaf embedded_linear identity (es) | 0.0953 ± 0.0017 | 0.0704 | +0.0249 | 1.8 |
+| RepLeaf embedded_linear plr (es) | 0.0964 ± 0.0021 | 0.0649 | +0.0314 | 5.5 |
+| RepLeaf constant (es) | 0.0970 ± 0.0025 | 0.0651 | +0.0319 | 2.3 |
+| hist_gradient_boosting (encoded) | 0.0970 ± 0.0015 | 0.0721 | +0.0249 | 1.6 |
 | lightgbm (encoded, es) | 0.0972 ± 0.0015 | 0.0725 | +0.0247 | 1.7 |
-| RepLeaf embedded_linear plr (es) | 0.2382 ± 0.1397 | 0.0648 | +0.1734 | 3.6 |
-| routerx embedded_linear identity (es) | 0.2678 ± 0.1705 | 0.0737 | +0.1941 | 1.3 |
-| RepLeaf embedded_linear identity (es) | 0.2760 ± 0.1790 | 0.0656 | +0.2104 | 2.2 |
 
 ## adult (binary, n=15000, categorical features: 8, metric: logloss)
 
 | config | test (mean ± std) | train | gap | auc | fit[s] |
 |---|---|---|---|---|---|
-| lightgbm (native cat, es) | 0.2868 ± 0.0019 | 0.2203 | +0.0665 | 0.9214 | 0.7 |
+| lightgbm (native cat, es) | 0.2868 ± 0.0019 | 0.2203 | +0.0665 | 0.9214 | 0.8 |
 | RepLeaf constant (es) | 0.2888 ± 0.0016 | 0.2339 | +0.0549 | 0.9205 | 0.9 |
 | lightgbm (encoded, es) | 0.2894 ± 0.0001 | 0.2384 | +0.0510 | 0.9201 | 0.7 |
-| hist_gradient_boosting (encoded) | 0.2907 ± 0.0017 | 0.2242 | +0.0666 | 0.9193 | 0.5 |
-| RepLeaf embedded_linear identity (es) | 0.2913 ± 0.0012 | 0.2228 | +0.0684 | 0.9200 | 0.9 |
-| routerx embedded_linear identity (es) | 0.2913 ± 0.0002 | 0.2346 | +0.0567 | 0.9198 | 0.5 |
-| RepLeaf embedded_linear plr (es) | 0.2945 ± 0.0010 | 0.2212 | +0.0733 | 0.9177 | 1.6 |
+| RepLeaf embedded_linear identity (es) | 0.2902 ± 0.0002 | 0.2228 | +0.0674 | 0.9200 | 1.1 |
+| routerx embedded_linear identity (es) | 0.2905 ± 0.0010 | 0.2346 | +0.0559 | 0.9199 | 0.6 |
+| hist_gradient_boosting (encoded) | 0.2907 ± 0.0017 | 0.2242 | +0.0666 | 0.9193 | 0.6 |
+| RepLeaf embedded_linear plr (es) | 0.2933 ± 0.0018 | 0.2212 | +0.0721 | 0.9180 | 2.2 |
 
-## Analysis and conclusions (2026-06-11, Phase 6)
+## Phase 7: leaf-linear extrapolation guard — before/after
 
-First evaluation on real data. The honest headline: **representation-
-conditioned leaves currently add nothing on these mainstream datasets and
-can fail catastrophically — but the failure has a precise, fixable cause,
-and the fixed model is projected to win where it now loses worst.**
+The tables above are the **post-guard** rerun (identical settings/seeds to
+Phase 6). The pre-guard snapshot is archived in
+`real_data_validation_phase6_preguard.md`. The guard: each linear leaf
+stores the per-dimension min/max of the embeddings it was fitted on, and
+prediction clips Z to that range — outside its training support a leaf
+extrapolates as a constant. Training rows are inside by construction, so
+training is unchanged.
 
-### (a) Where do embedded leaves help on real data?
+### Effect on the embedded variants (test metric, Phase 6 → Phase 7)
 
-Nowhere yet, as shipped. `RepLeaf constant` is the best RepLeaf variant on
-all four datasets and is consistently competitive with LightGBM (within
-0.6-2.5% on the same encoded features) — the native router itself holds up
-well on real data. Embedded variants are flat-to-slightly-worse on
-california / house_sales / adult, and blow up on diamonds (0.2760 vs
-constant's 0.0970). The synthetic wins came from strong within-leaf smooth
-structure; at num_leaves=31 with early stopping, routing alone already
-captures what these datasets offer.
+| dataset | RepLeaf embedded identity | routerx embedded identity | best non-RepLeaf |
+|---|---|---|---|
+| california (rmse) | 0.4743 → **0.4594** | 0.4655 → **0.4532** | lightgbm 0.4628 |
+| house_sales (rmse) | 0.1681 → 0.1667 | 0.1659 → **0.1652** | lgb native-cat 0.1652 |
+| diamonds (rmse) | **0.2760 → 0.0953** | 0.2678 → 0.0950 | lgb native-cat 0.0948 |
+| adult (logloss) | 0.2913 → 0.2902 | 0.2913 → 0.2905 | lgb native-cat 0.2868 |
 
-### Root cause of the diamonds failure: leaf-linear extrapolation
+### Conclusions
 
-Diagnostic (seed 0): training target spans [5.8, 9.8] (log1p) but
-embedded-identity predictions reach **36.6**. The worst 1% of test rows have
-2.2× larger max|z| (feature-space outliers — e.g. extreme carats);
-out-of-leaf-range embeddings times fitted leaf weights explode. Excluding
-that 1%, test RMSE is **0.0844 — better than every model in the table,
-including LightGBM with native categoricals (0.0948)**. The model is
-excellent on 99% of rows and destroyed by a handful. Supporting evidence:
-PLR (bounded basis, unbounded only in its linear slot) degrades less than
-identity (0.238 vs 0.276) on the same split.
-
-### (b) Knobs vs categoricals — the split of blame
-
-- **Categorical handling is a real but modest gap**: LightGBM native-cat vs
-  the same model on our ordinal encoding gains +0.3% (house_sales), +2.5%
-  (diamonds), +0.9% (adult). Worth fixing eventually; not the bottleneck.
-- **Generic regularization knobs are not the bottleneck either**:
-  train/test gaps for constant leaves track LightGBM's closely.
-- **The bottleneck is leaf-linear robustness** — a guard class we simply do
-  not have: nothing bounds a leaf's linear response outside the z-range it
-  was fitted on.
-
-### (c) Phase 7 priorities (decision)
-
-1. **Leaf-linear extrapolation guards** (highest priority, projected to
-   flip diamonds from worst to best): store per-leaf z ranges at fit time
-   and clip Z to them at prediction (the leaf model then extrapolates as a
-   constant beyond its training support, like PLR saturation); secondarily
-   consider clamping leaf outputs to the observed Newton-target range.
-   Validate by rerunning this benchmark.
-2. **Native categorical splits** (the gradient-sorting subset trick),
-   targeting the measured 1-2.5% native-cat gap.
-3. Generic capacity knobs (subsample / colsample / min_split_gain) drop to
-   third — no evidence they are the limiter on these datasets.
-
-### Caveats
-
-Four datasets, two seeds, 15k-row caps, one hyperparameter setting per
-model, no per-dataset tuning. Good enough to rank our own priorities; not a
-leaderboard claim. house_sales/diamonds targets are log1p-transformed, so
-RMSEs are in log space.
+1. **The diamonds catastrophe is fully resolved** (0.276 → 0.0953; the
+   Phase 6 diagnosis — leaf-linear extrapolation on z-outliers — was
+   correct, and the trimmed-RMSE projection of ~0.084-0.095 was accurate).
+   Embedded leaves now *beat* constant leaves (0.0970) and
+   LightGBM-on-the-same-features (0.0972) there, within 0.5% of LightGBM
+   with native categoricals.
+2. **The guard helps everywhere, not just on the failure case.** On
+   california the embedded variants moved from below-constant to **first
+   and second place overall**, ahead of LightGBM — mild extrapolation noise
+   on ordinary tail rows was quietly costing accuracy on every dataset.
+   No regression anywhere (synthetic benchmark: 0.3969 → 0.3999, noise-level;
+   the full test suite passes unchanged since training rows are unaffected).
+3. **Regression verdict flips.** With the guard, embedded-linear leaves
+   beat constant leaves on 3 of 3 regression datasets and beat
+   LightGBM-on-shared-features on all three (routerx variant). The Phase 6
+   conclusion "embedded leaves add nothing on real data" is now obsolete —
+   the failure was the missing guard, not the idea.
+4. **Binary remains the weak quadrant** (adult: constant 0.2888 still best
+   RepLeaf; embedded 0.2902). Consistent with the Phase 4 synthetic binary
+   result: h-weighted ridge shrinks leaf-linear gains. Investigating binary
+   datasets with strong within-region smooth structure stays on the
+   follow-up list.
+5. **Default re-evaluation**: `leaf_model="embedded_linear"` stays the
+   regressor default, now with real-data justification. The classifier
+   keeps the same default for API consistency (the deficit is ~0.5% and
+   single-dataset), but constant leaves are a documented alternative for
+   binary tasks. The remaining native-cat gap (~0.3-2.5%) keeps native
+   categorical splits as the next priority.

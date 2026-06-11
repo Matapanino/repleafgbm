@@ -39,7 +39,11 @@ What each file owns:
   (model classes such as RouterExtractionRegressor have no learning-rate
   hyperparameter of their own).
 - **leaf_params.npz** — leaf biases and weight matrices. Constant leaves are
-  zero-width weight rows, so one schema covers all leaf models.
+  zero-width weight rows, so one schema covers all leaf models. Linear-leaf
+  models additionally store `tree_{i}_zmin` / `tree_{i}_zmax` (per-leaf
+  embedding clip bounds, the Phase 7 extrapolation guard); the keys are
+  optional on read — older directories load with clipping disabled, exactly
+  reproducing their original predictions.
 - **encoder_config.json / encoder_state.npz** — split between constructor
   config (JSON) and fitted arrays (npz). A projection-wrapped encoder nests
   its base encoder's config and prefixes its state keys with `base__`.

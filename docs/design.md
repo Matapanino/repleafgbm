@@ -106,6 +106,12 @@ targets (docs/math.md). Overfitting guards, all implemented:
 - constant fallback when the leaf has fewer than
   `max(2*min_samples_leaf, emb_dim + 2)` rows or the normal equations are
   singular,
+- **extrapolation guard**: each linear leaf stores the per-dimension min/max
+  of the embeddings it was fitted on; at prediction time Z is clipped to
+  that range, so beyond its training support a leaf extrapolates as a
+  constant. Added in Phase 7 after real-data validation showed unguarded
+  leaf-linear extrapolation blowing up on feature outliers
+  (experiments/results/real_data_validation.md),
 - `max_leaf_emb_dim`: encoders wider than this are reduced by a fixed,
   seeded Gaussian random projection. Note: experiments showed the projection
   consistently *hurts* accuracy (experiments/results/plr_projection_gap.md),

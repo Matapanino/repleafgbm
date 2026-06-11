@@ -62,6 +62,22 @@ Everything below v0 is a plan, not a promise of API stability.
 - Decided Phase 7 priority: (1) leaf-linear extrapolation guards
   (per-leaf z clipping), (2) native categorical splits, (3) capacity knobs
 
+## Phase 7 — leaf-linear extrapolation guard ✅ (2026-06-11)
+
+- Per-leaf embedding clip bounds (`z_min`/`z_max` stored at fit, Z clipped
+  at predict): outside its training support a linear leaf extrapolates as a
+  constant. Training trajectory unchanged; serialization is additive
+  (pre-guard models load with clipping off)
+- Real-data rerun: diamonds failure resolved (0.276 → 0.0953); with the
+  guard, embedded leaves beat constant leaves on 3/3 regression datasets
+  and beat LightGBM-on-shared-features on all three (router-extracted
+  variant ties LightGBM-native-cat on house_sales)
+- `leaf_model="embedded_linear"` default re-confirmed for regression with
+  real-data evidence; binary remains the weak quadrant (adult: constant
+  still ahead by ~0.5%) — follow-up open
+- Next priorities unchanged: native categorical splits (measured 0.3-2.5%
+  headroom), then capacity knobs
+
 ## v0.1 — robustness
 
 - ~~Early stopping on eval sets~~ done in Phase 1a
