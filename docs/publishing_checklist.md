@@ -24,14 +24,18 @@ decision or a GitHub-side action that cannot be done from this repo alone.
 - [x] Author attribution: Masaya Kawamata in pyproject and LICENSE
 - [x] Pushed via `gh repo create … --source . --push`
 
-## After the first push ☐
+## After the first push (status as of 2026-06-11)
 
-- [ ] Confirm CI is green on GitHub Actions; add the badge to README:
-      `![CI](https://github.com/<org>/<repo>/actions/workflows/ci.yml/badge.svg)`
-- [ ] Tag `v0.0.1` (the version in pyproject) once CI is green
+- [x] CI green on GitHub Actions (first run caught a real pandas>=3
+      string-dtype bug in categorical auto-detection — fixed); badge added
+      to README
+- [x] Tagged `v0.0.1`
 - [ ] Branch protection on `main` (require CI) if collaborators join
 - [ ] Optional: issue templates, `SECURITY.md`, PyPI publication (defer
       until the API stabilizes — the README already warns about instability)
+- [ ] Move the working copy out of Google Drive to a local path (see the
+      Phase 9 report for the procedure); afterwards GitHub is the canonical
+      remote
 
 ## Working-copy location (Google Drive caveat)
 

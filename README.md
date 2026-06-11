@@ -1,5 +1,8 @@
 # RepLeafGBM
 
+![CI](https://github.com/Matapanino/repleafgbm/actions/workflows/ci.yml/badge.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+
 **Representation-enhanced Leaf Gradient Boosting Machine** — gradient
 boosting that routes on raw features and predicts with small linear models
 over learned representations inside each leaf.
