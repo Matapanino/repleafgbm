@@ -48,6 +48,20 @@ Everything below v0 is a plan, not a promise of API stability.
 - Finding: the remaining friedman1 gap is caused by feature *interactions*,
   unreachable for any per-feature frozen encoder by construction
 
+## Phase 6 — real-data validation ✅ (2026-06-11)
+
+- `benchmarks/benchmark_real_data.py`: california / house_sales / diamonds /
+  adult vs LightGBM (encoded + native-cat) and HistGradientBoosting, all
+  early-stopped; report in experiments/results/real_data_validation.md
+- Findings: native router competitive with LightGBM (≤2.5% on shared
+  features); embedded leaves add nothing as shipped and blow up on diamonds
+  via **leaf-linear extrapolation** (predictions 4x outside the target
+  range on z-outlier rows; excluding the worst 1% of rows they would be
+  best-in-table at 0.0844 vs LightGBM-native-cat 0.0948)
+- Measured native-categorical headroom: +0.3% to +2.5%
+- Decided Phase 7 priority: (1) leaf-linear extrapolation guards
+  (per-leaf z clipping), (2) native categorical splits, (3) capacity knobs
+
 ## v0.1 — robustness
 
 - ~~Early stopping on eval sets~~ done in Phase 1a
