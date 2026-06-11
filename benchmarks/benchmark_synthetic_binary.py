@@ -1,0 +1,91 @@
+"""Synthetic binary classification benchmark.
+
+Run from the repository root:
+    python3 benchmarks/benchmark_synthetic_binary.py [--quick]
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from common import (
+    apply_quick,
+    external_gbm_models,
+    make_parser,
+    print_table,
+    synthetic_tabular,
+    time_model,
+)
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.metrics import roc_auc_score
+
+from repleafgbm import RepLeafClassifier
+
+
+def logloss(y, p):
+    p = np.clip(p, 1e-12, 1 - 1e-12)
+    return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+
+
+def auc(y, p):
+    return float(roc_auc_score(y, p))
+
+
+def repleaf(leaf_model: str, encoder: str, n_estimators: int, seed: int) -> RepLeafClassifier:
+    # Encoder settings (n_bins, max_leaf_emb_dim) are library defaults on
+    # purpose: the benchmark tracks what users get out of the box.
+    return RepLeafClassifier(
+        n_estimators=n_estimators,
+        learning_rate=0.1,
+        num_leaves=31,
+        min_samples_leaf=20,
+        leaf_model=leaf_model,
+        encoder=encoder,
+        random_state=seed,
+    )
+
+
+def main() -> None:
+    args = apply_quick(make_parser(__doc__).parse_args())
+    rng = np.random.default_rng(args.seed)
+
+    X, signal = synthetic_tabular(args.n_train + args.n_test, args.n_features, rng)
+    y = ((signal - np.median(signal)) + rng.normal(0.0, 1.0, len(signal)) > 0).astype(int)
+    Xtr, Xte = X[: args.n_train], X[args.n_train :]
+    ytr, yte = y[: args.n_train], y[args.n_train :]
+
+    models: list[tuple[str, object]] = [
+        ("sklearn GradientBoosting", GradientBoostingClassifier(
+            n_estimators=args.n_estimators, random_state=args.seed)),
+        ("sklearn HistGradientBoosting", HistGradientBoostingClassifier(
+            max_iter=args.n_estimators, random_state=args.seed)),
+        ("sklearn RandomForest", RandomForestClassifier(
+            n_estimators=args.n_estimators, random_state=args.seed, n_jobs=-1)),
+        ("RepLeaf constant", repleaf("constant", "identity", args.n_estimators, args.seed)),
+        ("RepLeaf embedded_linear identity",
+         repleaf("embedded_linear", "identity", args.n_estimators, args.seed)),
+        ("RepLeaf embedded_linear plr",
+         repleaf("embedded_linear", "plr", args.n_estimators, args.seed)),
+    ]
+    models += external_gbm_models("binary", args.n_estimators, args.seed)
+
+    results = [
+        time_model(
+            name, m, Xtr, ytr, Xte, yte,
+            {"logloss": logloss, "auc": auc},
+            lambda m, X: m.predict_proba(X)[:, 1],
+        )
+        for name, m in models
+    ]
+    print(
+        f"\nsynthetic binary: n_train={args.n_train} n_test={args.n_test} "
+        f"n_features={args.n_features} n_estimators={args.n_estimators}\n"
+    )
+    print_table(results)
+
+
+if __name__ == "__main__":
+    main()
