@@ -178,8 +178,13 @@ Everything below v0 is a plan, not a promise of API stability.
   parameter; parity tested (bitwise histograms, allclose predictions);
   dedicated CI job. Measured: constant 5.8x (LightGBM-parity), embedded ~2x,
   constant @100k rows 4.7x
-- Open: batched/native leaf ridge fitting (the embedded bottleneck),
-  row partitioning in Rust, parallel (rayon) histograms, compiled predictor
+- ✅ Phase 11: batched normal equations (one `np.linalg.solve` per tree)
+  + fused Rust `leaf_linear_stats` pass (embeddings ≤32 dims) + clip-free
+  training updates — embedded_linear ~2.6x over NumPy (2.9x vs the
+  pre-batching baseline), wide-PLR ~1.5x; parity vs the centered reference
+  implementation tested at rtol 1e-9
+- Open: row partitioning in Rust, parallel (rayon) histograms, native Gram
+  for wide embeddings, compiled predictor
 
 ## v3 — GPU and scale
 

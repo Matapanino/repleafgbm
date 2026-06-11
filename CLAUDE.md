@@ -53,8 +53,10 @@ embeddings.
   tree grower, leaf models, booster, prediction, serialization.
 - `src/repleafgbm/backends/` — split-search kernels behind `BaseSplitBackend`:
   `NumPySplitBackend` (reference) and `RustSplitBackend` (optional compiled
-  extension in `native/`, pyo3/maturin). The two must stay parity-tested
-  (bitwise histograms, allclose predictions); change them together.
+  extension in `native/`, pyo3/maturin). `native/` also provides the fused
+  `leaf_linear_stats` helper used by `core/leaf_models.py` for narrow
+  embeddings. NumPy and Rust paths must stay parity-tested (bitwise
+  histograms, allclose leaf fits/predictions); change them together.
 - `src/repleafgbm/sklearn.py`, `regressor.py`, `classifier.py` — the
   sklearn-compatible public API that glues dataset + encoder + booster.
 - `src/repleafgbm/external/` — external_model mode (LightGBM base model,

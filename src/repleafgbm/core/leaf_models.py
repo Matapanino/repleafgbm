@@ -23,6 +23,17 @@ from dataclasses import dataclass
 
 import numpy as np
 
+try:  # Optional compiled fast path for fused per-leaf statistics (native/).
+    import repleafgbm_native as _native_module
+
+    _native = getattr(_native_module, "leaf_linear_stats", None) and _native_module
+except ImportError:  # pragma: no cover - depends on optional extension
+    _native = None
+
+#: Above this embedding width the BLAS-based NumPy path beats the scalar
+#: fused pass, so the native helper is only used for narrow embeddings.
+_NATIVE_STATS_MAX_DIM = 32
+
 #: Per-tree leaf parameters: output = bias[leaf] + Z @ weights[leaf].
 #: For constant leaves, the weight row is all zeros (weights may have zero
 #: columns when the whole tree is constant-leaf).
@@ -41,11 +52,20 @@ class LeafValues:
     z_min: np.ndarray | None = None
     z_max: np.ndarray | None = None
 
-    def predict(self, leaf_idx: np.ndarray, Z: np.ndarray | None) -> np.ndarray:
+    def predict(
+        self, leaf_idx: np.ndarray, Z: np.ndarray | None, clip: bool = True
+    ) -> np.ndarray:
+        """Leaf outputs for routed rows.
+
+        ``clip=False`` skips the extrapolation guard; it is only valid for
+        the rows the leaves were fitted on (the booster's training-score
+        update), where clipping to the leaf's own min/max is exactly the
+        identity.
+        """
         out = self.bias[leaf_idx]
         if self.weights.shape[1] > 0:
             assert Z is not None, "embedding matrix required for linear leaves"
-            if self.z_min is not None:
+            if clip and self.z_min is not None:
                 Z = np.clip(Z, self.z_min[leaf_idx], self.z_max[leaf_idx])
             out = out + np.einsum("ij,ij->i", Z, self.weights[leaf_idx])
         return out
@@ -122,28 +142,104 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         hess: np.ndarray,
         Z: np.ndarray | None,
     ) -> LeafValues:
+        """Fit all leaves of one tree with batched normal equations.
+
+        Per-leaf work is reduced to two BLAS products (the weighted Gram
+        matrix and the gradient projection); all systems are then solved in
+        one batched ``np.linalg.solve`` call. Uses the uncentered identities
+
+            sum_i h (z - z_mean)(z - z_mean)^T = M - S_h z_mean z_mean^T
+            sum_i h (z - z_mean)(t - t_mean)   = -G_z + S_g z_mean
+
+        with M = sum h z z^T, G_z = sum g z (since h t = -g). This is
+        algebraically identical to the centered reference implementation
+        (`_fit_weighted_ridge`, kept for parity testing) and numerically
+        safe here because encoders produce standardized/bounded embeddings;
+        degenerate directions are damped by the ridge term as before.
+        """
         if Z is None:
             raise ValueError("EmbeddedLinearLeafModel requires an embedding matrix Z")
         emb_dim = Z.shape[1]
         n_leaves = len(leaf_rows)
-        bias = np.zeros(n_leaves, dtype=np.float64)
         weights = np.zeros((n_leaves, emb_dim), dtype=np.float64)
         # Extrapolation guard: bounds stay infinite (no-op) for constant
         # leaves, whose weights are zero anyway.
         z_min = np.full((n_leaves, emb_dim), -np.inf, dtype=np.float64)
         z_max = np.full((n_leaves, emb_dim), np.inf, dtype=np.float64)
+
+        # Gather everything once in leaf order; per-leaf data is then a
+        # contiguous view (no per-leaf fancy indexing).
+        sizes = np.array([r.shape[0] for r in leaf_rows], dtype=np.int64)
+        order = np.concatenate(leaf_rows) if leaf_rows else np.empty(0, np.int64)
+        offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
         min_n = max(self.min_samples_linear, emb_dim + 2)
-        for i, rows in enumerate(leaf_rows):
-            if rows.shape[0] < min_n:
-                bias[i] = _newton_constant(grad[rows], hess[rows], self.l2)
-                continue
-            b, w = _fit_weighted_ridge(Z[rows], grad[rows], hess[rows], self.l2)
-            if w is None:  # singular system: constant fallback
-                bias[i] = _newton_constant(grad[rows], hess[rows], self.l2)
-            else:
-                bias[i], weights[i] = b, w
-                z_min[i] = Z[rows].min(axis=0)
-                z_max[i] = Z[rows].max(axis=0)
+        linear = np.flatnonzero(sizes >= min_n)
+        k = linear.size
+
+        if k and _native is not None and emb_dim <= _NATIVE_STATS_MAX_DIM:
+            # Fused single-pass statistics in Rust (narrow embeddings only:
+            # for wide ones the BLAS Gram below wins).
+            g_sum, h_sum, s_hz, A, gz, zmn, zmx = _native.leaf_linear_stats(
+                np.ascontiguousarray(Z), grad, hess, order, offsets,
+                linear.astype(np.int64),
+            )
+            bias = -g_sum / (h_sum + self.l2)
+            z_mean = s_hz / h_sum[linear][:, None]
+            t_mean = -g_sum[linear] / h_sum[linear]
+            A -= z_mean[:, :, None] * s_hz[:, None, :]
+            rhs = -gz - t_mean[:, None] * s_hz
+            z_min[linear] = zmn
+            z_max[linear] = zmx
+        else:
+            seg = np.repeat(np.arange(n_leaves), sizes)
+            g_seg = grad[order]
+            h_seg = hess[order]
+            g_sum = np.bincount(seg, weights=g_seg, minlength=n_leaves)
+            h_sum = np.bincount(seg, weights=h_seg, minlength=n_leaves)
+            bias = -g_sum / (h_sum + self.l2)
+            if k == 0:
+                return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+
+            Z_seg = Z[order]
+            hZ_seg = Z_seg * h_seg[:, None]
+            A = np.empty((k, emb_dim, emb_dim), dtype=np.float64)
+            rhs = np.empty((k, emb_dim), dtype=np.float64)
+            z_mean = np.empty((k, emb_dim), dtype=np.float64)
+            t_mean = np.empty(k, dtype=np.float64)
+            for j, i in enumerate(linear):
+                sl = slice(offsets[i], offsets[i + 1])
+                Zl = Z_seg[sl]
+                hZ = hZ_seg[sl]
+                s_hz = hZ.sum(axis=0)
+                z_mean[j] = s_hz / h_sum[i]
+                t_mean[j] = -g_sum[i] / h_sum[i]
+                A[j] = Zl.T @ hZ
+                A[j] -= np.outer(z_mean[j], s_hz)
+                rhs[j] = -(g_seg[sl] @ Zl) - t_mean[j] * s_hz
+                z_min[i] = Zl.min(axis=0)
+                z_max[i] = Zl.max(axis=0)
+        A[:, np.arange(emb_dim), np.arange(emb_dim)] += self.l2
+
+        try:
+            w = np.linalg.solve(A, rhs)
+        except np.linalg.LinAlgError:
+            # Rare: some leaf's system is exactly singular. Solve one by one
+            # so only the degenerate leaves fall back to constants.
+            w = np.zeros((k, emb_dim), dtype=np.float64)
+            for j in range(k):
+                try:
+                    w[j] = np.linalg.solve(A[j], rhs[j])
+                except np.linalg.LinAlgError:
+                    w[j] = np.nan  # handled by the finite check below
+
+        ok = np.isfinite(w).all(axis=1)
+        for j, i in enumerate(linear):
+            if ok[j]:
+                weights[i] = w[j]
+                bias[i] = t_mean[j] - w[j] @ z_mean[j]
+            else:  # constant fallback: Newton bias kept, guard disabled
+                z_min[i] = -np.inf
+                z_max[i] = np.inf
         return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
 
 

@@ -224,9 +224,116 @@ fn best_categorical_split(
     best
 }
 
+/// Fused per-leaf statistics for embedded-linear leaf fitting (Phase 11).
+///
+/// One pass over the rows (in leaf order) computes, per linear-eligible
+/// leaf, everything the batched normal equations need except the LAPACK
+/// solve: weighted Gram matrix, gradient projection, weighted embedding
+/// sums, and the extrapolation-guard min/max. Intended for narrow
+/// embeddings (the scalar Gram loop beats BLAS only for small d; the
+/// Python caller routes wide embeddings to the NumPy path).
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+fn leaf_linear_stats<'py>(
+    py: Python<'py>,
+    z: PyReadonlyArray2<'py, f64>,
+    grad: PyReadonlyArray1<'py, f64>,
+    hess: PyReadonlyArray1<'py, f64>,
+    order: PyReadonlyArray1<'py, i64>,
+    offsets: PyReadonlyArray1<'py, i64>,
+    linear: PyReadonlyArray1<'py, i64>,
+) -> (
+    Bound<'py, numpy::PyArray1<f64>>, // g_sum (n_leaves,)
+    Bound<'py, numpy::PyArray1<f64>>, // h_sum (n_leaves,)
+    Bound<'py, numpy::PyArray2<f64>>, // s_hz  (k, d)
+    Bound<'py, PyArray3<f64>>,        // gram  (k, d, d)
+    Bound<'py, numpy::PyArray2<f64>>, // gz    (k, d)
+    Bound<'py, numpy::PyArray2<f64>>, // z_min (k, d)
+    Bound<'py, numpy::PyArray2<f64>>, // z_max (k, d)
+) {
+    let z = z.as_array();
+    let z_s = z.as_slice().expect("Z must be C-contiguous");
+    let grad = grad.as_array();
+    let hess = hess.as_array();
+    let order = order.as_array();
+    let offsets = offsets.as_array();
+    let linear = linear.as_array();
+    let d = z.shape()[1];
+    let n_leaves = offsets.len() - 1;
+    let k = linear.len();
+
+    let mut g_sum = ndarray::Array1::<f64>::zeros(n_leaves);
+    let mut h_sum = ndarray::Array1::<f64>::zeros(n_leaves);
+    for l in 0..n_leaves {
+        let (mut gs, mut hs) = (0.0, 0.0);
+        for idx in offsets[l]..offsets[l + 1] {
+            let r = order[idx as usize] as usize;
+            gs += grad[r];
+            hs += hess[r];
+        }
+        g_sum[l] = gs;
+        h_sum[l] = hs;
+    }
+
+    let mut s_hz = ndarray::Array2::<f64>::zeros((k, d));
+    let mut gram = Array3::<f64>::zeros((k, d, d));
+    let mut gz = ndarray::Array2::<f64>::zeros((k, d));
+    let mut z_min = ndarray::Array2::<f64>::from_elem((k, d), f64::INFINITY);
+    let mut z_max = ndarray::Array2::<f64>::from_elem((k, d), f64::NEG_INFINITY);
+    {
+        let s_hz = s_hz.as_slice_mut().unwrap();
+        let gram = gram.as_slice_mut().unwrap();
+        let gz = gz.as_slice_mut().unwrap();
+        let z_min = z_min.as_slice_mut().unwrap();
+        let z_max = z_max.as_slice_mut().unwrap();
+        for (j, &li) in linear.iter().enumerate() {
+            let l = li as usize;
+            let (sh, gr, gj) = (j * d, j * d * d, j * d);
+            for idx in offsets[l]..offsets[l + 1] {
+                let r = order[idx as usize] as usize;
+                let g = grad[r];
+                let h = hess[r];
+                let row = &z_s[r * d..(r + 1) * d];
+                for a in 0..d {
+                    let za = row[a];
+                    s_hz[sh + a] += h * za;
+                    gz[gj + a] += g * za;
+                    if za < z_min[sh + a] {
+                        z_min[sh + a] = za;
+                    }
+                    if za > z_max[sh + a] {
+                        z_max[sh + a] = za;
+                    }
+                    let hza = h * za;
+                    let grow = gr + a * d;
+                    for b in a..d {
+                        gram[grow + b] += hza * row[b];
+                    }
+                }
+            }
+            // Mirror the upper triangle.
+            for a in 1..d {
+                for b in 0..a {
+                    gram[gr + a * d + b] = gram[gr + b * d + a];
+                }
+            }
+        }
+    }
+    (
+        g_sum.into_pyarray(py),
+        h_sum.into_pyarray(py),
+        s_hz.into_pyarray(py),
+        gram.into_pyarray(py),
+        gz.into_pyarray(py),
+        z_min.into_pyarray(py),
+        z_max.into_pyarray(py),
+    )
+}
+
 #[pymodule]
 fn repleafgbm_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_histograms, m)?)?;
     m.add_function(wrap_pyfunction!(find_best_split, m)?)?;
+    m.add_function(wrap_pyfunction!(leaf_linear_stats, m)?)?;
     Ok(())
 }

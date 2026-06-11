@@ -196,7 +196,9 @@ class Booster:
             # row partition is already known, no re-routing needed.
             for i, rows in enumerate(leaf_rows):
                 leaf_idx[rows] = i
-            F += p.learning_rate * leaf_values.predict(leaf_idx, Z)
+            # clip=False is exact here: training rows are inside their own
+            # leaf's z-range by construction, so the guard is the identity.
+            F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
 
             if evals and eval_metric is not None:
                 for name, Xe, ye, Ze, Fe in evals:

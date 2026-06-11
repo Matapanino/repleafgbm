@@ -1,11 +1,13 @@
 """Tests for leaf model fitting: ridge recovery and constant fallback."""
 
 import numpy as np
+import pytest
 
 from repleafgbm.core.leaf_models import (
     ConstantLeafModel,
     EmbeddedLinearLeafModel,
     LeafValues,
+    _fit_weighted_ridge,
 )
 
 
@@ -70,3 +72,79 @@ def test_leaf_values_predict_indexing():
     Z = np.array([[10.0], [10.0]])
     pred = lv.predict(np.array([0, 1]), Z)
     np.testing.assert_allclose(pred, [11.0, 2.0])
+
+
+def test_batched_fit_matches_reference_implementation():
+    """The batched normal equations (Phase 11) must agree with the centered
+    per-leaf reference (`_fit_weighted_ridge`) on every leaf: weights, bias,
+    guard bounds, and fallback decisions."""
+    rng = np.random.default_rng(8)
+    n, d = 1000, 6
+    Z = np.column_stack([
+        rng.normal(size=(n, d - 2)),          # standardized-like block
+        rng.uniform(0, 1, size=(n, 2)),       # PLR-like bounded block
+    ])
+    residual = Z @ rng.normal(size=d) + rng.normal(0, 0.3, n)
+    g = -residual
+    h = np.abs(rng.normal(1.0, 0.2, n)) + 0.1  # non-uniform Hessian weights
+
+    # Mixed leaf sizes, including one below the linear threshold.
+    bounds = [0, 300, 640, 652, 1000]
+    leaf_rows = [np.arange(bounds[i], bounds[i + 1]) for i in range(4)]
+
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+    lv = model.fit_leaves(leaf_rows, g, h, Z)
+
+    min_n = max(20, d + 2)
+    for i, rows in enumerate(leaf_rows):
+        if rows.shape[0] < min_n:
+            assert np.all(lv.weights[i] == 0.0)
+            assert np.isinf(lv.z_min[i]).all()
+            continue
+        b_ref, w_ref = _fit_weighted_ridge(Z[rows], g[rows], h[rows], 1.0)
+        np.testing.assert_allclose(lv.weights[i], w_ref, rtol=1e-9, atol=1e-12)
+        assert lv.bias[i] == pytest.approx(b_ref, rel=1e-9)
+        np.testing.assert_array_equal(lv.z_min[i], Z[rows].min(axis=0))
+        np.testing.assert_array_equal(lv.z_max[i], Z[rows].max(axis=0))
+
+
+def test_native_and_numpy_stat_paths_agree(monkeypatch):
+    """When the compiled helper is installed, the Rust fused-stats path and
+    the NumPy path must produce the same leaf models (to float noise)."""
+    pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
+    import repleafgbm.core.leaf_models as lm
+
+    rng = np.random.default_rng(10)
+    n, d = 1500, 8
+    Z = rng.normal(size=(n, d))
+    residual = Z @ rng.normal(size=d) + rng.normal(0, 0.2, n)
+    g, h = -residual, np.abs(rng.normal(1.0, 0.3, n)) + 0.1
+    cuts = [0, 400, 900, 1500]
+    leaf_rows = [np.arange(cuts[i], cuts[i + 1]) for i in range(3)]
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+
+    lv_native = model.fit_leaves(leaf_rows, g, h, Z)
+    monkeypatch.setattr(lm, "_native", None)
+    lv_numpy = model.fit_leaves(leaf_rows, g, h, Z)
+
+    np.testing.assert_allclose(lv_native.bias, lv_numpy.bias, rtol=1e-9)
+    np.testing.assert_allclose(lv_native.weights, lv_numpy.weights,
+                               rtol=1e-9, atol=1e-12)
+    np.testing.assert_array_equal(lv_native.z_min, lv_numpy.z_min)
+    np.testing.assert_array_equal(lv_native.z_max, lv_numpy.z_max)
+
+
+def test_batched_fit_singular_leaf_falls_back_individually():
+    """One leaf with a constant Z block at l2=0 must not poison the batch:
+    it falls back to a constant while other leaves keep their linear fits."""
+    rng = np.random.default_rng(9)
+    n, d = 400, 3
+    Z = rng.normal(size=(n, d))
+    Z[200:, :] = 1.0  # second leaf: constant embedding -> singular at l2=0
+    residual = Z[:, 0] * 2.0 + rng.normal(0, 0.1, n)
+    g, h = -residual, np.ones(n)
+    model = EmbeddedLinearLeafModel(l2=0.0, min_samples_linear=5)
+    lv = model.fit_leaves([np.arange(200), np.arange(200, 400)], g, h, Z)
+    assert np.any(lv.weights[0] != 0.0)          # healthy leaf fitted
+    assert np.all(lv.weights[1] == 0.0)          # singular leaf fell back
+    assert np.isinf(lv.z_min[1]).all()

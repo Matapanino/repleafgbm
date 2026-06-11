@@ -21,11 +21,16 @@ backends/
 The Rust kernels live in `native/` (pyo3 + maturin; `pip install ./native`)
 and are selected automatically via `split_backend="auto"` when installed.
 They mirror the NumPy backend's tie-breaking and accumulation-order
-semantics: histograms are bitwise-identical, end-to-end predictions agree to
-float noise (tested), and measured speedups are ~5.8x for constant-leaf
-training (LightGBM-parity wall time) and ~2x for embedded leaves
-(Amdahl-limited by leaf ridge fitting). Tree-growing logic (`core/tree.py`)
-must never depend on backend internals.
+semantics: histograms are bitwise-identical and end-to-end predictions agree
+to float noise (tested). Phase 11 added a third compiled kernel,
+`leaf_linear_stats` — a fused single-pass computation of the per-leaf
+normal-equation statistics, used for embeddings up to 32 dims (wider ones
+keep the BLAS path) — plus clip-free training-score updates (exact: training
+rows are inside their own leaf's guard range). Measured on 20k rows x 20
+features x 100 trees: constant-leaf training ~3.5x over NumPy
+(LightGBM-parity wall time), embedded_linear ~2.6x, wide-PLR ~1.5x.
+Tree-growing logic (`core/tree.py`) must never depend on backend
+internals.
 
 ## Axis 2: GBM backend (which boosting engine builds the routing)
 
