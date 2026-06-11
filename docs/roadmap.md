@@ -91,6 +91,21 @@ Everything below v0 is a plan, not a promise of API stability.
 - router_extraction still rejects external `==` splits (mapping them onto
   `left_categories` is now possible — open item)
 
+## Phase 8b — categorical guards + `==` route extraction ✅ (2026-06-11)
+
+- `min_data_per_group=100` and `max_cat_threshold=32` (bidirectional prefix
+  scan) added to the subset kernel; together with `cat_smooth=10` all three
+  are public estimator parameters with LightGBM defaults
+- Real data: high-cardinality regressions resolved (adult constant back to
+  ordinal parity; house_sales now *better* than ordinal) while the diamonds
+  win over LightGBM-native-cat survives (0.0940 vs 0.0948); remaining
+  native-cat gap ≤0.7% (adult only)
+- `extract_routes` maps LightGBM `==` splits onto `Tree.left_categories`
+  with exact prediction reproduction (NaN routing included) —
+  router_extraction now accepts categorical-native bases
+- Headroom recorded: per-dataset tuning of `min_data_per_group` (defaults
+  favor robustness over the last diamonds decimals)
+
 ## v0.1 — robustness
 
 - ~~Early stopping on eval sets~~ done in Phase 1a

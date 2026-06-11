@@ -14,12 +14,18 @@ and where it is going.
   strings; the mapping lives in `FeatureMetadata.category_maps`).
 - **Native categorical subset splits (Phase 8).** Declared categorical
   features get one histogram bin per category; at each node the categories
-  are sorted by their Newton direction `sum_g / (sum_h + l2)` and scanned as
-  prefixes (the LightGBM gradient-sorting trick), yielding an optimal binary
-  *subset* split — code order no longer matters. The chosen left-subset is
-  stored per node (`Tree.left_categories`); routing tests membership.
-  Features with more than `max_bins` categories silently fall back to the
-  ordered-threshold treatment of the codes.
+  are sorted by their smoothed Newton direction `sum_g / (sum_h + cat_smooth)`
+  and scanned as prefixes from both ends (the LightGBM gradient-sorting
+  trick), yielding a binary *subset* split — code order no longer matters.
+  The chosen left-subset is stored per node (`Tree.left_categories`);
+  routing tests membership. Features with more than `max_bins` categories
+  silently fall back to the ordered-threshold treatment of the codes.
+- **High-cardinality guards (Phase 8b)**, exposed as estimator parameters
+  with LightGBM semantics and defaults: `cat_smooth=10` (sort-ratio
+  smoothing), `min_data_per_group=100` (categories with fewer node rows are
+  ineligible for the left subset and implicitly go right), and
+  `max_cat_threshold=32` (left-subset size cap; the bidirectional scan lets
+  the small side sit on either end of the sorted order).
 - **Missing values and unseen categories → NaN**, and NaN always routes left
   in native training (subset splits included: missing joins the left subset
   during search). Categories seen at fit time but not in a node's left
@@ -45,13 +51,11 @@ now: subset splits make the arbitrary code order irrelevant for routing.
 
 ## Future directions
 
-1. ~~Native categorical splits~~ — implemented (Phase 8, see above), with
-   LightGBM-default `cat_smooth=10` on the sort ratio. Remaining
-   refinements: `min_data_per_group` / `max_cat_threshold`-style guards
-   (high-cardinality features such as adult's still overfit slightly — see
-   experiments/results/real_data_validation.md Phase 8), and subset-split
-   support in router_extraction (`extract_routes` still rejects `==` splits
-   even though the native `Tree` can now represent them).
+1. ~~Native categorical splits~~ — implemented (Phase 8) including the
+   high-cardinality guards (Phase 8b: `cat_smooth`, `min_data_per_group`,
+   `max_cat_threshold`) and `extract_routes` support for LightGBM `==`
+   splits (exact prediction reproduction tested). Remaining refinement:
+   guard-value tuning per dataset (current values follow LightGBM defaults).
 2. **Target / frequency encoding** — opt-in preprocessing with OOF leakage
    protection (ties into the OOF utilities planned for v0.2).
 3. **Category embeddings in the encoder** — learned embedding tables per

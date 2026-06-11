@@ -75,10 +75,14 @@ class BaseSplitBackend(ABC):
         min_samples_leaf: int,
         l2: float,
         categorical_mask: np.ndarray | None = None,
+        cat_smooth: float = 10.0,
+        min_data_per_group: int = 100,
+        max_cat_threshold: int = 32,
     ) -> SplitCandidate | None:
         """Scan a node histogram for the best split, or None if no valid gain.
 
         Missing values always go to the left child (v0 convention).
         Features flagged in ``categorical_mask`` are scanned as subset splits
-        (gradient-sorted categories) instead of ordered thresholds.
+        (gradient-sorted categories) instead of ordered thresholds, governed
+        by the three LightGBM-style categorical guards.
         """

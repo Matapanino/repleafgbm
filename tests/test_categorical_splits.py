@@ -132,6 +132,64 @@ def test_high_cardinality_falls_back_to_ordered():
     assert model.predict(df).shape == (n,)
 
 
+def test_min_data_per_group_excludes_rare_categories():
+    """A 6-row extreme category must not enter the left subset under the
+    default guard; relaxing the guard lets it in."""
+    rng = np.random.default_rng(17)
+    n = 606
+    cat = np.array(["a", "b", "c"])[rng.integers(0, 3, n)]
+    cat[:6] = "z"  # rare category with extreme target
+    y = np.where(np.isin(cat, ["a", "z"]), 4.0, -4.0) + rng.normal(0, 0.2, n)
+    y[:6] += 30.0
+    df = pd.DataFrame({"c": cat, "x": rng.normal(size=n)})
+
+    def left_sets(model):
+        out = []
+        for t in model.booster_.trees_:
+            for cats in t.left_categories or []:
+                if cats is not None:
+                    out.append(set(cats.astype(int)))
+        return out
+
+    train = RepLeafDataset(df, y, categorical_features=["c"])
+    z_code = train.metadata.category_maps["c"].index("z")
+
+    guarded = RepLeafRegressor(n_estimators=5, num_leaves=4, min_samples_leaf=3,
+                               random_state=42)  # min_data_per_group=100 default
+    guarded.fit(train)
+    assert all(z_code not in s for s in left_sets(guarded))
+
+    relaxed = RepLeafRegressor(n_estimators=5, num_leaves=4, min_samples_leaf=3,
+                               min_data_per_group=1, cat_smooth=0.0, random_state=42)
+    relaxed.fit(train)
+    assert any(z_code in s for s in left_sets(relaxed))
+
+
+def test_max_cat_threshold_caps_subset_bidirectionally():
+    """High group = 7 categories, low group = 3. With max_cat_threshold=3 the
+    prefix scan from the low end still isolates the 3-category side, so the
+    split survives the cap with the small side on the left."""
+    rng = np.random.default_rng(19)
+    n = 2000
+    cat = rng.integers(0, 10, n).astype(str)
+    low = np.isin(cat, ["0", "1", "2"])
+    y = np.where(low, -5.0, 5.0) + rng.normal(0, 0.2, n)
+    df = pd.DataFrame({"c": cat, "x": rng.normal(size=n)})
+
+    model = RepLeafRegressor(
+        n_estimators=1, learning_rate=1.0, num_leaves=2, min_samples_leaf=10,
+        leaf_model="constant", max_cat_threshold=3, min_data_per_group=1,
+        random_state=42,
+    )
+    train = RepLeafDataset(df, y, categorical_features=["c"])
+    model.fit(train)
+    tree = model.booster_.trees_[0]
+    cats = [c for c in tree.left_categories if c is not None]
+    assert len(cats) == 1 and len(cats[0]) <= 3
+    pred = model.predict(df)
+    assert float(np.sqrt(np.mean((pred - y) ** 2))) < 0.5
+
+
 def test_classifier_with_categorical_splits():
     rng = np.random.default_rng(13)
     n = 800

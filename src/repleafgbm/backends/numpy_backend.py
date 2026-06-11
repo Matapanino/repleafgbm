@@ -11,9 +11,6 @@ import numpy as np
 
 from repleafgbm.backends.base import BaseSplitBackend, SplitCandidate
 
-#: Hessian smoothing for the categorical sort ratio (LightGBM cat_smooth).
-_CAT_SMOOTH = 10.0
-
 
 class NumPySplitBackend(BaseSplitBackend):
     """Reference split-search kernels: vectorized, still readable."""
@@ -52,6 +49,9 @@ class NumPySplitBackend(BaseSplitBackend):
         min_samples_leaf: int,
         l2: float,
         categorical_mask: np.ndarray | None = None,
+        cat_smooth: float = 10.0,
+        min_data_per_group: int = 100,
+        max_cat_threshold: int = 32,
     ) -> SplitCandidate | None:
         g, h, n = hist[:, :, 0], hist[:, :, 1], hist[:, :, 2]
         n_features, n_bins_max = g.shape
@@ -113,6 +113,7 @@ class NumPySplitBackend(BaseSplitBackend):
                     int(f), hist[f], int(n_bins_per_feature[f]),
                     g_total, h_total, n_total, parent_score,
                     min_samples_leaf, l2,
+                    cat_smooth, min_data_per_group, max_cat_threshold,
                 )
                 if cand is not None and (best is None or cand.gain > best.gain):
                     best = cand
@@ -129,52 +130,63 @@ class NumPySplitBackend(BaseSplitBackend):
         parent_score: float,
         min_samples_leaf: int,
         l2: float,
+        cat_smooth: float,
+        min_data_per_group: int,
+        max_cat_threshold: int,
     ) -> SplitCandidate | None:
         """Gradient-sorted subset scan for one categorical feature.
 
-        Categories present in the node are sorted by their Newton direction
-        ``sum_g / (sum_h + l2)``; the optimal binary partition is then a
-        prefix of that order (the classic LightGBM trick). Missing values
-        always join the left side; categories absent from the node go right.
+        Categories present in the node are sorted by their smoothed Newton
+        direction ``sum_g / (sum_h + cat_smooth)``; the optimal binary
+        partition is then a prefix of that order (the classic LightGBM
+        trick), scanned from both ends so a small subset on *either* side
+        fits under ``max_cat_threshold``. Missing values always join the
+        left side. High-cardinality overfitting guards (LightGBM-default
+        values; see experiments/results/real_data_validation.md Phase 8b):
+
+        * ``min_data_per_group``: categories with fewer node rows are not
+          eligible for the left subset (they implicitly go right),
+        * ``max_cat_threshold``: at most this many categories on the left,
+        * ``cat_smooth``: keeps rare categories' noisy gradients from
+          grabbing the extreme sort positions.
         """
         g, h, n = hist_f[:n_bins, 0], hist_f[:n_bins, 1], hist_f[:n_bins, 2]
         miss_g, miss_h, miss_n = hist_f[n_bins]
-        present = np.flatnonzero(n > 0)
+        present = np.flatnonzero(n >= max(min_data_per_group, 1))
         if present.size < 2:
             return None
-        # Smooth the sort ratio so rare categories (tiny h sums) cannot grab
-        # the extreme positions on gradient noise alone — LightGBM's
-        # cat_smooth, same default. Without it, high-cardinality features
-        # overfit (observed on adult, experiments/results/real_data_validation.md).
         order = present[
-            np.argsort(g[present] / (h[present] + _CAT_SMOOTH), kind="stable")
+            np.argsort(g[present] / (h[present] + cat_smooth), kind="stable")
         ]
 
-        left_g = np.cumsum(g[order]) + miss_g
-        left_h = np.cumsum(h[order]) + miss_h
-        left_n = np.cumsum(n[order]) + miss_n
-        right_n = n_total - left_n
-        # Prefixes 0..m-2: the full prefix is not a split.
-        valid = (left_n >= min_samples_leaf) & (right_n >= min_samples_leaf)
-        valid[-1] = False
-        with np.errstate(divide="ignore", invalid="ignore"):
-            gain = (
-                _leaf_score(left_g, left_h, l2)
-                + _leaf_score(g_total - left_g, h_total - left_h, l2)
-                - parent_score
-            )
-        gain = np.where(valid & np.isfinite(gain), gain, -np.inf)
-        c = int(np.argmax(gain))
-        if not np.isfinite(gain[c]) or gain[c] <= 1e-12:
-            return None
-        return SplitCandidate(
-            feature=feature,
-            bin=-1,
-            gain=float(gain[c]),
-            n_left=int(left_n[c]),
-            n_right=int(right_n[c]),
-            left_categories=np.sort(order[: c + 1]).astype(np.int64),
-        )
+        best: SplitCandidate | None = None
+        for direction in (order, order[::-1]):
+            limit = min(direction.size - 1, max_cat_threshold)
+            left_g = np.cumsum(g[direction[:limit]]) + miss_g
+            left_h = np.cumsum(h[direction[:limit]]) + miss_h
+            left_n = np.cumsum(n[direction[:limit]]) + miss_n
+            right_n = n_total - left_n
+            valid = (left_n >= min_samples_leaf) & (right_n >= min_samples_leaf)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                gain = (
+                    _leaf_score(left_g, left_h, l2)
+                    + _leaf_score(g_total - left_g, h_total - left_h, l2)
+                    - parent_score
+                )
+            gain = np.where(valid & np.isfinite(gain), gain, -np.inf)
+            c = int(np.argmax(gain))
+            if not np.isfinite(gain[c]) or gain[c] <= 1e-12:
+                continue
+            if best is None or gain[c] > best.gain:
+                best = SplitCandidate(
+                    feature=feature,
+                    bin=-1,
+                    gain=float(gain[c]),
+                    n_left=int(left_n[c]),
+                    n_right=int(right_n[c]),
+                    left_categories=np.sort(direction[: c + 1]).astype(np.int64),
+                )
+        return best
 
 
 def _leaf_score(g, h, l2: float):

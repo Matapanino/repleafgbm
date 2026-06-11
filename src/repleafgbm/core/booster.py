@@ -39,6 +39,10 @@ class BoosterParams:
     min_samples_leaf: int = 20
     l2_leaf: float = 1.0
     max_bins: int = 256
+    #: Categorical subset-split guards (LightGBM semantics/defaults).
+    cat_smooth: float = 10.0
+    min_data_per_group: int = 100
+    max_cat_threshold: int = 32
     #: Stop when the first eval set's metric has not improved for this many
     #: rounds. None disables early stopping. Requires eval_sets + eval_metric.
     early_stopping_rounds: int | None = None
@@ -83,6 +87,9 @@ class Booster:
             min_samples_leaf=p.min_samples_leaf,
             l2=p.l2_leaf,
             categorical_indices=dataset.metadata.categorical_indices,
+            cat_smooth=p.cat_smooth,
+            min_data_per_group=p.min_data_per_group,
+            max_cat_threshold=p.max_cat_threshold,
         )
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
         return self._run_boosting(

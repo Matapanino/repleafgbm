@@ -27,6 +27,9 @@ class Splitter:
             one bin per category and gradient-sorted *subset* splits instead
             of ordered thresholds. Features with more than ``max_bins``
             categories silently fall back to the ordered treatment.
+        cat_smooth / min_data_per_group / max_cat_threshold: Categorical
+            overfitting guards (LightGBM semantics and defaults); see
+            ``BaseSplitBackend.find_best_split``.
     """
 
     def __init__(
@@ -37,9 +40,15 @@ class Splitter:
         l2: float = 1.0,
         backend: BaseSplitBackend | None = None,
         categorical_indices: list[int] | None = None,
+        cat_smooth: float = 10.0,
+        min_data_per_group: int = 100,
+        max_cat_threshold: int = 32,
     ) -> None:
         self.min_samples_leaf = min_samples_leaf
         self.l2 = l2
+        self.cat_smooth = cat_smooth
+        self.min_data_per_group = min_data_per_group
+        self.max_cat_threshold = max_cat_threshold
         self.backend = backend or NumPySplitBackend()
         n_features = X_raw.shape[1]
         self.is_categorical = np.zeros(n_features, dtype=bool)
@@ -83,6 +92,9 @@ class Splitter:
             self.min_samples_leaf,
             self.l2,
             categorical_mask=self.is_categorical,
+            cat_smooth=self.cat_smooth,
+            min_data_per_group=self.min_data_per_group,
+            max_cat_threshold=self.max_cat_threshold,
         )
 
     def threshold_value(self, split: SplitCandidate) -> float:

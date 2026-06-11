@@ -97,8 +97,9 @@ leaf_model, trees)` replay loop.
   use the base model's rate, not RepLeafGBM's.
 - Linear-leaf overfitting guards (fallback thresholds) must apply per
   routed leaf exactly as in native training.
-- Categorical subset splits: postponed; requires native subset-split support
-  first (docs/categorical_features.md).
+- Categorical subset splits: ~~postponed~~ supported since Phase 8b —
+  LightGBM `==` nodes map onto native `Tree.left_categories` with exact
+  prediction reproduction (including NaN routing via `default_left`).
 
 ## Milestones
 

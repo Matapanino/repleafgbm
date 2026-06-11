@@ -60,15 +60,26 @@ def test_extract_routes_reproduces_lightgbm_exactly(nan_regression_data):
         np.testing.assert_allclose(ours, theirs, atol=1e-10)
 
 
-def test_extract_routes_rejects_categorical_splits():
+def test_extract_routes_maps_categorical_splits_exactly():
+    """LightGBM '==' splits map onto native left_categories; predictions
+    must match exactly, including NaN categorical routing (default_left)."""
     rng = np.random.default_rng(0)
-    X = np.column_stack([rng.integers(0, 5, 300), rng.normal(size=300)]).astype(float)
-    y = (X[:, 0] == 2).astype(float) + 0.1 * X[:, 1]
+    n = 800
+    cat = rng.integers(0, 6, n).astype(float)
+    x = rng.normal(size=n)
+    y = np.where(np.isin(cat, [1, 4]), 3.0, -3.0) + 0.3 * x + rng.normal(0, 0.1, n)
+    X = np.column_stack([cat, x])
+    X[::31, 0] = np.nan
     m = lgb.LGBMRegressor(
-        n_estimators=10, num_leaves=5, random_state=0, verbose=-1, min_child_samples=5
+        n_estimators=15, num_leaves=5, random_state=0, verbose=-1, min_child_samples=5
     ).fit(X, y, categorical_feature=[0])
-    with pytest.raises(ValueError, match="categorical"):
-        extract_routes(m)
+
+    trees, leaf_values = extract_routes(m)
+    assert any(t.left_categories is not None for t in trees)
+    lvs = [LeafValues(bias=v, weights=np.zeros((len(v), 0))) for v in leaf_values]
+    ours = predict_raw(trees, lvs, init_score=0.0, learning_rate=1.0,
+                       X_raw=X, Z=None)
+    np.testing.assert_allclose(ours, m.predict(X, raw_score=True), atol=1e-10)
 
 
 def test_extract_routes_bad_input():

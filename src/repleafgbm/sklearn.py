@@ -51,6 +51,12 @@ class BaseRepLeafModel(BaseEstimator):
             encoder dimension (e.g. fewer PLR bins) instead.
         l2_leaf: Ridge penalty for leaf models and the split gain denominator.
         max_bins: Histogram bins per feature for split search.
+        cat_smooth / min_data_per_group / max_cat_threshold: Categorical
+            subset-split guards with LightGBM semantics and defaults:
+            Hessian smoothing of the category sort ratio, minimum node rows
+            for a category to be eligible for the left subset, and the cap
+            on left-subset size (scanned from both ends of the sorted
+            order). See docs/categorical_features.md.
         early_stopping_rounds: Stop training when the first eval_set's metric
             has not improved for this many rounds; ``best_iteration_`` is set
             and ``predict`` uses the best iteration. Requires eval_set.
@@ -77,6 +83,9 @@ class BaseRepLeafModel(BaseEstimator):
         max_leaf_emb_dim: int = 64,
         l2_leaf: float = 1.0,
         max_bins: int = 256,
+        cat_smooth: float = 10.0,
+        min_data_per_group: int = 100,
+        max_cat_threshold: int = 32,
         early_stopping_rounds: int | None = None,
         eval_metric: str | None = None,
         random_state: int | None = 42,
@@ -93,6 +102,9 @@ class BaseRepLeafModel(BaseEstimator):
         self.max_leaf_emb_dim = max_leaf_emb_dim
         self.l2_leaf = l2_leaf
         self.max_bins = max_bins
+        self.cat_smooth = cat_smooth
+        self.min_data_per_group = min_data_per_group
+        self.max_cat_threshold = max_cat_threshold
         self.early_stopping_rounds = early_stopping_rounds
         self.eval_metric = eval_metric
         self.random_state = random_state
@@ -148,6 +160,9 @@ class BaseRepLeafModel(BaseEstimator):
             min_samples_leaf=self.min_samples_leaf,
             l2_leaf=self.l2_leaf,
             max_bins=self.max_bins,
+            cat_smooth=self.cat_smooth,
+            min_data_per_group=self.min_data_per_group,
+            max_cat_threshold=self.max_cat_threshold,
             early_stopping_rounds=self.early_stopping_rounds,
         )
         self.booster_ = Booster(params, get_objective(self._objective_name))

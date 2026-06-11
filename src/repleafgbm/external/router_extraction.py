@@ -33,16 +33,16 @@ def extract_routes(model: Any) -> tuple[list[Tree], list[np.ndarray]]:
 
     Returns:
         ``(trees, leaf_values)``: native trees (with LightGBM's learned
-        ``default_left`` as per-node missing direction) and, per tree, the
+        ``default_left`` as per-node missing direction; categorical ``==``
+        splits mapped onto per-node ``left_categories``) and, per tree, the
         original LightGBM leaf values indexed by our dense leaf ids.
         Summing the original leaf values over trees reproduces LightGBM's
         raw prediction exactly (verified in tests), which is the
         correctness guarantee for the structure mapping.
 
     Raises:
-        ValueError: If the model contains categorical (``==``) splits;
-            train the base model on ordinal-encoded data (e.g. via
-            RepLeafDataset) instead.
+        ValueError: If the model contains a split type other than numerical
+            ``<=`` or categorical ``==``.
     """
     booster, num_iteration = _unwrap_booster(model)
     # When the base was early-stopped, only its best-iteration prefix is
@@ -82,6 +82,7 @@ def _convert_tree(root: dict) -> tuple[Tree, np.ndarray]:
     leaf_id: list[int] = []
     missing_left: list[bool] = []
     gain: list[float] = []
+    left_cats: list[np.ndarray | None] = []
     values: list[float] = []
 
     def add(node: dict) -> int:
@@ -93,17 +94,25 @@ def _convert_tree(root: dict) -> tuple[Tree, np.ndarray]:
         leaf_id.append(-1)
         missing_left.append(True)
         gain.append(0.0)
+        left_cats.append(None)
         if "split_feature" in node:
-            if node["decision_type"] != "<=":
-                raise ValueError(
-                    f"Unsupported split type {node['decision_type']!r} (categorical "
-                    "split). Train the base model on ordinal-encoded features, "
-                    "e.g. by fitting it on a RepLeafDataset."
-                )
             feature[index] = int(node["split_feature"])
-            threshold[index] = float(node["threshold"])
             missing_left[index] = bool(node["default_left"])
             gain[index] = float(node.get("split_gain", 0.0))
+            if node["decision_type"] == "<=":
+                threshold[index] = float(node["threshold"])
+            elif node["decision_type"] == "==":
+                # LightGBM categorical split: "1||4" means codes {1, 4} go
+                # left — the same semantics as native left_categories.
+                left_cats[index] = np.asarray(
+                    [float(v) for v in str(node["threshold"]).split("||")],
+                    dtype=np.float64,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported split type {node['decision_type']!r}; only "
+                    "numerical '<=' and categorical '==' splits can be extracted."
+                )
             left[index] = add(node["left_child"])
             right[index] = add(node["right_child"])
         else:
@@ -120,7 +129,9 @@ def _convert_tree(root: dict) -> tuple[Tree, np.ndarray]:
         leaf_id=np.asarray(leaf_id, dtype=np.int32),
         missing_left=np.asarray(missing_left, dtype=bool),
         gain=np.asarray(gain, dtype=np.float64),
-        left_categories=None,  # categorical lgb splits are rejected above
+        left_categories=(
+            left_cats if any(c is not None for c in left_cats) else None
+        ),
     )
     return tree, np.asarray(values, dtype=np.float64)
 
