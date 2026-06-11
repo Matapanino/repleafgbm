@@ -106,6 +106,21 @@ Everything below v0 is a plan, not a promise of API stability.
 - Headroom recorded: per-dataset tuning of `min_data_per_group` (defaults
   favor robustness over the last diamonds decimals)
 
+## Phase 12 — binary embedded-leaf gain study ✅ (2026-06-12, null result)
+
+- Hypothesis "logistic h = p(1-p) starves leaf-linear fits" tested with
+  paired-target diagnostics + a remedy grid (l2 sweep, Hessian floor,
+  damped h^alpha leaf weighting): ESS decay is real (~36%) but no remedy
+  beats constant leaves; defaults unchanged
+  (experiments/results/binary_leaf_gain.md)
+- Key diagnostic: binary leaves keep fitting sizable ||w|| late in boosting
+  while regression ||w|| collapses with the residuals — within-leaf logit
+  structure is mostly exhausted by routing; remaining fits are noise that
+  the guard/ridge merely contain
+- Documented guidance: leaf_model="constant" is an equal-accuracy, cheaper
+  choice for binary tasks; future binary gains route through learned
+  encoders / calibrated leaf outputs, not reweighting
+
 ## v0.1 — robustness
 
 - ~~Early stopping on eval sets~~ done in Phase 1a

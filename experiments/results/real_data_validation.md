@@ -268,3 +268,12 @@ of the three categorical datasets:
 
 Two seeds; sub-0.002 differences are within seed noise. Guard values follow
 LightGBM defaults, not our own sweep.
+
+## Phase 12 note: the adult embedded-leaf gap is structural
+
+Follow-up experiment (experiments/results/binary_leaf_gain.md): the
+hypothesis that logistic h-weighting starves leaf-linear fits was tested
+and rejected as the actionable cause — no reweighting/l2/Hessian-floor
+remedy beats constant leaves on adult, and defaults stay unchanged. For
+binary tasks, `leaf_model="constant"` is an equally accurate, cheaper
+alternative.
