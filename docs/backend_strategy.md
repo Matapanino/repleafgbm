@@ -13,14 +13,19 @@ natively:
 
 ```text
 backends/
-  numpy_backend.py    # v0, implemented
-  cpp_backend.py      # planned (v2)
-  rust_backend.py     # planned (v2)
+  numpy_backend.py    # reference, always available
+  rust_backend.py     # implemented (Phase 10): optional compiled extension
   cuda_backend.py     # planned (v3)
 ```
 
-v0 rule: NumPy only. Tree-growing logic (`core/tree.py`) must never depend on
-backend internals.
+The Rust kernels live in `native/` (pyo3 + maturin; `pip install ./native`)
+and are selected automatically via `split_backend="auto"` when installed.
+They mirror the NumPy backend's tie-breaking and accumulation-order
+semantics: histograms are bitwise-identical, end-to-end predictions agree to
+float noise (tested), and measured speedups are ~5.8x for constant-leaf
+training (LightGBM-parity wall time) and ~2x for embedded leaves
+(Amdahl-limited by leaf ridge fitting). Tree-growing logic (`core/tree.py`)
+must never depend on backend internals.
 
 ## Axis 2: GBM backend (which boosting engine builds the routing)
 

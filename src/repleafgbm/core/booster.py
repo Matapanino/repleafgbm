@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from repleafgbm.backends import make_split_backend
 from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import BaseObjective
@@ -43,6 +44,9 @@ class BoosterParams:
     cat_smooth: float = 10.0
     min_data_per_group: int = 100
     max_cat_threshold: int = 32
+    #: Split kernel implementation: "auto" (Rust extension when installed,
+    #: NumPy otherwise), "numpy", or "rust".
+    split_backend: str = "auto"
     #: Stop when the first eval set's metric has not improved for this many
     #: rounds. None disables early stopping. Requires eval_sets + eval_metric.
     early_stopping_rounds: int | None = None
@@ -86,6 +90,7 @@ class Booster:
             max_bins=p.max_bins,
             min_samples_leaf=p.min_samples_leaf,
             l2=p.l2_leaf,
+            backend=make_split_backend(p.split_backend),
             categorical_indices=dataset.metadata.categorical_indices,
             cat_smooth=p.cat_smooth,
             min_data_per_group=p.min_data_per_group,

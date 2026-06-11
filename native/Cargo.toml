@@ -1,0 +1,17 @@
+[package]
+name = "repleafgbm-native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "repleafgbm_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+ndarray = "0.16"
+
+[profile.release]
+lto = true
+codegen-units = 1

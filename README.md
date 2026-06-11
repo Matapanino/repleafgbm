@@ -96,7 +96,9 @@ model.fit(train_data, eval_set=[RepLeafDataset(df_valid, y_valid,
 Implemented:
 
 - Native NumPy backend: histogram-based split search with sibling-histogram
-  subtraction, leaf-wise tree growth
+  subtraction, leaf-wise tree growth — plus optional Rust kernels
+  (`pip install ./native`, auto-detected; ~5.8x faster constant-leaf
+  training, parity-tested against the NumPy reference)
 - `leaf_model`: `"constant"`, `"embedded_linear"`, `"raw_linear"`
 - Encoders: `"identity"`, `"plr"` (simplified piecewise-linear + linear
   term), `"periodic"` (PBLD-style frozen sinusoidal features); random

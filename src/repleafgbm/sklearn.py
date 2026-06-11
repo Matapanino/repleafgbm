@@ -57,6 +57,11 @@ class BaseRepLeafModel(BaseEstimator):
             for a category to be eligible for the left subset, and the cap
             on left-subset size (scanned from both ends of the sorted
             order). See docs/categorical_features.md.
+        split_backend: Split kernel implementation: "auto" (compiled Rust
+            kernels when the optional ``repleafgbm_native`` extension is
+            installed, NumPy otherwise), "numpy", or "rust". Backends agree
+            to floating-point noise; same seed + same backend is fully
+            deterministic.
         early_stopping_rounds: Stop training when the first eval_set's metric
             has not improved for this many rounds; ``best_iteration_`` is set
             and ``predict`` uses the best iteration. Requires eval_set.
@@ -86,6 +91,7 @@ class BaseRepLeafModel(BaseEstimator):
         cat_smooth: float = 10.0,
         min_data_per_group: int = 100,
         max_cat_threshold: int = 32,
+        split_backend: str = "auto",
         early_stopping_rounds: int | None = None,
         eval_metric: str | None = None,
         random_state: int | None = 42,
@@ -105,6 +111,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.cat_smooth = cat_smooth
         self.min_data_per_group = min_data_per_group
         self.max_cat_threshold = max_cat_threshold
+        self.split_backend = split_backend
         self.early_stopping_rounds = early_stopping_rounds
         self.eval_metric = eval_metric
         self.random_state = random_state
@@ -163,6 +170,7 @@ class BaseRepLeafModel(BaseEstimator):
             cat_smooth=self.cat_smooth,
             min_data_per_group=self.min_data_per_group,
             max_cat_threshold=self.max_cat_threshold,
+            split_backend=self.split_backend,
             early_stopping_rounds=self.early_stopping_rounds,
         )
         self.booster_ = Booster(params, get_objective(self._objective_name))

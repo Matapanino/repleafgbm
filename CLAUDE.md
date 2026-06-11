@@ -51,8 +51,10 @@ embeddings.
   are an optional-dependency future extension.
 - `src/repleafgbm/core/` — objectives, metrics, histogram binning, splitter,
   tree grower, leaf models, booster, prediction, serialization.
-- `src/repleafgbm/backends/` — split-search kernels behind `BaseSplitBackend`.
-  Only `NumPySplitBackend` exists; the boundary is for future Rust/C++/CUDA.
+- `src/repleafgbm/backends/` — split-search kernels behind `BaseSplitBackend`:
+  `NumPySplitBackend` (reference) and `RustSplitBackend` (optional compiled
+  extension in `native/`, pyo3/maturin). The two must stay parity-tested
+  (bitwise histograms, allclose predictions); change them together.
 - `src/repleafgbm/sklearn.py`, `regressor.py`, `classifier.py` — the
   sklearn-compatible public API that glues dataset + encoder + booster.
 - `src/repleafgbm/external/` — external_model mode (LightGBM base model,

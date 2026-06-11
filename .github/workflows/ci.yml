@@ -23,3 +23,14 @@ jobs:
           python examples/regression_basic.py
           python examples/binary_classification_basic.py
           python examples/dataset_api_basic.py
+
+  rust-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install -e ".[dev]" ./native
+      - run: python -m pytest tests/ -q  # includes the backend parity tests

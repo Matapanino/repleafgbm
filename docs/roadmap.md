@@ -170,12 +170,16 @@ Everything below v0 is a plan, not a promise of API stability.
 - Vector leaves (multi-output regression)
 - Improved objectives (Huber, quantile, Poisson), label smoothing
 
-## v2 — native high-performance backend
+## v2 — native high-performance backend (Phase 10: core shipped ✅)
 
-- Rust or C++ core implementing the `BaseSplitBackend` contract
-  (histogram building, split scan, row partitioning)
-- Parallel tree construction, careful memory layout
-- Compiled predictor
+- ✅ Rust kernels for the `BaseSplitBackend` contract (histogram building +
+  split scan incl. categorical subset logic) as an optional pyo3/maturin
+  extension under `native/`; `split_backend="auto"|"numpy"|"rust"` estimator
+  parameter; parity tested (bitwise histograms, allclose predictions);
+  dedicated CI job. Measured: constant 5.8x (LightGBM-parity), embedded ~2x,
+  constant @100k rows 4.7x
+- Open: batched/native leaf ridge fitting (the embedded bottleneck),
+  row partitioning in Rust, parallel (rayon) histograms, compiled predictor
 
 ## v3 — GPU and scale
 
