@@ -120,6 +120,7 @@ def _convert_tree(root: dict) -> tuple[Tree, np.ndarray]:
         leaf_id=np.asarray(leaf_id, dtype=np.int32),
         missing_left=np.asarray(missing_left, dtype=bool),
         gain=np.asarray(gain, dtype=np.float64),
+        left_categories=None,  # categorical lgb splits are rejected above
     )
     return tree, np.asarray(values, dtype=np.float64)
 

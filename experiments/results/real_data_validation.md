@@ -100,3 +100,85 @@ training is unchanged.
    single-dataset), but constant leaves are a documented alternative for
    binary tasks. The remaining native-cat gap (~0.3-2.5%) keeps native
    categorical splits as the next priority.
+
+## Phase 8: native categorical subset splits
+
+Declared categorical features now get one histogram bin per category and
+gradient-sorted subset splits (LightGBM trick; sort ratio smoothed with
+cat_smooth=10), with ordered fallback above `max_bins` categories. Rerun of
+the three categorical datasets (california has no categoricals and is
+unchanged):
+
+## house_sales (regression, n=15000, categorical features: 1, metric: rmse)
+
+| config | test (mean ± std) | train | gap | fit[s] |
+|---|---|---|---|---|
+| lightgbm (native cat, es) | 0.1652 ± 0.0046 | 0.1087 | +0.0565 | 1.5 |
+| routerx embedded_linear identity (es) | 0.1652 ± 0.0035 | 0.0939 | +0.0713 | 3.0 |
+| lightgbm (encoded, es) | 0.1656 ± 0.0040 | 0.1019 | +0.0637 | 2.2 |
+| RepLeaf embedded_linear identity (es) | 0.1678 ± 0.0032 | 0.1082 | +0.0595 | 3.1 |
+| hist_gradient_boosting (encoded) | 0.1686 ± 0.0038 | 0.1187 | +0.0499 | 1.0 |
+| RepLeaf constant (es) | 0.1687 ± 0.0043 | 0.1059 | +0.0628 | 2.9 |
+| RepLeaf embedded_linear plr (es) | 0.1692 ± 0.0032 | 0.1019 | +0.0673 | 4.5 |
+
+## diamonds (regression, n=15000, categorical features: 3, metric: rmse)
+
+| config | test (mean ± std) | train | gap | fit[s] |
+|---|---|---|---|---|
+| RepLeaf embedded_linear plr (es) | 0.0925 ± 0.0012 | 0.0653 | +0.0272 | 4.8 |
+| RepLeaf embedded_linear identity (es) | 0.0928 ± 0.0017 | 0.0636 | +0.0292 | 3.3 |
+| RepLeaf constant (es) | 0.0944 ± 0.0002 | 0.0640 | +0.0304 | 3.1 |
+| lightgbm (native cat, es) | 0.0948 ± 0.0007 | 0.0692 | +0.0256 | 1.9 |
+| routerx embedded_linear identity (es) | 0.0950 ± 0.0019 | 0.0712 | +0.0238 | 1.7 |
+| hist_gradient_boosting (encoded) | 0.0970 ± 0.0015 | 0.0721 | +0.0249 | 1.3 |
+| lightgbm (encoded, es) | 0.0972 ± 0.0015 | 0.0725 | +0.0247 | 1.7 |
+
+## adult (binary, n=15000, categorical features: 8, metric: logloss)
+
+| config | test (mean ± std) | train | gap | auc | fit[s] |
+|---|---|---|---|---|---|
+| lightgbm (native cat, es) | 0.2868 ± 0.0019 | 0.2203 | +0.0665 | 0.9214 | 0.8 |
+| lightgbm (encoded, es) | 0.2894 ± 0.0001 | 0.2384 | +0.0510 | 0.9201 | 0.7 |
+| routerx embedded_linear identity (es) | 0.2905 ± 0.0010 | 0.2346 | +0.0559 | 0.9199 | 0.5 |
+| hist_gradient_boosting (encoded) | 0.2907 ± 0.0017 | 0.2242 | +0.0666 | 0.9193 | 0.5 |
+| RepLeaf constant (es) | 0.2908 ± 0.0004 | 0.2161 | +0.0747 | 0.9194 | 1.9 |
+| RepLeaf embedded_linear identity (es) | 0.2913 ± 0.0010 | 0.2180 | +0.0733 | 0.9195 | 1.6 |
+| RepLeaf embedded_linear plr (es) | 0.2951 ± 0.0003 | 0.2089 | +0.0863 | 0.9173 | 2.9 |
+
+### Effect vs Phase 7 (ordinal-threshold routing), test metric
+
+| dataset | RepLeaf embedded identity | RepLeaf constant | lgb native-cat |
+|---|---|---|---|
+| diamonds (rmse) | 0.0953 → **0.0928** | 0.0970 → **0.0944** | 0.0948 |
+| house_sales (rmse) | 0.1667 → 0.1678 | 0.1664 → 0.1687 | 0.1652 |
+| adult (logloss) | 0.2902 → 0.2913 | 0.2888 → 0.2908 | 0.2868 |
+
+### Conclusions
+
+1. **Where categories are low-cardinality and informative (diamonds: cut /
+   color / clarity), subset splits close and reverse the native-cat gap**:
+   both embedded variants (0.0925-0.0928) and even constant leaves (0.0944)
+   now beat LightGBM with native categoricals (0.0948). The Phase 6 measured
+   headroom (+2.5% here) is fully captured.
+2. **High-cardinality categories still overfit.** On adult (up to 41
+   categories) subset splits *cost* ~0.5-0.7% even after adding the
+   cat_smooth=10 sort smoothing (which recovered about half of the initial
+   regression: embedded 0.2925 → 0.2913 vs ordinal 0.2902). house_sales
+   (zipcode, ~70 categories) is neutral-to-slightly-negative. LightGBM's
+   remaining guards — `min_data_per_group`, `max_cat_threshold` (cap on
+   left-subset size) — are the identified difference and the concrete next
+   refinement.
+3. **Defaults**: subset splits stay ON for declared categoricals — they win
+   exactly where categorical structure matters most, the regressions
+   elsewhere are small (≤0.7%), and the missing guards are a known,
+   mechanical fix. Users with high-cardinality categories can pass a lower
+   `max_bins` to force the ordered fallback in the interim.
+4. Sanity: the smoothing constant changed nothing on the synthetic
+   subset-recovery tests (strong signals dominate the sort), and all 116
+   tests pass; format_version is now 3 (v1/v2 directories remain readable).
+
+### Caveats
+
+Two seeds; differences on house_sales/adult are ~1-2x the seed std, so
+"neutral" calls there are provisional. The cat_smooth constant follows
+LightGBM's default rather than our own sweep.

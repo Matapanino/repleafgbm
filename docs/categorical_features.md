@@ -4,7 +4,7 @@ RepLeafGBM's research focus is numerical-feature embeddings, but real tabular
 data requires a credible categorical story. This document states what v0 does
 and where it is going.
 
-## v0 behavior (implemented)
+## Current behavior (implemented)
 
 - `RepLeafDataset(X, y, categorical_features=[...], numerical_features=[...])`
   accepts explicit feature lists. For pandas DataFrames, object / category /
@@ -12,12 +12,19 @@ and where it is going.
   For ndarray input, columns are referred to as `"f<index>"`.
 - Categoricals are **ordinal-encoded** to float codes (categories sorted as
   strings; the mapping lives in `FeatureMetadata.category_maps`).
-- The router splits on these codes like any numerical feature. This finds
-  contiguous code-range partitions — weaker than subset splits, but with
-  enough depth trees can isolate individual categories.
-- **Missing values and unseen categories → NaN**, and NaN always routes left.
-  Prediction on unseen categories therefore degrades gracefully instead of
-  raising.
+- **Native categorical subset splits (Phase 8).** Declared categorical
+  features get one histogram bin per category; at each node the categories
+  are sorted by their Newton direction `sum_g / (sum_h + l2)` and scanned as
+  prefixes (the LightGBM gradient-sorting trick), yielding an optimal binary
+  *subset* split — code order no longer matters. The chosen left-subset is
+  stored per node (`Tree.left_categories`); routing tests membership.
+  Features with more than `max_bins` categories silently fall back to the
+  ordered-threshold treatment of the codes.
+- **Missing values and unseen categories → NaN**, and NaN always routes left
+  in native training (subset splits included: missing joins the left subset
+  during search). Categories seen at fit time but not in a node's left
+  subset go right. Prediction on unseen categories therefore degrades
+  gracefully instead of raising.
 - **Metadata must be shared, and this is enforced.** A `RepLeafDataset` built
   independently from a sample that is missing some category would assign
   different ordinal codes; `fit(eval_set=...)` and `predict` reject datasets
@@ -30,19 +37,21 @@ and where it is going.
 - `feature_names_in_` / `n_features_in_` are set on fitted models, matching
   sklearn conventions.
 
-## Why ordinal (not one-hot) in v0
+## Why ordinal storage (not one-hot)
 
-One-hot inflates the feature matrix and the histogram count, interacts badly
-with `min_samples_leaf`, and buys little once native subset splits exist.
-Ordinal is the smallest correct-enough baseline; its known weakness (code
-order is arbitrary) is documented and bounded.
+One-hot inflates the feature matrix and the histogram count, and interacts
+badly with `min_samples_leaf`. Ordinal codes are only a *storage* format
+now: subset splits make the arbitrary code order irrelevant for routing.
 
 ## Future directions
 
-1. **Native categorical splits** — subset splits via the LightGBM-style
-   gradient-sorting trick (sort categories by `sum_g / sum_h` within the
-   node, then scan as if ordinal). This is the main planned upgrade and fits
-   the existing histogram machinery.
+1. ~~Native categorical splits~~ — implemented (Phase 8, see above), with
+   LightGBM-default `cat_smooth=10` on the sort ratio. Remaining
+   refinements: `min_data_per_group` / `max_cat_threshold`-style guards
+   (high-cardinality features such as adult's still overfit slightly — see
+   experiments/results/real_data_validation.md Phase 8), and subset-split
+   support in router_extraction (`extract_routes` still rejects `==` splits
+   even though the native `Tree` can now represent them).
 2. **Target / frequency encoding** — opt-in preprocessing with OOF leakage
    protection (ties into the OOF utilities planned for v0.2).
 3. **Category embeddings in the encoder** — learned embedding tables per

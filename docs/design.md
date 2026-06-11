@@ -52,6 +52,10 @@ backend would want.
   `num_leaves`, with optional `max_depth` and `min_samples_leaf`.
 - Split gain is the standard Newton gain `G_L^2/(H_L+λ) + G_R^2/(H_R+λ) -
   G^2/(H+λ)`.
+- Declared categorical features are routed with gradient-sorted **subset
+  splits** (one bin per category, categories sorted by `G/(H+λ)` and scanned
+  as prefixes — the LightGBM trick); ordered-threshold fallback above
+  `max_bins` categories. See docs/categorical_features.md.
 - Missing values (NaN) always route left in *native training*; learned
   default directions are future work. The `Tree` structure itself carries a
   per-node `missing_left` flag, used by extracted LightGBM routes

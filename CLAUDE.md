@@ -68,7 +68,10 @@ Conventions baked into the core (keep them consistent):
 - Missing values (NaN) always route **left** in *native training*; `Tree`
   carries per-node `missing_left` so extracted external routes (LightGBM
   `default_left`) are represented exactly.
-- Categorical features are ordinal-encoded to float; unseen categories → NaN.
+- Categorical features are ordinal-encoded to float (unseen categories →
+  NaN) and routed with native gradient-sorted **subset splits**
+  (`Tree.left_categories`); ordered-threshold fallback above `max_bins`
+  categories.
 - `random_state` flows through `utils.random.check_random_state`; never call
   global NumPy random functions.
 

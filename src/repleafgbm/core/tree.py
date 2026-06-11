@@ -38,6 +38,13 @@ class Tree:
     leaf_id: np.ndarray  # int32, -1 for internal nodes
     missing_left: np.ndarray  # bool, True routes NaN to left[i]
     gain: np.ndarray  # float64, split gain (feature importance); 0.0 for leaves
+    #: Per-node categorical subset splits: ``left_categories[i]`` is the
+    #: float64 array of ordinal codes routed left at node i, or None for
+    #: numerical threshold nodes (and leaves). Codes not in the set —
+    #: including categories never seen at fit time after NaN-mapping — go
+    #: right; missing values follow ``missing_left``. None for trees without
+    #: any categorical split.
+    left_categories: list | None = None
 
     @property
     def n_leaves(self) -> int:
@@ -49,12 +56,19 @@ class Tree:
         node = np.zeros(n, dtype=np.int64)
         active = self.leaf_id[node] < 0
         while active.any():
-            idx = node[active]
-            x = X_raw[active, self.feature[idx]]
-            go_left = np.where(
-                np.isnan(x), self.missing_left[idx], x <= self.threshold[idx]
-            )
-            node[active] = np.where(go_left, self.left[idx], self.right[idx])
+            active_rows = np.flatnonzero(active)
+            idx = node[active_rows]
+            x = X_raw[active_rows, self.feature[idx]]
+            go_left = x <= self.threshold[idx]
+            if self.left_categories is not None:
+                # Membership test per categorical node at this level.
+                for node_index in np.unique(idx):
+                    cats = self.left_categories[node_index]
+                    if cats is not None:
+                        at_node = idx == node_index
+                        go_left[at_node] = np.isin(x[at_node], cats)
+            go_left = np.where(np.isnan(x), self.missing_left[idx], go_left)
+            node[active_rows] = np.where(go_left, self.left[idx], self.right[idx])
             active = self.leaf_id[node] < 0
         return self.leaf_id[node].astype(np.int64)
 
@@ -67,6 +81,11 @@ class Tree:
             "leaf_id": self.leaf_id.tolist(),
             "missing_left": self.missing_left.tolist(),
             "gain": self.gain.tolist(),
+            "left_categories": (
+                None
+                if self.left_categories is None
+                else [None if c is None else c.tolist() for c in self.left_categories]
+            ),
         }
 
     @classmethod
@@ -88,6 +107,15 @@ class Tree:
             # gain is optional on read (older files): importances degrade to
             # zeros rather than failing to load.
             gain=np.asarray(d.get("gain", [0.0] * n_nodes), dtype=np.float64),
+            # Absent in formats < 3 (no categorical splits existed).
+            left_categories=(
+                None
+                if d.get("left_categories") is None
+                else [
+                    None if c is None else np.asarray(c, dtype=np.float64)
+                    for c in d["left_categories"]
+                ]
+            ),
         )
 
 
@@ -140,6 +168,7 @@ class TreeGrower:
         left: list[int] = [-1]
         right: list[int] = [-1]
         gain: list[float] = [0.0]
+        left_cats: list[np.ndarray | None] = [None]
         node_rows: dict[int, np.ndarray] = {0: all_rows}
 
         counter = itertools.count()  # deterministic heap tie-break
@@ -159,8 +188,16 @@ class TreeGrower:
                 left.append(-1)
                 right.append(-1)
                 gain.append(0.0)
+                left_cats.append(None)
             feature[cand.node_index] = cand.split.feature
-            threshold[cand.node_index] = self.splitter.threshold_value(cand.split)
+            if cand.split.left_categories is not None:
+                # Categorical subset split: codes compared by membership,
+                # stored as float64 to match the raw feature matrix.
+                left_cats[cand.node_index] = cand.split.left_categories.astype(
+                    np.float64
+                )
+            else:
+                threshold[cand.node_index] = self.splitter.threshold_value(cand.split)
             left[cand.node_index] = li
             right[cand.node_index] = ri
             gain[cand.node_index] = cand.split.gain
@@ -206,6 +243,9 @@ class TreeGrower:
             # Native training always routes missing values left (v0 rule).
             missing_left=np.ones(n_nodes, dtype=bool),
             gain=np.asarray(gain, dtype=np.float64),
+            left_categories=(
+                left_cats if any(c is not None for c in left_cats) else None
+            ),
         )
         return tree, leaf_rows
 

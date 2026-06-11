@@ -9,7 +9,7 @@
 - Stay diff-able and inspectable where possible (JSON for structure, npz for
   numeric payloads).
 
-## Directory layout (format_version = 2)
+## Directory layout (format_version = 3)
 
 ```text
 model_dir/
@@ -54,9 +54,10 @@ What each file owns:
 
 - `format_version` increments on any breaking layout change.
 - Loaders reject unknown versions rather than guessing.
-- Supported read versions: **1 and 2**. v1 directories lack `missing_left`;
-  they load with the all-True default, which is exactly the convention those
-  trees were trained under (covered by `test_format_v1_compat`).
+- Supported read versions: **1, 2, and 3**. v1 directories lack
+  `missing_left` (loaded with the all-True default those trees were trained
+  under, covered by `test_format_v1_compat`); v1/v2 lack `left_categories`
+  (categorical subset splits, v3) — such trees never contained them.
 - Once the library is public: migration code for at least one previous
   version, and a round-trip test per supported version.
 

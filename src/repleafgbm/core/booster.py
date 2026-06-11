@@ -82,6 +82,7 @@ class Booster:
             max_bins=p.max_bins,
             min_samples_leaf=p.min_samples_leaf,
             l2=p.l2_leaf,
+            categorical_indices=dataset.metadata.categorical_indices,
         )
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
         return self._run_boosting(

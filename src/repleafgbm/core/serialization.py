@@ -29,10 +29,12 @@ from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.encoders import encoder_from_config
 from repleafgbm.encoders.base import BaseEncoder
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 #: Older versions this build can still read. v1 lacks per-node
-#: ``missing_left`` (defaulted to True, the convention those trees used).
-READABLE_VERSIONS = (1, 2)
+#: ``missing_left`` (defaulted to True, the convention those trees used);
+#: v2 lacks categorical subset splits (``left_categories``), which v1/v2
+#: trees never contained.
+READABLE_VERSIONS = (1, 2, 3)
 
 
 def save_model_dir(

@@ -26,8 +26,14 @@ class SplitCandidate:
     Attributes:
         feature: Column index in the raw/binned feature matrix.
         bin: Bin index b; rows with bin <= b (plus missing) go left.
+            -1 for categorical subset splits.
         gain: Newton gain of the split versus keeping the node as a leaf.
         n_left / n_right: Row counts of the resulting children.
+        left_categories: For categorical splits, the category codes routed
+            left (bin index == ordinal code for natively-binned categorical
+            features). Missing values also go left (native convention);
+            codes not in the set — including categories absent from the
+            node — go right. None for numerical threshold splits.
     """
 
     feature: int
@@ -35,6 +41,7 @@ class SplitCandidate:
     gain: float
     n_left: int
     n_right: int
+    left_categories: np.ndarray | None = None
 
 
 class BaseSplitBackend(ABC):
@@ -67,8 +74,11 @@ class BaseSplitBackend(ABC):
         n_bins_per_feature: np.ndarray,
         min_samples_leaf: int,
         l2: float,
+        categorical_mask: np.ndarray | None = None,
     ) -> SplitCandidate | None:
         """Scan a node histogram for the best split, or None if no valid gain.
 
         Missing values always go to the left child (v0 convention).
+        Features flagged in ``categorical_mask`` are scanned as subset splits
+        (gradient-sorted categories) instead of ordered thresholds.
         """

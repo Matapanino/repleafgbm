@@ -78,6 +78,19 @@ Everything below v0 is a plan, not a promise of API stability.
 - Next priorities unchanged: native categorical splits (measured 0.3-2.5%
   headroom), then capacity knobs
 
+## Phase 8 — native categorical subset splits ✅ (2026-06-11)
+
+- One bin per category for declared categoricals; gradient-sorted prefix
+  scan (LightGBM trick, cat_smooth=10) in the backend; per-node
+  `Tree.left_categories`; serialization format v3 (v1/v2 readable);
+  ordered-threshold fallback above `max_bins` categories
+- Real data: diamonds gap to LightGBM-native-cat **closed and reversed**
+  (embedded 0.0928, constant 0.0944 vs lgb native-cat 0.0948);
+  house_sales neutral; adult −0.5-0.7% from high-cardinality overfit —
+  `min_data_per_group` / `max_cat_threshold` guards are the named follow-up
+- router_extraction still rejects external `==` splits (mapping them onto
+  `left_categories` is now possible — open item)
+
 ## v0.1 — robustness
 
 - ~~Early stopping on eval sets~~ done in Phase 1a

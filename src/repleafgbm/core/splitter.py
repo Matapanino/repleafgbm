@@ -23,6 +23,10 @@ class Splitter:
         min_samples_leaf: Minimum rows per child.
         l2: L2 term used in the Newton gain formula.
         backend: Split-search kernel (defaults to NumPy).
+        categorical_indices: Columns holding ordinal category codes. They get
+            one bin per category and gradient-sorted *subset* splits instead
+            of ordered thresholds. Features with more than ``max_bins``
+            categories silently fall back to the ordered treatment.
     """
 
     def __init__(
@@ -32,16 +36,35 @@ class Splitter:
         min_samples_leaf: int = 1,
         l2: float = 1.0,
         backend: BaseSplitBackend | None = None,
+        categorical_indices: list[int] | None = None,
     ) -> None:
         self.min_samples_leaf = min_samples_leaf
         self.l2 = l2
         self.backend = backend or NumPySplitBackend()
-        self.thresholds = compute_bin_thresholds(X_raw, max_bins=max_bins)
-        self.binned = bin_features(X_raw, self.thresholds)
-        # Non-missing bin count per feature: len(thresholds) + 1.
+        n_features = X_raw.shape[1]
+        self.is_categorical = np.zeros(n_features, dtype=bool)
+        for f in categorical_indices or []:
+            col = X_raw[:, f]
+            valid = col[~np.isnan(col)]
+            if valid.size and int(valid.max()) + 1 <= max_bins:
+                self.is_categorical[f] = True
+
+        # Numerical features: quantile thresholds. Categorical features:
+        # the ordinal code *is* the bin (empty threshold list).
+        numeric_X = X_raw.copy()
+        numeric_X[:, self.is_categorical] = np.nan  # skip quantile work
+        self.thresholds = compute_bin_thresholds(numeric_X, max_bins=max_bins)
+        self.binned = bin_features(numeric_X, self.thresholds)
         self.n_bins_per_feature = np.array(
             [len(t) + 1 for t in self.thresholds], dtype=np.int64
         )
+        for f in np.flatnonzero(self.is_categorical):
+            col = X_raw[:, f]
+            n_cats = int(np.nanmax(col)) + 1
+            codes = np.where(np.isnan(col), n_cats, col).astype(np.uint16)
+            self.binned[:, f] = codes  # missing -> bin n_cats
+            self.n_bins_per_feature[f] = n_cats
+            self.thresholds[f] = np.empty(0, dtype=np.float64)
         # Shared histogram width: widest feature's bins + its missing bin.
         self.n_bins_max = int(self.n_bins_per_feature.max()) + 1
 
@@ -55,7 +78,11 @@ class Splitter:
 
     def find_best_split(self, hist: np.ndarray) -> SplitCandidate | None:
         return self.backend.find_best_split(
-            hist, self.n_bins_per_feature, self.min_samples_leaf, self.l2
+            hist,
+            self.n_bins_per_feature,
+            self.min_samples_leaf,
+            self.l2,
+            categorical_mask=self.is_categorical,
         )
 
     def threshold_value(self, split: SplitCandidate) -> float:
@@ -66,5 +93,9 @@ class Splitter:
         """Partition rows into (left, right); missing values go left."""
         b = self.binned[rows, split.feature]
         missing_bin = int(self.n_bins_per_feature[split.feature])
-        go_left = (b <= split.bin) | (b == missing_bin)
+        if split.left_categories is not None:
+            # Categorical bins are the ordinal codes themselves.
+            go_left = np.isin(b, split.left_categories) | (b == missing_bin)
+        else:
+            go_left = (b <= split.bin) | (b == missing_bin)
         return rows[go_left], rows[~go_left]

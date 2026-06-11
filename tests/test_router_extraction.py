@@ -183,7 +183,7 @@ def test_save_load_roundtrip_without_lightgbm_dependency(tmp_path, nan_regressio
     config = json.loads((tmp_path / "m" / "model_config.json").read_text())
     assert config["config"]["base"] is None
     assert config["config"]["base_provenance"]["task"] == "regression"
-    assert config["format_version"] == 2
+    assert config["format_version"] == 3
 
 
 def test_classifier_fit_predict(classification_data):
