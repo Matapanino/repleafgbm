@@ -221,7 +221,10 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         A[:, np.arange(emb_dim), np.arange(emb_dim)] += self.l2
 
         try:
-            w = np.linalg.solve(A, rhs)
+            # rhs as (k, d, 1): NumPy 2.0 treats a 2-D b as a matrix, not a
+            # stack of vectors, so the explicit trailing axis is required for
+            # batched vector solves on both NumPy 1.x and 2.x.
+            w = np.linalg.solve(A, rhs[:, :, None])[:, :, 0]
         except np.linalg.LinAlgError:
             # Rare: some leaf's system is exactly singular. Solve one by one
             # so only the degenerate leaves fall back to constants.
