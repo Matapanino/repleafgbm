@@ -39,13 +39,19 @@ def infer_metadata(
     string (e.g. "3") or the array of names is supplied elsewhere.
     """
     if _is_dataframe(X):
+        from pandas.api.types import is_bool_dtype, is_object_dtype, is_string_dtype
+
         feature_names = [str(c) for c in X.columns]
         if categorical_features is None:
+            # is_string_dtype covers pandas >= 3 where plain string columns
+            # are "str"/"string" dtype instead of object.
             categorical_features = [
                 str(c)
                 for c in X.columns
-                if X[c].dtype == object
-                or str(X[c].dtype) in ("category", "bool", "boolean")
+                if is_object_dtype(X[c])
+                or is_string_dtype(X[c])
+                or is_bool_dtype(X[c])
+                or str(X[c].dtype) == "category"
             ]
         else:
             categorical_features = [str(c) for c in categorical_features]
@@ -135,6 +141,9 @@ def _is_missing(v: Any) -> bool:
     if v is None:
         return True
     try:
-        return bool(np.isnan(v))
+        import pandas as pd
+
+        # pd.isna handles NaN, pd.NA (pandas >= 3 string dtype), and NaT.
+        return bool(pd.isna(v))
     except (TypeError, ValueError):
         return False

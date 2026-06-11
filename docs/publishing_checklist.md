@@ -17,14 +17,12 @@ decision or a GitHub-side action that cannot be done from this repo alone.
       serialization / backend strategy / categorical policy / ADRs /
       experiment reports
 
-## Before pushing ☐
+## Before pushing ✅ (done 2026-06-11, Phase 9)
 
-- [ ] Decide the GitHub org/user and repo name; update
-      `[project.urls] Homepage` in pyproject.toml (currently a placeholder:
-      `github.com/repleafgbm/repleafgbm`)
-- [ ] Decide author attribution in pyproject (`authors = [...]`, currently
-      "RepLeafGBM contributors") and LICENSE copyright line
-- [ ] `git remote add origin … && git push -u origin main`
+- [x] Repo: `Matapanino/repleafgbm` (public); pyproject Homepage/Repository
+      URLs updated
+- [x] Author attribution: Masaya Kawamata in pyproject and LICENSE
+- [x] Pushed via `gh repo create … --source . --push`
 
 ## After the first push ☐
 
