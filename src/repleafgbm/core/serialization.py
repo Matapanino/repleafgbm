@@ -23,27 +23,31 @@ import numpy as np
 
 from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.leaf_models import LeafValues
-from repleafgbm.core.objectives import get_objective
+from repleafgbm.core.multiclass import MulticlassBooster
+from repleafgbm.core.objectives import MulticlassSoftmax, get_objective
 from repleafgbm.core.tree import Tree
 from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.encoders import encoder_from_config
 from repleafgbm.encoders.base import BaseEncoder
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 #: Older versions this build can still read. v1 lacks per-node
 #: ``missing_left`` (defaulted to True, the convention those trees used);
 #: v2 lacks categorical subset splits (``left_categories``), which v1/v2
 #: trees never contained; v4 adds optional ``frequency_maps`` to
 #: feature_metadata.json (written only when frequency encoding is used, so
-#: ordinal-only models stay readable by v3 builds).
-READABLE_VERSIONS = (1, 2, 3, 4)
+#: ordinal-only models stay readable by v3 builds); v5 adds multiclass
+#: ensembles (``n_classes`` + vector ``init_score`` in tree_ensemble.json,
+#: written only for multiclass models — binary/regression models keep
+#: writing v3/v4).
+READABLE_VERSIONS = (1, 2, 3, 4, 5)
 
 
 def save_model_dir(
     path: str | Path,
     model_class: str,
     config: dict,
-    booster: Booster,
+    booster: Booster | MulticlassBooster,
     encoder: BaseEncoder | None,
     metadata: FeatureMetadata,
 ) -> None:
@@ -51,10 +55,18 @@ def save_model_dir(
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
+    multiclass = isinstance(booster, MulticlassBooster)
+    # Each schema addition bumps the written version only for models that
+    # use it, so unaffected models stay readable by older builds:
+    # multiclass -> 5, frequency maps -> 4, everything else -> 3.
+    if multiclass:
+        version = 5
+    elif metadata.frequency_maps:
+        version = 4
+    else:
+        version = 3
     model_config = {
-        # frequency_maps is the only v4 schema addition; models that don't
-        # use it keep writing v3 so older builds can still read them.
-        "format_version": FORMAT_VERSION if metadata.frequency_maps else 3,
+        "format_version": version,
         "model_class": model_class,
         "objective": booster.objective.name,
         "config": config,
@@ -62,12 +74,16 @@ def save_model_dir(
     _dump_json(path / "model_config.json", model_config)
 
     ensemble = {
-        "init_score": booster.init_score_,
+        "init_score": (
+            booster.init_score_.tolist() if multiclass else booster.init_score_
+        ),
         "learning_rate": booster.params.learning_rate,
         "best_iteration": booster.best_iteration_,
         "best_score": booster.best_score_,
         "trees": [t.to_dict() for t in booster.trees_],
     }
+    if multiclass:
+        ensemble["n_classes"] = booster.n_classes
     _dump_json(path / "tree_ensemble.json", ensemble)
 
     leaf_arrays: dict[str, np.ndarray] = {}
@@ -129,8 +145,13 @@ def load_model_dir(path: str | Path) -> dict:
         l2_leaf=config.get("l2_leaf", defaults.l2_leaf),
         max_bins=config.get("max_bins", defaults.max_bins),
     )
-    booster = Booster(params, get_objective(model_config["objective"]))
-    booster.init_score_ = float(ensemble["init_score"])
+    if "n_classes" in ensemble:  # multiclass ensemble (format v5)
+        objective = MulticlassSoftmax(int(ensemble["n_classes"]))
+        booster: Booster | MulticlassBooster = MulticlassBooster(params, objective)
+        booster.init_score_ = np.asarray(ensemble["init_score"], dtype=np.float64)
+    else:
+        booster = Booster(params, get_objective(model_config["objective"]))
+        booster.init_score_ = float(ensemble["init_score"])
     booster.best_iteration_ = ensemble.get("best_iteration")
     booster.best_score_ = ensemble.get("best_score")
     booster.trees_ = [Tree.from_dict(d) for d in ensemble["trees"]]
@@ -207,7 +228,7 @@ def _require_keys(obj: dict, keys: tuple[str, ...], file_name: str) -> None:
         )
 
 
-def _validate_leaf_values(booster: Booster) -> None:
+def _validate_leaf_values(booster: Booster | MulticlassBooster) -> None:
     """Cross-check leaf parameter arrays against the routing trees."""
     for i, (tree, lv) in enumerate(zip(booster.trees_, booster.leaf_values_)):
         if lv.bias.ndim != 1 or lv.weights.ndim != 2:

@@ -66,6 +66,46 @@ class BinaryLogistic(BaseObjective):
         return _sigmoid(raw_pred)
 
 
+class MulticlassSoftmax:
+    """Softmax cross-entropy for K-class classification on labels 0..K-1.
+
+    The vector-valued counterpart of :class:`BaseObjective`: raw scores are
+    (n_rows, n_classes) matrices, one column per class. Gradients use the
+    diagonal Hessian approximation standard in GBDTs (LightGBM/XGBoost):
+    g_k = p_k - 1{y=k}, h_k = p_k * (1 - p_k). Consumed by
+    :class:`~repleafgbm.core.multiclass.MulticlassBooster`, which grows one
+    tree per class per boosting round on these per-class statistics.
+    """
+
+    name = "multiclass_softmax"
+
+    def __init__(self, n_classes: int) -> None:
+        if n_classes < 3:
+            raise ValueError(
+                f"MulticlassSoftmax requires n_classes >= 3, got {n_classes}; "
+                "use binary_logistic for two classes"
+            )
+        self.n_classes = n_classes
+
+    def init_score(self, y: np.ndarray) -> np.ndarray:
+        """Log class priors, shape (n_classes,). Softmax-invariant shift aside,
+        this is the optimal constant score matrix."""
+        counts = np.bincount(y.astype(np.int64), minlength=self.n_classes)
+        priors = np.clip(counts / y.shape[0], 1e-12, None)
+        return np.log(priors)
+
+    def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-row, per-class gradient and Hessian, both (n_rows, n_classes)."""
+        p = _softmax(raw_pred)
+        grad = p.copy()
+        grad[np.arange(y.shape[0]), y.astype(np.int64)] -= 1.0
+        hess = np.maximum(p * (1.0 - p), 1e-12)
+        return grad, hess
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray:
+        return _softmax(raw_pred)
+
+
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     out = np.empty_like(x)
     pos = x >= 0
@@ -73,6 +113,13 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     ex = np.exp(x[~pos])
     out[~pos] = ex / (1.0 + ex)
     return out
+
+
+def _softmax(x: np.ndarray) -> np.ndarray:
+    """Row-wise stable softmax for (n_rows, n_classes) score matrices."""
+    z = x - x.max(axis=1, keepdims=True)
+    ez = np.exp(z)
+    return ez / ez.sum(axis=1, keepdims=True)
 
 
 _OBJECTIVE_REGISTRY: dict[str, type[BaseObjective]] = {

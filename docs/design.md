@@ -142,6 +142,18 @@ targets (docs/math.md). Overfitting guards, all implemented:
   a UserWarning fires when it engages; it remains as an OOM/cost guard, not
   an accuracy feature.
 
+## Multiclass training
+
+Targets with three or more classes use softmax boosting with one tree per
+class per round (`core/multiclass.py`): the per-round softmax
+gradients/Hessians are computed once on the (n_rows, n_classes) score
+matrix, then class k's tree is grown on column k with the same splitter,
+grower, and Newton-target leaf models as scalar training. The loop is a
+deliberate mirror of `Booster._run_boosting` rather than a generalization of
+it, keeping the scalar boosting loop readable. Trees are stored round-major
+in a flat list so serialization and feature importance reuse the per-tree
+code paths; `best_iteration_` counts rounds.
+
 ## Dataset abstraction
 
 `RepLeafDataset` (docs/dataset_and_memory.md) holds the encoded raw matrix,

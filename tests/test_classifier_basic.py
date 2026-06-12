@@ -1,7 +1,6 @@
 """End-to-end binary classification tests."""
 
 import numpy as np
-import pytest
 
 from repleafgbm import RepLeafClassifier
 
@@ -38,8 +37,11 @@ def test_string_labels(classification_data):
     assert (pred == labels[yte]).mean() > 0.8
 
 
-def test_multiclass_rejected():
-    X = np.random.default_rng(0).normal(size=(30, 2))
-    y = np.arange(30) % 3
-    with pytest.raises(ValueError, match="binary"):
-        RepLeafClassifier().fit(X, y)
+def test_three_classes_use_multiclass_booster():
+    # Multiclass targets are no longer rejected: 3+ classes switch to
+    # softmax boosting (full coverage in tests/test_multiclass.py).
+    X = np.random.default_rng(0).normal(size=(60, 2))
+    y = np.arange(60) % 3
+    model = RepLeafClassifier(n_estimators=2, num_leaves=4).fit(X, y)
+    assert model.n_classes_ == 3
+    assert model.predict_proba(X).shape == (60, 3)

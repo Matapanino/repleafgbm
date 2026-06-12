@@ -41,13 +41,29 @@ class LogLoss(BaseMetric):
         return float(-np.mean(y_true * np.log(p) + (1 - y_true) * np.log(1 - p)))
 
 
+class MultiLogLoss(BaseMetric):
+    """Softmax cross-entropy: y_pred is an (n_rows, n_classes) probability
+    matrix, y_true holds integer class indices."""
+
+    name = "multi_logloss"
+
+    def __call__(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        rows = np.arange(y_true.shape[0])
+        p = np.clip(y_pred[rows, y_true.astype(np.int64)], 1e-12, 1.0)
+        return float(-np.mean(np.log(p)))
+
+
 class Accuracy(BaseMetric):
-    """Accuracy at a 0.5 probability threshold (y_pred are probabilities)."""
+    """Accuracy. Binary: y_pred are probabilities, thresholded at 0.5.
+    Multiclass: y_pred is an (n_rows, n_classes) probability matrix and
+    y_true holds integer class indices (argmax prediction)."""
 
     name = "accuracy"
     minimize = False
 
     def __call__(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        if y_pred.ndim == 2:
+            return float(np.mean(np.argmax(y_pred, axis=1) == y_true))
         return float(np.mean((y_pred >= 0.5) == (y_true == 1)))
 
 
@@ -113,6 +129,7 @@ _METRIC_REGISTRY: dict[str, type[BaseMetric]] = {
     RMSE.name: RMSE,
     MAE.name: MAE,
     LogLoss.name: LogLoss,
+    MultiLogLoss.name: MultiLogLoss,
     Accuracy.name: Accuracy,
     AUC.name: AUC,
 }

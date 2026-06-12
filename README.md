@@ -109,10 +109,12 @@ Implemented:
   others are specialists for known smooth/oscillatory or interaction
   structure (see docs for guidance). Random projection down to
   `max_leaf_emb_dim` as an emergency cap
-- Regression (squared error) and binary classification (logistic)
+- Regression (squared error), binary classification (logistic), and
+  multiclass classification (softmax, one tree per class per round —
+  automatic at 3+ classes)
 - Early stopping (`early_stopping_rounds`, `best_iteration_`, prediction at
-  the best iteration) and eval metrics: rmse, mae, logloss, auc, accuracy,
-  or any user-supplied callable (`repleafgbm.make_metric`)
+  the best iteration) and eval metrics: rmse, mae, logloss, multi_logloss,
+  auc, accuracy, or any user-supplied callable (`repleafgbm.make_metric`)
 - Feature importance (`feature_importances_`, gain or split count)
 - `RepLeafDataset` with pandas/categorical support (native subset splits,
   `pandas.Categorical` order fidelity, opt-in frequency encoding) and
@@ -128,7 +130,7 @@ Implemented:
 - pytest suite, runnable examples, and an `experiments/` research scaffold
 
 Not implemented (see [docs/roadmap.md](docs/roadmap.md)): encoder updates
-during boosting, multiclass, XGBoost/CatBoost external models,
+during boosting, multi-output regression, XGBoost/CatBoost external models,
 GPU/distributed training.
 
 ## Installation (development)
@@ -148,6 +150,7 @@ bash scripts/check.sh               # lint + tests + all examples
 python -m pytest tests/ -q          # PYTHONPATH=src if not installed
 python examples/regression_basic.py
 python examples/binary_classification_basic.py
+python examples/multiclass_classification_basic.py
 python examples/dataset_api_basic.py
 ```
 

@@ -9,7 +9,7 @@
 - Stay diff-able and inspectable where possible (JSON for structure, npz for
   numeric payloads).
 
-## Directory layout (format_version = 3 / 4)
+## Directory layout (format_version = 3 / 4 / 5)
 
 ```text
 model_dir/
@@ -38,7 +38,10 @@ What each file owns:
   resolved at save time), so prediction does not need the training-time
   binning. The stored `learning_rate` here is authoritative for prediction
   (model classes such as RouterExtractionRegressor have no learning-rate
-  hyperparameter of their own).
+  hyperparameter of their own). Multiclass ensembles (v5) additionally store
+  `n_classes` and a per-class `init_score` list; trees are round-major
+  (round r, class k at index `r * n_classes + k`) and `best_iteration`
+  counts rounds.
 - **leaf_params.npz** — leaf biases and weight matrices. Constant leaves are
   zero-width weight rows, so one schema covers all leaf models. Linear-leaf
   models additionally store `tree_{i}_zmin` / `tree_{i}_zmax` (per-leaf
@@ -77,14 +80,17 @@ inside prediction, with the offending file named in the error:
 
 - `format_version` increments on any breaking layout change.
 - Loaders reject unknown versions rather than guessing.
-- Supported read versions: **1, 2, 3, and 4**. v1 directories lack
+- Supported read versions: **1 through 5**. v1 directories lack
   `missing_left` (loaded with the all-True default those trees were trained
   under, covered by `test_format_v1_compat`); v1/v2 lack `left_categories`
   (categorical subset splits, v3; covered by `test_format_v2_compat`);
   v4 adds optional `frequency_maps` to feature_metadata.json and is only
   written when frequency encoding is used (covered by
   `test_frequency_encoded_roundtrip_is_version_4` /
-  `test_ordinal_models_stay_version_3`).
+  `test_ordinal_models_stay_version_3`); v5 adds multiclass ensembles
+  (`n_classes` + vector `init_score`) and is only written for multiclass
+  models (covered by `test_multiclass_models_write_format_v5` /
+  `test_binary_models_keep_format_v3`).
 - Custom (callable) eval metrics are stored by name only; a reloaded model
   must be handed the metric object again before refitting with eval sets.
 

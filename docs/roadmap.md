@@ -265,9 +265,30 @@ Everything below v0 is a plan, not a promise of API stability.
 - Open: categorical subset splits, joint post-hoc leaf polish (ADR 0002
   option B)
 
+## Phase 17 — multiclass classification ✅ (2026-06-12)
+
+- `MulticlassSoftmax` objective (diagonal-Hessian softmax, log-prior init)
+  + `MulticlassBooster` (core/multiclass.py): one tree per class per round,
+  mirroring the scalar boosting loop lifted to (n_rows, K) score matrices;
+  every class reuses the same frozen embedding matrix and the unchanged
+  Newton-target leaf machinery (constant and embedded_linear both work)
+- `RepLeafClassifier` switches automatically at 3+ classes (binary path
+  unchanged, including the p >= 0.5 tie rule); `n_estimators` counts rounds;
+  `multi_logloss` metric (default monitor), `accuracy` extended to
+  probability matrices; early stopping counts rounds
+- Serialization format v5 (`n_classes` + vector `init_score`,
+  round-major trees) — written only by multiclass models, so
+  binary/regression models keep v3/v4 readable by older builds
+- Learned-encoder supervised pretraining stays scalar-target: multiclass
+  encoders fit unsupervised (documented in classifier/_pretrain_target)
+- Tests (tests/test_multiclass.py), example
+  (examples/multiclass_classification_basic.py), math.md softmax section
+
 ## v1.5 — outputs and objectives
 
-- Multiclass classification (softmax; vector-leaf style output)
+- ~~Multiclass classification (softmax)~~ done in Phase 17 (one tree per
+  class per round; a shared-routing vector-leaf variant remains a research
+  idea)
 - Vector leaves (multi-output regression)
 - Improved objectives (Huber, quantile, Poisson), label smoothing
 

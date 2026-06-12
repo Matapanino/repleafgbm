@@ -1,7 +1,9 @@
-"""RepLeafClassifier: sklearn-compatible binary classifier.
+"""RepLeafClassifier: sklearn-compatible binary and multiclass classifier.
 
-v0 supports binary classification only; multiclass is on the roadmap
-(vector-leaf / one-vs-rest designs are discussed in docs/roadmap.md).
+Binary targets use the logistic objective (one tree per round). Targets with
+three or more classes automatically use softmax boosting with one tree per
+class per round (:mod:`repleafgbm.core.multiclass`); the routing/leaf-model
+machinery and the frozen-encoder rule are identical in both modes.
 """
 
 from __future__ import annotations
@@ -12,15 +14,22 @@ from typing import Any
 import numpy as np
 from sklearn.base import ClassifierMixin
 
-from repleafgbm.core.objectives import _sigmoid
+from repleafgbm.core.booster import Booster, BoosterParams
+from repleafgbm.core.metrics import BaseMetric, get_metric
+from repleafgbm.core.multiclass import MulticlassBooster
+from repleafgbm.core.objectives import MulticlassSoftmax, _sigmoid, _softmax
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.sklearn import BaseRepLeafModel
 
 
 class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
-    """Binary gradient boosting classifier with representation-conditioned leaves.
+    """Gradient boosting classifier with representation-conditioned leaves.
 
-    Logistic objective on labels mapped to {0, 1}. See
+    Two classes: logistic objective on labels mapped to {0, 1}. Three or
+    more classes: softmax objective, one tree per class per boosting round
+    (``n_estimators`` counts rounds, so the ensemble holds
+    ``n_estimators * n_classes`` trees). The default ``eval_metric`` is
+    "logloss" for binary and "multi_logloss" for multiclass. See
     :class:`~repleafgbm.sklearn.BaseRepLeafModel` for hyperparameters.
     """
 
@@ -32,35 +41,61 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
             raise ValueError("Training data must include a target (y)")
         classes = np.unique(dataset.y)
         if is_train:
-            if classes.shape[0] != 2:
+            if classes.shape[0] < 2:
                 raise ValueError(
-                    f"RepLeafClassifier supports binary targets in v0; "
-                    f"got {classes.shape[0]} classes"
+                    f"RepLeafClassifier needs at least 2 classes; got {classes.shape[0]}"
                 )
             self.classes_ = classes
         unknown = np.setdiff1d(classes, self.classes_)
         if unknown.size:
             raise ValueError(f"eval_set contains labels {unknown} not seen in training")
-        y01 = (dataset.y == self.classes_[1]).astype(np.float64)
+        if self.classes_.shape[0] == 2:
+            y_enc = (dataset.y == self.classes_[1]).astype(np.float64)
+        else:
+            # classes_ is sorted (np.unique), so searchsorted is the code map.
+            y_enc = np.searchsorted(self.classes_, dataset.y).astype(np.float64)
         # Shallow copy: share the encoded feature matrix, replace the target.
         remapped = copy.copy(dataset)
-        remapped.y = y01
+        remapped.y = y_enc
         return remapped
 
+    @property
+    def n_classes_(self) -> int:
+        return int(self.classes_.shape[0])
+
+    def _make_booster(self, params: BoosterParams) -> Booster | MulticlassBooster:
+        if self.n_classes_ > 2:
+            return MulticlassBooster(params, MulticlassSoftmax(self.n_classes_))
+        return super()._make_booster(params)
+
+    def _resolve_eval_metric(self) -> BaseMetric:
+        if self.eval_metric is None and self.n_classes_ > 2:
+            return get_metric("multi_logloss")
+        return super()._resolve_eval_metric()
+
+    def _pretrain_target(self, dataset: RepLeafDataset) -> np.ndarray | None:
+        # The multiclass Newton residual is an (n_rows, n_classes) matrix;
+        # learned-encoder pretraining targets are scalar for now, so
+        # multiclass encoders fit unsupervised (identity/plr are unaffected).
+        if self.n_classes_ > 2:
+            return None
+        return super()._pretrain_target(dataset)
+
     def predict_proba(self, X: Any) -> np.ndarray:
-        """Class probabilities of shape (n_rows, 2), columns ordered by classes_."""
-        p1 = self._sigmoid_predict(X)
+        """Class probabilities of shape (n_rows, n_classes), columns ordered
+        by ``classes_``."""
+        raw = self._predict_raw(X)
+        if raw.ndim == 2:
+            return _softmax(raw)
+        p1 = _sigmoid(raw)
         return np.column_stack([1.0 - p1, p1])
 
     def predict(self, X: Any) -> np.ndarray:
         """Predicted class labels."""
-        p1 = self._sigmoid_predict(X)
-        return self.classes_[(p1 >= 0.5).astype(int)]
-
-    def _sigmoid_predict(self, X: Any) -> np.ndarray:
-        raw = self._predict_raw(X)
-        # Numerically stable sigmoid (no overflow for large |raw|).
-        return _sigmoid(raw)
+        proba = self.predict_proba(X)
+        if self.n_classes_ == 2:  # keep the historical p >= 0.5 tie rule
+            return self.classes_[(proba[:, 1] >= 0.5).astype(int)]
+        return self.classes_[np.argmax(proba, axis=1)]
 
     def _extra_config(self) -> dict:
         return {"classes_": self.classes_.tolist()}

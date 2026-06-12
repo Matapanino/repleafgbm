@@ -36,3 +36,27 @@ def predict_raw(
         leaf_idx = tree.apply(X_raw)
         out += learning_rate * lv.predict(leaf_idx, Z)
     return out
+
+
+def predict_raw_multiclass(
+    trees: list[Tree],
+    leaf_values: list[LeafValues],
+    init_scores: np.ndarray,
+    learning_rate: float,
+    X_raw: np.ndarray,
+    Z: np.ndarray | None,
+    n_classes: int,
+    n_rounds: int | None = None,
+) -> np.ndarray:
+    """Raw score matrix (n_rows, n_classes) for the K-trees-per-round ensemble.
+
+    Trees are stored round-major: round r, class k at index
+    ``r * n_classes + k`` (see core/multiclass.py).
+    """
+    n_rows = X_raw.shape[0]
+    out = np.tile(np.asarray(init_scores, dtype=np.float64), (n_rows, 1))
+    n_trees = len(trees) if n_rounds is None else n_rounds * n_classes
+    for i, (tree, lv) in enumerate(zip(trees[:n_trees], leaf_values[:n_trees])):
+        leaf_idx = tree.apply(X_raw)
+        out[:, i % n_classes] += learning_rate * lv.predict(leaf_idx, Z)
+    return out

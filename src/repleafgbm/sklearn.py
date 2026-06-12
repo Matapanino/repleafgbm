@@ -180,7 +180,7 @@ class BaseRepLeafModel(BaseEstimator):
             split_backend=self.split_backend,
             early_stopping_rounds=self.early_stopping_rounds,
         )
-        self.booster_ = Booster(params, get_objective(self._objective_name))
+        self.booster_ = self._make_booster(params)
         self.booster_.fit(
             dataset,
             self.encoder_,
@@ -218,6 +218,11 @@ class BaseRepLeafModel(BaseEstimator):
         """Eval metric value at ``best_iteration_`` (None if unused/unfitted)."""
         booster = getattr(self, "booster_", None)
         return None if booster is None else booster.best_score_
+
+    def _make_booster(self, params: BoosterParams) -> Booster:
+        """Hook: the classifier overrides this to return a
+        :class:`~repleafgbm.core.multiclass.MulticlassBooster` for 3+ classes."""
+        return Booster(params, get_objective(self._objective_name))
 
     def _resolve_eval_metric(self) -> BaseMetric:
         """Accept a metric name, BaseMetric instance, or plain callable."""
@@ -286,14 +291,8 @@ class BaseRepLeafModel(BaseEstimator):
                 f"leaf_model={self.leaf_model!r} requires at least one numerical "
                 "feature; use leaf_model='constant' for all-categorical data"
             )
-        # Supervised pretraining target for learned encoders: the Newton
-        # residual at the initial score (y - mean for regression,
-        # y - sigmoid(F0) for binary). Unlearned encoders ignore it. The
-        # encoder is fitted once here and frozen for all of boosting.
-        objective = get_objective(self._objective_name)
-        f0 = np.full(dataset.n_rows, objective.init_score(dataset.y))
-        grad0, _ = objective.grad_hess(dataset.y, f0)
-        encoder.fit(X_num, y=-grad0)
+        # The encoder is fitted once here and frozen for all of boosting.
+        encoder.fit(X_num, y=self._pretrain_target(dataset))
         if encoder.output_dim > self.max_leaf_emb_dim:
             warnings.warn(
                 f"Encoder output dimension ({encoder.output_dim}) exceeds "
@@ -309,6 +308,17 @@ class BaseRepLeafModel(BaseEstimator):
                 encoder, out_dim=self.max_leaf_emb_dim, random_state=self.random_state
             ).fit(X_num)
         return encoder
+
+    def _pretrain_target(self, dataset: RepLeafDataset) -> np.ndarray | None:
+        """Supervised pretraining target for learned encoders: the Newton
+        residual at the initial score (y - mean for regression, y - sigmoid(F0)
+        for binary). Unlearned encoders ignore it. The classifier overrides
+        this to return None for multiclass targets (the residual is a matrix
+        there; learned-encoder pretraining stays scalar-target for now)."""
+        objective = get_objective(self._objective_name)
+        f0 = np.full(dataset.n_rows, objective.init_score(dataset.y))
+        grad0, _ = objective.grad_hess(dataset.y, f0)
+        return -grad0
 
     # ------------------------------------------------------------------ #
     # Prediction
@@ -381,11 +391,20 @@ class BaseRepLeafModel(BaseEstimator):
         self._check_is_fitted()
         booster = self.booster_
         n_trees = len(booster.trees_)
-        n_used = booster.best_iteration_ or n_trees
         md = self.metadata_
 
         lines = [f"{type(self).__name__} (objective: {booster.objective.name})"]
-        used = f"trees: {n_trees} grown, {n_used} used for prediction"
+        n_classes = getattr(booster, "n_classes", None)
+        if n_classes is not None:  # multiclass: best_iteration_ counts rounds
+            n_rounds = n_trees // n_classes
+            used_rounds = booster.best_iteration_ or n_rounds
+            used = (
+                f"trees: {n_trees} grown ({n_rounds} rounds x {n_classes} "
+                f"classes), {used_rounds * n_classes} used for prediction"
+            )
+        else:
+            n_used = booster.best_iteration_ or n_trees
+            used = f"trees: {n_trees} grown, {n_used} used for prediction"
         if booster.best_iteration_ is not None:
             used += f" (early stopping, best_score={booster.best_score_:.6g})"
         lines.append(used)

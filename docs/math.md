@@ -101,6 +101,21 @@ F_0 = log( p_bar / (1 - p_bar) )
 
 Output transform: sigmoid. Hessians are floored at 1e-12 for stability.
 
+**Multiclass classification (softmax).** Labels mapped to {0, ..., K-1},
+`p_k = softmax(F)_k` over per-class raw scores `F in R^K`:
+
+```text
+L = -log p_y,   g_k = p_k - 1{y=k},   h_k = p_k (1 - p_k)
+F_0,k = log(prior_k)
+```
+
+`h_k` is the diagonal of the true softmax Hessian (`diag(p) - p p^T`) — the
+standard GBDT approximation (LightGBM/XGBoost). Each round grows one tree
+per class on column `k` of (g, h); each class's tree is fitted with exactly
+the scalar Newton-target machinery above, so leaves (constant or linear over
+`z_theta(x)`) carry over unchanged. Output transform: row-wise softmax.
+Hessians are floored at 1e-12.
+
 ## Why encoder updates break stage-wise assumptions
 
 The ensemble after `T` rounds is
