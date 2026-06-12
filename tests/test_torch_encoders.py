@@ -10,7 +10,12 @@ import numpy as np
 import pytest
 
 from repleafgbm import RepLeafRegressor
-from repleafgbm.encoders import TorchPeriodicEncoder, TorchPLREncoder, make_encoder
+from repleafgbm.encoders import (
+    TorchMLPEncoder,
+    TorchPeriodicEncoder,
+    TorchPLREncoder,
+    make_encoder,
+)
 
 
 def _linear_probe_mse(Z: np.ndarray, target: np.ndarray, l2: float = 1e-3) -> float:
@@ -143,3 +148,68 @@ def test_regularization_params_serialized(periodic_problem):
     fresh = make_encoder(enc.name, **cfg)
     fresh.set_state(enc.get_state())
     np.testing.assert_allclose(enc.transform(X), fresh.transform(X))
+
+
+# --------------------------------------------------------------------- #
+# torch_mlp (Phase 16, interaction-aware)
+# --------------------------------------------------------------------- #
+@pytest.fixture
+def interaction_problem():
+    """Target dominated by a product term no per-feature transform can see."""
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(2000, 4))
+    y = 2.0 * X[:, 0] * X[:, 1] + 0.5 * X[:, 2] + rng.normal(0.0, 0.05, 2000)
+    return X, y
+
+
+def test_torch_mlp_learns_interaction(interaction_problem):
+    X, y = interaction_problem
+    learned = TorchMLPEncoder(n_epochs=40, random_state=0).fit(X, y=y - y.mean())
+    frozen = TorchMLPEncoder(random_state=0).fit(X)  # random init, no target
+    mse_learned = _linear_probe_mse(learned.transform(X), y)
+    mse_frozen = _linear_probe_mse(frozen.transform(X), y)
+    assert mse_learned < 0.5 * mse_frozen
+    assert learned.pretrain_epochs_used_ is not None
+    assert learned.output_dim == 4 + 16
+
+
+def test_torch_mlp_unsupervised_fit_needs_no_torch(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", None)
+    X = np.random.default_rng(0).normal(size=(50, 3))
+    enc = TorchMLPEncoder(hidden_dim=8, out_dim=4).fit(X)
+    assert enc.transform(X).shape == (50, 3 + 4)
+
+
+def test_torch_mlp_transform_is_numpy_only(interaction_problem, monkeypatch):
+    X, y = interaction_problem
+    enc = TorchMLPEncoder(n_epochs=3, random_state=0).fit(X, y=y)
+    state, config = enc.get_state(), enc.get_config()
+    assert all(isinstance(v, np.ndarray) for v in state.values())
+
+    monkeypatch.setitem(sys.modules, "torch", None)
+    fresh = make_encoder("torch_mlp", **config)
+    fresh.set_state(state)
+    np.testing.assert_allclose(fresh.transform(X), enc.transform(X))
+
+
+def test_torch_mlp_determinism(interaction_problem):
+    X, y = interaction_problem
+    e1 = TorchMLPEncoder(n_epochs=5, random_state=7).fit(X, y=y)
+    e2 = TorchMLPEncoder(n_epochs=5, random_state=7).fit(X, y=y)
+    np.testing.assert_array_equal(e1.w1_, e2.w1_)
+    np.testing.assert_array_equal(e1.w2_, e2.w2_)
+
+
+def test_torch_mlp_end_to_end_and_roundtrip(tmp_path, interaction_problem):
+    X, y = interaction_problem
+    model = RepLeafRegressor(
+        n_estimators=20, num_leaves=8, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_mlp",
+        encoder_params={"n_epochs": 10}, max_leaf_emb_dim=32, random_state=42,
+    )
+    model.fit(X, y)
+    pred = model.predict(X)
+
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    np.testing.assert_allclose(loaded.predict(X), pred)

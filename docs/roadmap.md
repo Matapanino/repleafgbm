@@ -166,6 +166,27 @@ Everything below v0 is a plan, not a promise of API stability.
 - The remaining encoder direction on real data is interaction-aware
   features (cross-feature blocks)
 
+## Phase 16 — interaction-aware encoders ✅ (2026-06-12, negative on real data)
+
+- Two new encoders close the interaction hypothesis Phase 14 left open:
+  `cross` (deterministic: standardized features + 16 residual-correlated
+  pairwise products, NumPy-only) and `torch_mlp` (learned: 64-hidden /
+  16-output MLP + linear passthrough, Phase 14b-regularized pretraining,
+  frozen to NumPy)
+- Result (experiments/results/encoder_interactions.md): on the
+  `interaction_mix` home turf both decisively beat `identity` (cross
+  0.4598, torch_mlp 0.5367 vs 0.6147) — leaves *can* carry cross-feature
+  structure. On real data identity stays best 4/4; torch_mlp shows the
+  Phase 14 overfit signature even with early stopping engaging, and
+  cross's full-train pair selection is unstable (diamonds outlier)
+- Verdict: per-feature (13/14/14b) and cross-feature (16) learned
+  representations are both already served by the router on typical real
+  tabular targets. `identity` remains the default; learned encoders are
+  opt-in specialists for known structure (oscillations → torch_periodic,
+  dominant products → cross/torch_mlp)
+- Possible refinement if ever needed: holdout-based pair selection for
+  `cross`; not pursued absent a motivating dataset
+
 ## Phase 15 — v0.1 robustness ✅ (2026-06-12)
 
 - Categorical preprocessing (docs/categorical_features.md):
@@ -280,11 +301,15 @@ Everything below v0 is a plan, not a promise of API stability.
 Listed here because v0 deliberately freezes the encoder:
 
 - ~~PyTorch encoders (learned periodic frequencies, PLR projection)~~
-  shipped in Phase 13; still open: RealMLP-style blocks, category
-  embeddings, interaction-aware features
+  shipped in Phase 13; ~~interaction-aware features~~ shipped in Phase 16
+  (`cross`, `torch_mlp` — negative on real data, see
+  encoder_interactions.md); still open: RealMLP-style blocks, category
+  embeddings
 - Encoder pretraining before boosting — supervised version shipped in
-  Phase 13, regularized in Phase 14b (negative on real data; see
-  torch_pretrain_regularization.md); self-supervised variants still open
+  Phase 13, regularized in Phase 14b, extended to cross-feature targets in
+  Phase 16 (all negative on real data); self-supervised variants still
+  open, though the accumulated evidence suggests the router already covers
+  typical real tabular structure
 - **Alternating optimization** (tree fitting ↔ encoder updates)
 - **Stage-wise snapshot encoders** (each tree binds to the encoder version it
   was trained against)

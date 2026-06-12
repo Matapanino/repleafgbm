@@ -101,11 +101,14 @@ Implemented:
   training, parity-tested against the NumPy reference)
 - `leaf_model`: `"constant"`, `"embedded_linear"`, `"raw_linear"`
 - Encoders: `"identity"`, `"plr"` (simplified piecewise-linear + linear
-  term), `"periodic"` (PBLD-style frozen sinusoidal features), and learned
-  `"torch_periodic"` / `"torch_plr"` (optional `[torch]` extra; pretrained
-  on the initial residual then frozen — torch is needed only at fit time;
-  best for known smooth/oscillatory structure, see docs for guidance);
-  random projection down to `max_leaf_emb_dim` as an emergency cap
+  term), `"periodic"` (PBLD-style frozen sinusoidal features), `"cross"`
+  (residual-correlated pairwise products), and learned `"torch_periodic"` /
+  `"torch_plr"` / `"torch_mlp"` (optional `[torch]` extra; pretrained on
+  the initial residual then frozen — torch is needed only at fit time).
+  `identity` is the evidence-backed default on real tabular data; the
+  others are specialists for known smooth/oscillatory or interaction
+  structure (see docs for guidance). Random projection down to
+  `max_leaf_emb_dim` as an emergency cap
 - Regression (squared error) and binary classification (logistic)
 - Early stopping (`early_stopping_rounds`, `best_iteration_`, prediction at
   the best iteration) and eval metrics: rmse, mae, logloss, auc, accuracy,

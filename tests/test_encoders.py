@@ -160,3 +160,60 @@ def test_state_roundtrip(X_num):
 def test_unknown_encoder_name():
     with pytest.raises(ValueError, match="Unknown encoder"):
         make_encoder("nope")
+
+
+# --------------------------------------------------------------------- #
+# cross (Phase 16, interaction control)
+# --------------------------------------------------------------------- #
+def test_cross_selects_true_interaction_pair():
+    from repleafgbm.encoders import CrossInteractionEncoder
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(1500, 6))
+    y = 3.0 * X[:, 1] * X[:, 4] + rng.normal(0.0, 0.1, 1500)
+    enc = CrossInteractionEncoder(n_pairs=2).fit(X, y=y)
+    assert [1, 4] in enc.pairs_.tolist()
+    Z = enc.transform(X)
+    assert Z.shape == (1500, 6 + 2)
+    assert enc.output_dim == 8
+    # The selected product column explains the target far better than any
+    # single raw feature does.
+    prod_col = Z[:, 6 + enc.pairs_.tolist().index([1, 4])]
+    assert abs(np.corrcoef(prod_col, y)[0, 1]) > 0.9
+
+
+def test_cross_without_target_and_nan(X_num):
+    from repleafgbm.encoders import CrossInteractionEncoder
+
+    enc = CrossInteractionEncoder(n_pairs=3).fit(X_num)
+    Z = enc.transform(X_num)
+    assert Z.shape == (100, 5 + 3)
+    assert np.isfinite(Z).all()  # NaNs imputed before products
+
+
+def test_cross_caps_pairs_and_roundtrips_state(X_num):
+    from repleafgbm.encoders import CrossInteractionEncoder
+
+    enc = CrossInteractionEncoder(n_pairs=100).fit(X_num, y=X_num[:, 0])
+    assert enc.pairs_.shape[0] == 5 * 4 // 2  # capped at all pairs
+    fresh = make_encoder("cross", **enc.get_config())
+    fresh.set_state(enc.get_state())
+    np.testing.assert_allclose(fresh.transform(X_num), enc.transform(X_num))
+
+
+def test_cross_end_to_end(tmp_path):
+    from repleafgbm import RepLeafRegressor
+
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=(600, 5))
+    y = X[:, 0] * X[:, 1] + 0.5 * X[:, 2] + rng.normal(0.0, 0.1, 600)
+    model = RepLeafRegressor(
+        n_estimators=20, num_leaves=8, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="cross",
+        encoder_params={"n_pairs": 4}, random_state=42,
+    )
+    model.fit(X, y)
+    pred = model.predict(X)
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    np.testing.assert_allclose(loaded.predict(X), pred)

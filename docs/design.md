@@ -112,8 +112,15 @@ Encoders (all NumPy, frozen; see `encoders/`):
   regularized by default (AdamW weight decay + validation early stopping
   with best-epoch restore, Phase 14b); this preserves the synthetic win and
   cuts pretraining cost but does not change the real-data verdict
-  (torch_pretrain_regularization.md) — the failure is architectural, and
-  the open direction is interaction-aware features.
+  (torch_pretrain_regularization.md).
+- `cross` / `torch_mlp` (Phase 16) — the *interaction-aware* line: `cross`
+  appends the pairwise products most correlated with the initial residual
+  (NumPy, deterministic); `torch_mlp` learns a small feature-mixing MLP
+  (frozen after pretraining like the other torch encoders). Both decisively
+  beat `identity` when the target is dominated by feature products
+  (encoder_interactions.md home turf) and both lose to `identity` on every
+  real dataset tested — the router already captures the interactions that
+  matter there. Opt-in specialists, like the per-feature learned encoders.
 
 All linear leaves are fitted by Hessian-weighted ridge regression on Newton
 targets (docs/math.md). Overfitting guards, all implemented:
@@ -159,9 +166,11 @@ separate, higher-level axis described in docs/backend_strategy.md.
 - **Python tree construction speed** — acceptable for research-scale data
   only; the native backend is the long-term answer.
 - **Frozen encoder quality** — supervised pretraining on the initial Newton
-  residual (Phases 13/14b) wins only when genuine per-feature structure
-  exists; on real tabular targets it found nothing the router doesn't, even
-  regularized. Interaction-aware encoders are the untested direction.
+  residual wins only when the target has structure trees route poorly:
+  per-feature oscillations (Phases 13/14b) or dominant feature products
+  (Phase 16). On real tabular targets both encoder families found nothing
+  the router doesn't, even regularized — `identity` is the evidence-backed
+  default, and the learned encoders are opt-in specialists.
 - **eval on embedded leaves costs one transform per eval set** — fine in
   memory, needs batching out-of-core.
 

@@ -10,19 +10,26 @@ from __future__ import annotations
 import inspect
 
 from repleafgbm.encoders.base import BaseEncoder
+from repleafgbm.encoders.cross import CrossInteractionEncoder
 from repleafgbm.encoders.identity import IdentityEncoder
 from repleafgbm.encoders.periodic import PeriodicEncoder
 from repleafgbm.encoders.plr import SimplePLREncoder
 from repleafgbm.encoders.projection import RandomProjectionEncoder
-from repleafgbm.encoders.torch_encoders import TorchPeriodicEncoder, TorchPLREncoder
+from repleafgbm.encoders.torch_encoders import (
+    TorchMLPEncoder,
+    TorchPeriodicEncoder,
+    TorchPLREncoder,
+)
 
 _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "identity": IdentityEncoder,
     "plr": SimplePLREncoder,
     "periodic": PeriodicEncoder,
+    "cross": CrossInteractionEncoder,
     # Learned encoders: torch needed only at fit time (see torch_encoders).
     "torch_periodic": TorchPeriodicEncoder,
     "torch_plr": TorchPLREncoder,
+    "torch_mlp": TorchMLPEncoder,
 }
 
 
@@ -62,8 +69,10 @@ __all__ = [
     "IdentityEncoder",
     "SimplePLREncoder",
     "PeriodicEncoder",
+    "CrossInteractionEncoder",
     "TorchPeriodicEncoder",
     "TorchPLREncoder",
+    "TorchMLPEncoder",
     "RandomProjectionEncoder",
     "make_encoder",
     "encoder_from_config",
