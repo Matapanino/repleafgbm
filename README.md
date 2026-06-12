@@ -122,17 +122,16 @@ Implemented:
   embedding caching
 - Directory-based `save_model` / `load_model` with schema validation and a
   human-readable `summary.txt` (`model.summary()`)
-- `repleafgbm.external`: LightGBM and XGBoost as external base models
-  (scores + leaf indices, optional native early stopping), generic OOF
-  utility, stacking feature builders, and `RouterExtractionRegressor` /
+- `repleafgbm.external`: LightGBM, XGBoost, and CatBoost as external base
+  models (scores + leaf indices, optional native early stopping), generic
+  OOF utility, stacking feature builders, and `RouterExtractionRegressor` /
   `RouterExtractionClassifier` — LightGBM routing with RepLeaf leaf models
   refit on the frozen routes, with replay-stage early stopping
   (`pip install "repleafgbm[external]"`)
 - pytest suite, runnable examples, and an `experiments/` research scaffold
 
 Not implemented (see [docs/roadmap.md](docs/roadmap.md)): encoder updates
-during boosting, multi-output regression, CatBoost external models,
-GPU/distributed training.
+during boosting, multi-output regression, GPU/distributed training.
 
 ## Installation (development)
 

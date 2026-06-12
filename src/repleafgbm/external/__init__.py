@@ -11,6 +11,7 @@ diversity, not a wrapper. Guardrails:
   message (``pip install repleafgbm[external]`` / ``pip install xgboost``).
 """
 
+from repleafgbm.external.catboost_model import CatBoostExternalModel
 from repleafgbm.external.features import augment_features, external_feature_frame
 from repleafgbm.external.lightgbm_model import LightGBMExternalModel
 from repleafgbm.external.oof import oof_predictions
@@ -24,6 +25,7 @@ from repleafgbm.external.xgboost_model import XGBoostExternalModel
 __all__ = [
     "LightGBMExternalModel",
     "XGBoostExternalModel",
+    "CatBoostExternalModel",
     "oof_predictions",
     "external_feature_frame",
     "augment_features",

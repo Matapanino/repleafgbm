@@ -241,16 +241,20 @@ Everything below v0 is a plan, not a promise of API stability.
   deliberately *not* added — composition via utilities keeps the native
   estimator focused (see backend_strategy guardrails)
 
-## v0.3 — more external backends
+## v0.3 — more external backends ✅ (closed by Phases 19 + 21, 2026-06-12)
 
-- ~~XGBoost external_model backend~~ done in Phase 19 (2026-06-12):
+- ~~XGBoost external_model backend~~ done in Phase 19:
   `XGBoostExternalModel` with the same duck-typed contract as the LightGBM
   one (fit / predict_score / predict_leaf_indices, native early stopping
   with predictions pinned to the best iteration) — works unchanged with
   `oof_predictions` / `augment_features`; custom XGBoost objectives pass
   through `xgb_params`. Route extraction stays LightGBM-only
-- CatBoost external_model backend (categorical-heavy datasets; deep
-  integration is known to be harder and may stay shallow)
+- ~~CatBoost external_model backend~~ done in Phase 21 (deliberately
+  shallow, as planned): `CatBoostExternalModel` with the same contract
+  (`use_best_model=False` + explicit `ntree_end` pinning under early
+  stopping, `calc_leaf_indexes` for leaf features); CatBoost-native
+  categorical handling reachable via `cb_params(cat_features=...)`, but
+  the recommended categorical path remains RepLeafDataset
 
 ## v1 — router_extraction mode ✅ core shipped (2026-06-11, Phase 3)
 
