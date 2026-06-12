@@ -19,7 +19,7 @@ from sklearn.base import BaseEstimator
 from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.leaf_models import make_leaf_model
 from repleafgbm.core.metrics import BaseMetric, get_metric, make_metric
-from repleafgbm.core.objectives import get_objective
+from repleafgbm.core.objectives import BaseObjective, get_objective
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders import RandomProjectionEncoder, make_encoder
@@ -75,6 +75,17 @@ class BaseRepLeafModel(BaseEstimator):
             regression and "logloss" for classification. Custom metrics are
             saved by name only: a reloaded model must be given the metric
             object again before refitting with eval sets.
+        objective: Regression loss override: a registered name
+            ("squared_error", "huber", "quantile", "poisson") or a
+            :class:`~repleafgbm.core.objectives.BaseObjective` instance for
+            non-default parameters (e.g. ``Huber(delta=2.0)``,
+            ``Quantile(alpha=0.9)``). None uses the estimator's default
+            (squared error). The classifier selects its objective from the
+            target and rejects this parameter. Like custom metrics, objective
+            instances are saved by registry name only: predictions reload
+            exactly, but refitting a reloaded model uses the named
+            objective's default parameters unless the instance is passed
+            again.
         random_state: Seed controlling all internal randomness.
     """
 
@@ -101,6 +112,7 @@ class BaseRepLeafModel(BaseEstimator):
         split_backend: str = "auto",
         early_stopping_rounds: int | None = None,
         eval_metric: str | BaseMetric | Any | None = None,
+        objective: str | BaseObjective | None = None,
         random_state: int | None = 42,
     ) -> None:
         self.n_estimators = n_estimators
@@ -121,6 +133,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.split_backend = split_backend
         self.early_stopping_rounds = early_stopping_rounds
         self.eval_metric = eval_metric
+        self.objective = objective
         self.random_state = random_state
 
     # ------------------------------------------------------------------ #
@@ -222,7 +235,18 @@ class BaseRepLeafModel(BaseEstimator):
     def _make_booster(self, params: BoosterParams) -> Booster:
         """Hook: the classifier overrides this to return a
         :class:`~repleafgbm.core.multiclass.MulticlassBooster` for 3+ classes."""
-        return Booster(params, get_objective(self._objective_name))
+        return Booster(params, self._build_objective())
+
+    def _build_objective(self) -> BaseObjective:
+        """Resolve the ``objective`` parameter (name, instance, or None for
+        the estimator default). Subclasses with a reduced __init__ (router
+        extraction) have no ``objective`` attribute and get the default."""
+        objective = getattr(self, "objective", None)
+        if objective is None:
+            return get_objective(self._objective_name)
+        if isinstance(objective, BaseObjective):
+            return copy.deepcopy(objective)
+        return get_objective(objective)
 
     def _resolve_eval_metric(self) -> BaseMetric:
         """Accept a metric name, BaseMetric instance, or plain callable."""
@@ -315,7 +339,7 @@ class BaseRepLeafModel(BaseEstimator):
         for binary). Unlearned encoders ignore it. The classifier overrides
         this to return None for multiclass targets (the residual is a matrix
         there; learned-encoder pretraining stays scalar-target for now)."""
-        objective = get_objective(self._objective_name)
+        objective = self._build_objective()
         f0 = np.full(dataset.n_rows, objective.init_score(dataset.y))
         grad0, _ = objective.grad_hess(dataset.y, f0)
         return -grad0
@@ -457,6 +481,10 @@ class BaseRepLeafModel(BaseEstimator):
             config["eval_metric"] = metric.name
         elif metric is not None and not isinstance(metric, str):
             config["eval_metric"] = getattr(metric, "__name__", str(metric))
+        # Objective instances likewise persist by registry name; the fitted
+        # booster's objective governs prediction either way.
+        if isinstance(config.get("objective"), BaseObjective):
+            config["objective"] = config["objective"].name
         return config
 
     def _extra_config(self) -> dict:

@@ -7,6 +7,7 @@ local predictors.
 
 from repleafgbm.classifier import RepLeafClassifier
 from repleafgbm.core.metrics import make_metric
+from repleafgbm.core.objectives import Huber, PoissonRegression, Quantile
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.regressor import RepLeafRegressor
 
@@ -17,5 +18,8 @@ __all__ = [
     "RepLeafClassifier",
     "RepLeafDataset",
     "make_metric",
+    "Huber",
+    "Quantile",
+    "PoissonRegression",
     "__version__",
 ]

@@ -35,15 +35,29 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
 
     _objective_name = "binary_logistic"
     _eval_metric_name = "logloss"
+    #: Subclasses that replay external binary routes (router_extraction)
+    #: set this to False to keep rejecting 3+ class targets.
+    _supports_multiclass = True
 
     def _prepare_target(self, dataset: RepLeafDataset, is_train: bool) -> RepLeafDataset:
         if dataset.y is None:
             raise ValueError("Training data must include a target (y)")
+        if is_train and getattr(self, "objective", None) is not None:
+            raise ValueError(
+                "RepLeafClassifier selects its objective from the target "
+                "(logistic for 2 classes, softmax for 3+); the objective "
+                "parameter applies to RepLeafRegressor only"
+            )
         classes = np.unique(dataset.y)
         if is_train:
             if classes.shape[0] < 2:
                 raise ValueError(
                     f"RepLeafClassifier needs at least 2 classes; got {classes.shape[0]}"
+                )
+            if classes.shape[0] > 2 and not self._supports_multiclass:
+                raise ValueError(
+                    f"{type(self).__name__} supports binary targets only; "
+                    f"got {classes.shape[0]} classes"
                 )
             self.classes_ = classes
         unknown = np.setdiff1d(classes, self.classes_)

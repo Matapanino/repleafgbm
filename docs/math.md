@@ -101,6 +101,28 @@ F_0 = log( p_bar / (1 - p_bar) )
 
 Output transform: sigmoid. Hessians are floored at 1e-12 for stability.
 
+**Huber (robust regression).** `g = clip(F - y, -delta, delta)`, `h = 1`,
+`F_0 = median(y)`. The true Hessian vanishes beyond `delta`; using `h = 1`
+(the LightGBM convention) keeps outlier-only leaves bounded and makes the
+Newton targets *clipped residuals*, so linear leaf fits see outliers with
+bounded influence. Output transform: identity.
+
+**Quantile (pinball).** The model estimates the alpha-quantile:
+`g = (1 - alpha)` where `F >= y`, `-alpha` where `F < y`, `h = 1`,
+`F_0 = quantile(y, alpha)`. The loss is piecewise linear (no curvature);
+unit Hessians give fixed-size steps whose sign balance converges to the
+alpha-quantile within each leaf. Output transform: identity.
+
+**Poisson (counts).** `F` is the log-mean, `mu = exp(F)`:
+
+```text
+L = exp(F) - y F,   g = mu - y,   h = mu,   F_0 = log(mean(y))
+```
+
+Requires `y >= 0` with positive mean; raw scores are clipped to [-30, 30]
+inside exp for overflow safety, and `h` is floored at 1e-12. Output
+transform: exp (predictions are positive means).
+
 **Multiclass classification (softmax).** Labels mapped to {0, ..., K-1},
 `p_k = softmax(F)_k` over per-class raw scores `F in R^K`:
 

@@ -109,9 +109,10 @@ Implemented:
   others are specialists for known smooth/oscillatory or interaction
   structure (see docs for guidance). Random projection down to
   `max_leaf_emb_dim` as an emergency cap
-- Regression (squared error), binary classification (logistic), and
-  multiclass classification (softmax, one tree per class per round —
-  automatic at 3+ classes)
+- Regression (squared error, plus `objective="huber"` / `"quantile"` /
+  `"poisson"` — parameterized instances like `Quantile(alpha=0.9)` work
+  too), binary classification (logistic), and multiclass classification
+  (softmax, one tree per class per round — automatic at 3+ classes)
 - Early stopping (`early_stopping_rounds`, `best_iteration_`, prediction at
   the best iteration) and eval metrics: rmse, mae, logloss, multi_logloss,
   auc, accuracy, or any user-supplied callable (`repleafgbm.make_metric`)

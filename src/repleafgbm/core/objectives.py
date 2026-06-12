@@ -66,6 +66,89 @@ class BinaryLogistic(BaseObjective):
         return _sigmoid(raw_pred)
 
 
+class Huber(BaseObjective):
+    """Huber loss for outlier-robust regression.
+
+    g = clip(F - y, -delta, delta), h = 1 (the LightGBM convention: the true
+    Hessian is 0 beyond delta, which would let outlier-only leaves blow up).
+    With h = 1 the Newton targets are clipped residuals, so leaf fits — and
+    linear leaves in particular — see outliers with bounded influence.
+    """
+
+    name = "huber"
+
+    def __init__(self, delta: float = 1.0) -> None:
+        if delta <= 0:
+            raise ValueError(f"huber delta must be positive, got {delta}")
+        self.delta = delta
+
+    def init_score(self, y: np.ndarray) -> float:
+        return float(np.median(y))
+
+    def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return np.clip(raw_pred - y, -self.delta, self.delta), np.ones_like(y)
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray:
+        return raw_pred
+
+
+class Quantile(BaseObjective):
+    """Pinball (quantile) loss: the model predicts the alpha-quantile.
+
+    g = (1 - alpha) where F >= y and -alpha where F < y, h = 1 — the loss is
+    piecewise linear, so boosting takes fixed-size steps whose sign balance
+    converges to the alpha-quantile within each leaf.
+    """
+
+    name = "quantile"
+
+    def __init__(self, alpha: float = 0.5) -> None:
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"quantile alpha must be in (0, 1), got {alpha}")
+        self.alpha = alpha
+
+    def init_score(self, y: np.ndarray) -> float:
+        return float(np.quantile(y, self.alpha))
+
+    def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        grad = np.where(raw_pred >= y, 1.0 - self.alpha, -self.alpha)
+        return grad, np.ones_like(y)
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray:
+        return raw_pred
+
+
+class PoissonRegression(BaseObjective):
+    """Poisson deviance for non-negative count targets; F is the log-mean.
+
+    L = exp(F) - y*F, g = exp(F) - y, h = exp(F). Raw scores are clipped to
+    [-30, 30] inside exp for overflow safety. Output transform: exp.
+    """
+
+    name = "poisson"
+
+    def init_score(self, y: np.ndarray) -> float:
+        if (y < 0).any():
+            raise ValueError(
+                "objective='poisson' requires non-negative targets; "
+                "found negative values in y"
+            )
+        mean = float(np.mean(y))
+        if mean <= 0:
+            raise ValueError(
+                "objective='poisson' requires a positive target mean "
+                "(y is all zeros)"
+            )
+        return float(np.log(mean))
+
+    def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        mu = np.exp(np.clip(raw_pred, -30.0, 30.0))
+        return mu - y, np.maximum(mu, 1e-12)
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray:
+        return np.exp(np.clip(raw_pred, -30.0, 30.0))
+
+
 class MulticlassSoftmax:
     """Softmax cross-entropy for K-class classification on labels 0..K-1.
 
@@ -125,6 +208,9 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 _OBJECTIVE_REGISTRY: dict[str, type[BaseObjective]] = {
     SquaredError.name: SquaredError,
     BinaryLogistic.name: BinaryLogistic,
+    Huber.name: Huber,
+    Quantile.name: Quantile,
+    PoissonRegression.name: PoissonRegression,
 }
 
 

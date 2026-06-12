@@ -13,8 +13,12 @@ from repleafgbm.sklearn import BaseRepLeafModel
 class RepLeafRegressor(RegressorMixin, BaseRepLeafModel):
     """Gradient boosting regressor with representation-conditioned leaves.
 
-    Squared-error objective. See :class:`~repleafgbm.sklearn.BaseRepLeafModel`
-    for all hyperparameters.
+    Squared-error objective by default; ``objective`` accepts "huber",
+    "quantile", and "poisson" (or parameterized instances such as
+    ``Quantile(alpha=0.9)``) for robust, quantile, and count regression.
+    The default eval metric stays "rmse" — for quantile models consider a
+    pinball loss via :func:`repleafgbm.make_metric`. See
+    :class:`~repleafgbm.sklearn.BaseRepLeafModel` for all hyperparameters.
 
     Example:
         >>> model = RepLeafRegressor(n_estimators=50, leaf_model="embedded_linear",
@@ -27,5 +31,11 @@ class RepLeafRegressor(RegressorMixin, BaseRepLeafModel):
     _eval_metric_name = "rmse"
 
     def predict(self, X: Any) -> np.ndarray:
-        """Predict target values for X (array, DataFrame, or RepLeafDataset)."""
-        return self._predict_raw(X)
+        """Predict target values for X (array, DataFrame, or RepLeafDataset).
+
+        Predictions are on the target scale: the objective's output transform
+        is applied to the raw score (identity for squared error, huber, and
+        quantile; exp for poisson, whose raw score is the log-mean).
+        """
+        raw = self._predict_raw(X)  # checks fitted state first
+        return self.booster_.objective.transform(raw)

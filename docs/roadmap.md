@@ -284,13 +284,35 @@ Everything below v0 is a plan, not a promise of API stability.
 - Tests (tests/test_multiclass.py), example
   (examples/multiclass_classification_basic.py), math.md softmax section
 
+## Phase 18 — regression objectives ✅ (2026-06-12)
+
+- `objective` parameter on the regressor: "huber" (clipped-residual
+  gradients, h=1 LightGBM convention, median init), "quantile" (pinball,
+  alpha-quantile init), "poisson" (log-mean raw score, exp transform,
+  non-negative target validation) — names or parameterized instances
+  (`Huber(delta=...)`, `Quantile(alpha=...)`), exported from `repleafgbm`
+- All three reuse the scalar Newton-target leaf machinery unchanged;
+  `RepLeafRegressor.predict` now applies the objective's output transform
+  (identity except poisson's exp)
+- Objective instances serialize by registry name (metric precedent):
+  predictions reload exactly; refitting a reloaded model needs the instance
+  again for non-default delta/alpha
+- The classifier rejects the parameter (its objective follows from the
+  target); router_extraction subclasses keep their reduced __init__ (and
+  RouterExtractionClassifier now rejects 3+ classes explicitly, since its
+  replay loop is scalar)
+- Tests: gradient/Hessian unit checks, huber-beats-L2-under-outliers,
+  quantile ordering/coverage, poisson positivity + baseline,
+  save/load round-trips (tests/test_regression_objectives.py)
+
 ## v1.5 — outputs and objectives
 
 - ~~Multiclass classification (softmax)~~ done in Phase 17 (one tree per
   class per round; a shared-routing vector-leaf variant remains a research
   idea)
 - Vector leaves (multi-output regression)
-- Improved objectives (Huber, quantile, Poisson), label smoothing
+- ~~Improved objectives (Huber, quantile, Poisson)~~ done in Phase 18;
+  label smoothing still open
 
 ## v2 — native high-performance backend (Phase 10: core shipped ✅)
 

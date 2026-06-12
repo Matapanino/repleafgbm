@@ -277,7 +277,10 @@ class RouterExtractionClassifier(_RouterExtractionMixin, RepLeafClassifier):
 
     The base LightGBM model must use task="binary"; replay refits leaves on
     logistic Newton targets, and predict/predict_proba behave exactly like
-    RepLeafClassifier. See :class:`_RouterExtractionMixin` for arguments.
+    RepLeafClassifier. Multiclass targets are rejected (the replay loop is
+    scalar; LightGBM multiclass route extraction is future work). See
+    :class:`_RouterExtractionMixin` for arguments.
     """
 
     _base_task = "binary"
+    _supports_multiclass = False
