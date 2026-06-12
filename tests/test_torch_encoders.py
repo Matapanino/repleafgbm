@@ -116,3 +116,30 @@ def test_torch_plr_state_roundtrip(periodic_problem):
     fresh = make_encoder(enc.name, **enc.get_config())
     fresh.set_state(enc.get_state())
     np.testing.assert_allclose(enc.transform(X), fresh.transform(X))
+
+
+def test_pretraining_early_stopping_on_noise(periodic_problem):
+    """A pure-noise target must trigger validation early stopping well before
+    the epoch budget; a strong-signal target should train longer."""
+    X, y = periodic_problem
+    rng = np.random.default_rng(3)
+    noise = rng.normal(size=len(y))
+
+    enc_noise = TorchPeriodicEncoder(n_epochs=30, patience=3, random_state=0)
+    enc_noise.fit(X, y=noise)
+    assert enc_noise.pretrain_epochs_used_ < 30
+
+    enc_signal = TorchPeriodicEncoder(n_epochs=30, patience=3, random_state=0)
+    enc_signal.fit(X, y=y)
+    assert enc_signal.pretrain_epochs_used_ >= enc_noise.pretrain_epochs_used_
+
+
+def test_regularization_params_serialized(periodic_problem):
+    X, y = periodic_problem
+    enc = TorchPeriodicEncoder(n_epochs=3, weight_decay=0.5, val_fraction=0.2,
+                               patience=2, random_state=0).fit(X, y=y)
+    cfg = enc.get_config()
+    assert cfg["weight_decay"] == 0.5 and cfg["patience"] == 2
+    fresh = make_encoder(enc.name, **cfg)
+    fresh.set_state(enc.get_state())
+    np.testing.assert_allclose(enc.transform(X), fresh.transform(X))

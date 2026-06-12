@@ -145,9 +145,26 @@ Everything below v0 is a plan, not a promise of API stability.
   nothing on adult beyond routing + constant leaves
 - Final guidance: identity first on real data; torch encoders are
   specialist tools for known smooth/oscillatory structure
-- Open: pretraining regularization (validation early stopping, weight
-  decay) as the one plausible fix before blaming the architecture;
-  interaction-aware features
+- ~~Open: pretraining regularization (validation early stopping, weight
+  decay) as the one plausible fix before blaming the architecture~~ tested
+  and closed in Phase 14b; interaction-aware features remain open
+
+## Phase 14b — pretraining regularization ✅ (2026-06-12, follow-up closed)
+
+- `weight_decay` (AdamW), `val_fraction` + `patience` (validation early
+  stopping with best-epoch restore) added to `torch_periodic` / `torch_plr`
+  pretraining; conservative defaults on (1e-3 / 0.15 / 5);
+  `pretrain_epochs_used_` diagnostic; knobs serialized in encoder config
+- Result (experiments/results/torch_pretrain_regularization.md): early
+  stopping engages (14-21 of 30 epochs) but real-data accuracy is unchanged
+  4/4 — identity stays best by the Phase 14 margins; the periodic_mix
+  synthetic win survives regularization intact (0.3430 vs identity 0.3933)
+- Verdict: the Phase 14 overfit is architectural, not a missing
+  regularizer — per-feature pretrained representations find nothing the
+  router doesn't on these targets. Defaults keep regularization on (equal
+  accuracy, 30-50% fewer pretraining epochs, principled guard)
+- The remaining encoder direction on real data is interaction-aware
+  features (cross-feature blocks)
 
 ## v0.1 — robustness
 
@@ -245,7 +262,9 @@ Listed here because v0 deliberately freezes the encoder:
 - ~~PyTorch encoders (learned periodic frequencies, PLR projection)~~
   shipped in Phase 13; still open: RealMLP-style blocks, category
   embeddings, interaction-aware features
-- Encoder pretraining before boosting (supervised or self-supervised)
+- Encoder pretraining before boosting — supervised version shipped in
+  Phase 13, regularized in Phase 14b (negative on real data; see
+  torch_pretrain_regularization.md); self-supervised variants still open
 - **Alternating optimization** (tree fitting ↔ encoder updates)
 - **Stage-wise snapshot encoders** (each tree binds to the encoder version it
   was trained against)

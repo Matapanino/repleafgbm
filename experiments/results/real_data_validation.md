@@ -328,3 +328,17 @@ parentheses); reference rows repeated for context:
 Two seeds, default pretraining hyperparameters (30 epochs, lr 0.01) on
 every dataset — the no-tuning condition mirrors how the other encoders are
 run, but the follow-up above may change the picture.
+
+## Phase 14b note: the pretraining-regularization follow-up is closed (negative)
+
+The conclusion-5 follow-up above was run as
+experiments/results/torch_pretrain_regularization.md: AdamW weight decay +
+validation early stopping with best-epoch restore added to the pretraining
+loop (`weight_decay=1e-3`, `val_fraction=0.15`, `patience=5`, now the
+encoder defaults). Early stopping engages (14-21 of 30 epochs) but test
+accuracy is unchanged on all four datasets — identity remains best and the
+regularized/unregularized deltas are within seed noise — while the
+periodic_mix synthetic win survives intact. The real-data failure is
+architectural (per-feature pretrained representations find nothing the
+router doesn't), not a missing regularizer; the open encoder direction is
+interaction-aware features. Phase 14 guidance stands unchanged.

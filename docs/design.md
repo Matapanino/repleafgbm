@@ -108,7 +108,12 @@ Encoders (all NumPy, frozen; see `encoders/`):
   decisively best on targets with genuine per-feature smooth/oscillatory
   structure (encoder_variants.md), but they overfit and lose to `identity`
   on all real datasets tested (real_data_validation.md Phase 14) — keep
-  `identity` as the first choice on real tabular data.
+  `identity` as the first choice on real tabular data. Pretraining is
+  regularized by default (AdamW weight decay + validation early stopping
+  with best-epoch restore, Phase 14b); this preserves the synthetic win and
+  cuts pretraining cost but does not change the real-data verdict
+  (torch_pretrain_regularization.md) — the failure is architectural, and
+  the open direction is interaction-aware features.
 
 All linear leaves are fitted by Hessian-weighted ridge regression on Newton
 targets (docs/math.md). Overfitting guards, all implemented:
@@ -153,8 +158,10 @@ separate, higher-level axis described in docs/backend_strategy.md.
   learned projections / per-leaf feature selection are open questions.
 - **Python tree construction speed** — acceptable for research-scale data
   only; the native backend is the long-term answer.
-- **Frozen encoder quality** — an encoder fitted without supervision (PLR
-  bins) may waste capacity; encoder pretraining strategies are unexplored.
+- **Frozen encoder quality** — supervised pretraining on the initial Newton
+  residual (Phases 13/14b) wins only when genuine per-feature structure
+  exists; on real tabular targets it found nothing the router doesn't, even
+  regularized. Interaction-aware encoders are the untested direction.
 - **eval on embedded leaves costs one transform per eval set** — fine in
   memory, needs batching out-of-core.
 

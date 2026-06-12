@@ -42,33 +42,71 @@ def _require_torch():
 
 def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
               out_dim: int, n_epochs: int, lr: float, batch_size: int,
-              seed: int) -> None:
+              seed: int, weight_decay: float = 0.0, val_fraction: float = 0.0,
+              patience: int = 0) -> int:
     """Shared loop: regress a linear head on the embedding onto the target.
 
     Trains ``params`` (encoder parameters) jointly with a throwaway linear
-    head by minimizing MSE; deterministic given ``seed``. CPU only (v0).
+    head by minimizing MSE (AdamW); deterministic given ``seed``. CPU only.
+
+    Phase 14b regularization: a ``val_fraction`` split of the pretraining
+    data is held out, training stops once its loss has not improved for
+    ``patience`` epochs, and the best-epoch encoder parameters are restored
+    — the guard against the real-data overfitting documented in
+    experiments/results/real_data_validation.md (Phase 14). Returns the
+    number of epochs actually run.
     """
     gen = torch.Generator().manual_seed(seed)
     X_t = torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32))
     t_t = torch.from_numpy(np.ascontiguousarray(target, dtype=np.float32))
     t_t = (t_t - t_t.mean()) / (t_t.std() + 1e-12)
 
+    n = X_t.shape[0]
+    perm0 = torch.randperm(n, generator=gen)
+    n_val = int(n * val_fraction) if patience > 0 else 0
+    use_es = n_val >= 16
+    val_idx = perm0[:n_val] if use_es else None
+    train_idx = perm0[n_val:] if use_es else perm0
+
     head = torch.nn.Linear(out_dim, 1)
     with torch.no_grad():
         torch.nn.init.normal_(head.weight, std=0.01, generator=gen)
         torch.nn.init.zeros_(head.bias)
-    opt = torch.optim.Adam(list(params) + list(head.parameters()), lr=lr)
+    opt = torch.optim.AdamW(list(params) + list(head.parameters()), lr=lr,
+                            weight_decay=weight_decay)
 
-    n = X_t.shape[0]
+    best_val = float("inf")
+    best_state: list | None = None
+    rounds_since_best = 0
+    epochs_used = 0
+    n_train = train_idx.shape[0]
     for _ in range(n_epochs):
-        perm = torch.randperm(n, generator=gen)
-        for start in range(0, n, batch_size):
-            idx = perm[start:start + batch_size]
+        order = train_idx[torch.randperm(n_train, generator=gen)]
+        for start in range(0, n_train, batch_size):
+            idx = order[start:start + batch_size]
             pred = head(embed_fn(X_t[idx])).squeeze(-1)
             loss = torch.mean((pred - t_t[idx]) ** 2)
             opt.zero_grad()
             loss.backward()
             opt.step()
+        epochs_used += 1
+        if use_es:
+            with torch.no_grad():
+                val_pred = head(embed_fn(X_t[val_idx])).squeeze(-1)
+                val_loss = float(torch.mean((val_pred - t_t[val_idx]) ** 2))
+            if val_loss < best_val - 1e-7:
+                best_val = val_loss
+                rounds_since_best = 0
+                best_state = [p.detach().clone() for p in params]
+            else:
+                rounds_since_best += 1
+                if rounds_since_best >= patience:
+                    break
+    if use_es and best_state is not None:
+        with torch.no_grad():
+            for p, b in zip(params, best_state):
+                p.copy_(b)
+    return epochs_used
 
 
 class TorchPeriodicEncoder(PeriodicEncoder):
@@ -80,7 +118,10 @@ class TorchPeriodicEncoder(PeriodicEncoder):
     on the supervised pretraining target before freezing. Falls back to the
     frozen initialization when no target is provided.
 
-    Extra args over PeriodicEncoder: n_epochs, lr, batch_size.
+    Extra args over PeriodicEncoder: n_epochs, lr, batch_size, plus the
+    Phase 14b pretraining-regularization knobs weight_decay (AdamW),
+    val_fraction, and patience (validation early stopping with best-epoch
+    restore; conservative defaults on).
     """
 
     name = "torch_periodic"
@@ -93,6 +134,9 @@ class TorchPeriodicEncoder(PeriodicEncoder):
         n_epochs: int = 30,
         lr: float = 0.01,
         batch_size: int = 256,
+        weight_decay: float = 1e-3,
+        val_fraction: float = 0.15,
+        patience: int = 5,
         random_state: int | None = 0,
     ) -> None:
         super().__init__(n_frequencies=n_frequencies, frequency_scale=frequency_scale,
@@ -100,6 +144,11 @@ class TorchPeriodicEncoder(PeriodicEncoder):
         self.n_epochs = n_epochs
         self.lr = lr
         self.batch_size = batch_size
+        self.weight_decay = weight_decay
+        self.val_fraction = val_fraction
+        self.patience = patience
+        #: Epochs actually run by the last fit (early stopping diagnostic).
+        self.pretrain_epochs_used_: int | None = None
 
     def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> TorchPeriodicEncoder:
         super().fit(X_num)  # frozen-random initialization + standardization
@@ -120,10 +169,12 @@ class TorchPeriodicEncoder(PeriodicEncoder):
                 parts.append(xb.unsqueeze(-1))
             return torch.cat(parts, dim=-1).reshape(xb.shape[0], -1)
 
-        _pretrain(torch, [freq, phase], embed, x_std, y,
-                  out_dim=n_features * (self.n_frequencies + int(self.add_linear)),
-                  n_epochs=self.n_epochs, lr=self.lr,
-                  batch_size=self.batch_size, seed=self.random_state or 0)
+        self.pretrain_epochs_used_ = _pretrain(
+            torch, [freq, phase], embed, x_std, y,
+            out_dim=n_features * (self.n_frequencies + int(self.add_linear)),
+            n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
+            seed=self.random_state or 0, weight_decay=self.weight_decay,
+            val_fraction=self.val_fraction, patience=self.patience)
 
         self.frequencies_ = freq.detach().numpy().astype(np.float64)
         self.phases_ = phase.detach().numpy().astype(np.float64)
@@ -135,6 +186,9 @@ class TorchPeriodicEncoder(PeriodicEncoder):
             "n_epochs": self.n_epochs,
             "lr": self.lr,
             "batch_size": self.batch_size,
+            "weight_decay": self.weight_decay,
+            "val_fraction": self.val_fraction,
+            "patience": self.patience,
         }
 
 
@@ -158,6 +212,9 @@ class TorchPLREncoder(SimplePLREncoder):
         n_epochs: int = 30,
         lr: float = 0.01,
         batch_size: int = 256,
+        weight_decay: float = 1e-3,
+        val_fraction: float = 0.15,
+        patience: int = 5,
         random_state: int | None = 0,
     ) -> None:
         super().__init__(n_bins=n_bins, add_linear=True)
@@ -167,7 +224,12 @@ class TorchPLREncoder(SimplePLREncoder):
         self.n_epochs = n_epochs
         self.lr = lr
         self.batch_size = batch_size
+        self.weight_decay = weight_decay
+        self.val_fraction = val_fraction
+        self.patience = patience
         self.random_state = random_state
+        #: Epochs actually run by the last fit (early stopping diagnostic).
+        self.pretrain_epochs_used_: int | None = None
         self.proj_weight_: np.ndarray | None = None  # (F, n_bins+1, n_outputs)
         self.proj_bias_: np.ndarray | None = None  # (F, n_outputs)
 
@@ -201,10 +263,12 @@ class TorchPLREncoder(SimplePLREncoder):
             out = torch.relu(torch.einsum("bfi,fio->bfo", bb, weight) + bias_p)
             return out.reshape(bb.shape[0], -1)
 
-        _pretrain(torch, [weight, bias_p], embed, basis, y,
-                  out_dim=n_features * self.n_outputs,
-                  n_epochs=self.n_epochs, lr=self.lr,
-                  batch_size=self.batch_size, seed=self.random_state or 0)
+        self.pretrain_epochs_used_ = _pretrain(
+            torch, [weight, bias_p], embed, basis, y,
+            out_dim=n_features * self.n_outputs,
+            n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
+            seed=self.random_state or 0, weight_decay=self.weight_decay,
+            val_fraction=self.val_fraction, patience=self.patience)
         self.proj_weight_ = weight.detach().numpy().astype(np.float64)
         self.proj_bias_ = bias_p.detach().numpy().astype(np.float64)
         return self
@@ -228,6 +292,9 @@ class TorchPLREncoder(SimplePLREncoder):
             "n_epochs": self.n_epochs,
             "lr": self.lr,
             "batch_size": self.batch_size,
+            "weight_decay": self.weight_decay,
+            "val_fraction": self.val_fraction,
+            "patience": self.patience,
             "random_state": self.random_state,
         }
 
