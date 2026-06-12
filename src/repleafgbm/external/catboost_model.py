@@ -13,6 +13,8 @@ both models see the same ordinal-encoded matrix. Route extraction
 
 from __future__ import annotations
 
+import os
+import tempfile
 from typing import Any
 
 import numpy as np
@@ -22,6 +24,11 @@ from repleafgbm.external.lightgbm_model import _resolve_data
 _DEFAULT_PARAMS: dict[str, Any] = {
     "iterations": 200,
     "learning_rate": 0.05,
+    # CatBoost writes a catboost_info/ log directory to the CWD by default
+    # (a tmp/ subdirectory even with writing disabled); a library must not
+    # litter the user's filesystem, so both knobs point away from the CWD.
+    "allow_writing_files": False,
+    "train_dir": os.path.join(tempfile.gettempdir(), "repleafgbm_catboost_info"),
 }
 
 

@@ -19,3 +19,4 @@ tmp_model/
 *.log
 .claude/
 native/target/
+catboost_info/
