@@ -31,8 +31,11 @@ decision or a GitHub-side action that cannot be done from this repo alone.
       to README
 - [x] Tagged `v0.0.1`
 - [ ] Branch protection on `main` (require CI) if collaborators join
-- [ ] Optional: issue templates, `SECURITY.md`, PyPI publication (defer
-      until the API stabilizes — the README already warns about instability)
+- [x] Issue templates (`.github/ISSUE_TEMPLATE/`) and `SECURITY.md`
+      (private reporting via GitHub security advisories) — added 2026-06-12,
+      Phase 20
+- [ ] PyPI publication (defer until the API stabilizes — the README already
+      warns about instability)
 - [ ] Move the working copy out of Google Drive to a local path (see the
       Phase 9 report for the procedure); afterwards GitHub is the canonical
       remote

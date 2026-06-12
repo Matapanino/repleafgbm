@@ -373,6 +373,7 @@ additive assumption analyzed in docs/math.md and must be designed against it.
 - ~~CI (lint + tests)~~, ~~contribution guide~~ done (Phases 0.5 / 5);
   git history initialized in Phase 5; publication steps tracked in
   docs/publishing_checklist.md
-- Issue templates, SECURITY.md, PyPI release (deferred until API stability)
+- ~~Issue templates, SECURITY.md~~ done (Phase 20, 2026-06-12); PyPI
+  release deferred until API stability
 - Benchmark suite (OpenML/tabular benchmarks) under `benchmarks/`
 - Versioned docs; API reference generation
