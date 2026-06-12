@@ -1,21 +1,31 @@
-"""Preprocessing helpers: feature type inference and ordinal encoding.
+"""Preprocessing helpers: feature type inference and encoding.
 
-v0 policy (see docs/categorical_features.md):
+Policy (see docs/categorical_features.md):
 
-* Categorical features are ordinal-encoded into float64 columns.
-* Missing values and categories unseen at fit time become NaN.
-* The tree router treats NaN by sending rows to the left child, so unseen
-  categories degrade gracefully instead of raising.
-* Native categorical splits (LightGBM-style subset splits) are future work.
+* Categorical features are ordinal-encoded into float64 columns; the router
+  applies native subset splits to them, so code order does not affect routing.
+  ``pandas.Categorical`` columns keep their declared category order (including
+  categories not observed at fit time).
+* Missing values and categories unseen at fit time become NaN; the tree
+  router sends NaN left, so unseen categories degrade gracefully.
+* Frequency encoding is an opt-in alternative
+  (``frequency_encoded_features``): the column becomes *numerical* (training
+  frequency as the value), getting threshold splits and encoder visibility.
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
 
 from repleafgbm.data.metadata import FeatureMetadata
+
+#: Auto-detected categorical columns wider than this trigger a UserWarning:
+#: subset splits silently fall back to ordered thresholds above ``max_bins``
+#: categories (256 by default), which is rarely what the user wants.
+HIGH_CARDINALITY_WARN_THRESHOLD = 256
 
 
 def _is_dataframe(X: Any) -> bool:
@@ -30,6 +40,7 @@ def infer_metadata(
     X: Any,
     categorical_features: list[str] | None = None,
     numerical_features: list[str] | None = None,
+    frequency_encoded_features: list[str] | None = None,
 ) -> FeatureMetadata:
     """Build FeatureMetadata from training input.
 
@@ -37,7 +48,12 @@ def infer_metadata(
     as categorical unless the user says otherwise. For NumPy arrays, all
     columns are numerical unless ``categorical_features`` names them by index
     string (e.g. "3") or the array of names is supplied elsewhere.
+
+    ``frequency_encoded_features`` names columns to encode by their training
+    frequency instead of an ordinal code; they are treated as numerical
+    afterwards (threshold splits, encoder input).
     """
+    frequency_encoded_features = [str(c) for c in (frequency_encoded_features or [])]
     if _is_dataframe(X):
         from pandas.api.types import is_bool_dtype, is_object_dtype, is_string_dtype
 
@@ -48,10 +64,13 @@ def infer_metadata(
             categorical_features = [
                 str(c)
                 for c in X.columns
-                if is_object_dtype(X[c])
-                or is_string_dtype(X[c])
-                or is_bool_dtype(X[c])
-                or str(X[c].dtype) == "category"
+                if (
+                    is_object_dtype(X[c])
+                    or is_string_dtype(X[c])
+                    or is_bool_dtype(X[c])
+                    or str(X[c].dtype) == "category"
+                )
+                and str(c) not in set(frequency_encoded_features)
             ]
         else:
             categorical_features = [str(c) for c in categorical_features]
@@ -67,7 +86,11 @@ def infer_metadata(
         if arr.ndim != 2:
             raise ValueError(f"X must be 2-dimensional, got shape {arr.shape}")
         feature_names = [f"f{i}" for i in range(arr.shape[1])]
-        categorical_features = [str(c) for c in (categorical_features or [])]
+        categorical_features = [
+            str(c)
+            for c in (categorical_features or [])
+            if str(c) not in set(frequency_encoded_features)
+        ]
         missing = [c for c in categorical_features if c not in feature_names]
         if missing:
             raise ValueError(
@@ -77,18 +100,60 @@ def infer_metadata(
         if numerical_features is None:
             numerical_features = [f for f in feature_names if f not in set(categorical_features)]
 
+    missing = [c for c in frequency_encoded_features if c not in feature_names]
+    if missing:
+        raise ValueError(f"frequency_encoded_features {missing} not found in columns")
+    overlap = sorted(set(frequency_encoded_features) & set(categorical_features))
+    if overlap:
+        raise ValueError(
+            f"Features {overlap} appear in both categorical_features and "
+            "frequency_encoded_features; choose one encoding per column."
+        )
+    # Frequency-encoded columns are numerical downstream.
+    numerical_features = list(numerical_features) + [
+        c for c in frequency_encoded_features if c not in set(numerical_features)
+    ]
+
     # Fit category maps from the training data.
     category_maps: dict[str, list[str]] = {}
     for cat in categorical_features:
-        col = _get_column(X, feature_names, cat)
-        values = [str(v) for v in col if not _is_missing(v)]
-        category_maps[cat] = sorted(set(values))
+        declared = _declared_categories(X, cat)
+        if declared is not None:
+            # pandas.Categorical: keep the declared order, including
+            # categories not observed in this sample.
+            category_maps[cat] = declared
+        else:
+            col = _get_column(X, feature_names, cat)
+            values = [str(v) for v in col if not _is_missing(v)]
+            category_maps[cat] = sorted(set(values))
+        if len(category_maps[cat]) > HIGH_CARDINALITY_WARN_THRESHOLD:
+            warnings.warn(
+                f"Categorical feature {cat!r} has {len(category_maps[cat])} "
+                "categories; subset splits fall back to ordered thresholds "
+                "above max_bins categories. Consider "
+                "frequency_encoded_features or grouping rare categories.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    # Fit frequency maps (proportion of training rows per category).
+    frequency_maps: dict[str, dict[str, float]] = {}
+    n_rows = len(X)
+    for feat in frequency_encoded_features:
+        col = _get_column(X, feature_names, feat)
+        counts: dict[str, int] = {}
+        for v in col:
+            if not _is_missing(v):
+                key = str(v)
+                counts[key] = counts.get(key, 0) + 1
+        frequency_maps[feat] = {k: c / n_rows for k, c in counts.items()}
 
     return FeatureMetadata(
         feature_names=feature_names,
         numerical_features=numerical_features,
         categorical_features=categorical_features,
         category_maps=category_maps,
+        frequency_maps=frequency_maps,
     )
 
 
@@ -116,6 +181,7 @@ def encode_features(X: Any, metadata: FeatureMetadata) -> np.ndarray:
     n_rows = len(X)
     out = np.empty((n_rows, metadata.n_features), dtype=np.float64)
     cat_set = set(metadata.categorical_features)
+    freq_set = set(metadata.frequency_maps)
     for j, name in enumerate(metadata.feature_names):
         col = _get_column(X, metadata.feature_names, name)
         if name in cat_set:
@@ -123,9 +189,35 @@ def encode_features(X: Any, metadata: FeatureMetadata) -> np.ndarray:
             out[:, j] = [
                 np.nan if _is_missing(v) else mapping.get(str(v), np.nan) for v in col
             ]
+        elif name in freq_set:
+            freq = metadata.frequency_maps[name]
+            # Unseen categories get 0.0: zero observed training frequency.
+            out[:, j] = [
+                np.nan if _is_missing(v) else freq.get(str(v), 0.0) for v in col
+            ]
         else:
-            out[:, j] = np.asarray(col, dtype=np.float64)
+            try:
+                out[:, j] = np.asarray(col, dtype=np.float64)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"Column {name!r} is numerical but contains values that "
+                    f"cannot be cast to float ({exc}). Declare it in "
+                    "categorical_features (or frequency_encoded_features), "
+                    "or clean the column."
+                ) from exc
     return out
+
+
+def _declared_categories(X: Any, name: str) -> list[str] | None:
+    """Declared category order for ``pandas.Categorical`` columns, else None."""
+    if not _is_dataframe(X):
+        return None
+    import pandas as pd
+
+    dtype = X[name].dtype
+    if isinstance(dtype, pd.CategoricalDtype):
+        return [str(c) for c in dtype.categories]
+    return None
 
 
 def _get_column(X: Any, feature_names: list[str], name: str):

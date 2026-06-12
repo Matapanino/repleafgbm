@@ -10,8 +10,24 @@ and where it is going.
   accepts explicit feature lists. For pandas DataFrames, object / category /
   bool dtype columns are auto-detected as categorical when not specified.
   For ndarray input, columns are referred to as `"f<index>"`.
-- Categoricals are **ordinal-encoded** to float codes (categories sorted as
-  strings; the mapping lives in `FeatureMetadata.category_maps`).
+- Categoricals are **ordinal-encoded** to float codes (the mapping lives in
+  `FeatureMetadata.category_maps`). Observed values are sorted as strings —
+  except **`pandas.Categorical` columns, whose declared category order is
+  preserved** (Phase 15), including categories declared but not observed in
+  the training sample, so they keep a stable code at prediction time. A
+  column declared numerical that cannot be cast to float raises with the
+  column named; auto-detected columns with more than 256 categories raise a
+  UserWarning (subset splits silently fall back to ordered thresholds above
+  `max_bins` categories).
+- **Frequency encoding (opt-in, Phase 15)**:
+  `RepLeafDataset(..., frequency_encoded_features=[...])` encodes a column
+  by its training-set frequency (proportion of rows) instead of an ordinal
+  code. The column is *numerical* downstream — threshold splits, encoder
+  visibility — making it the recommended treatment for very-high-cardinality
+  columns. Unseen categories encode to 0.0 (zero observed frequency);
+  missing values stay NaN. The maps live in `FeatureMetadata.frequency_maps`
+  and serialize with the model (format_version 4; ordinal-only models keep
+  writing v3).
 - **Native categorical subset splits (Phase 8).** Declared categorical
   features get one histogram bin per category; at each node the categories
   are sorted by their smoothed Newton direction `sum_g / (sum_h + cat_smooth)`
@@ -56,15 +72,17 @@ now: subset splits make the arbitrary code order irrelevant for routing.
    `max_cat_threshold`) and `extract_routes` support for LightGBM `==`
    splits (exact prediction reproduction tested). Remaining refinement:
    guard-value tuning per dataset (current values follow LightGBM defaults).
-2. **Target / frequency encoding** — opt-in preprocessing with OOF leakage
-   protection (ties into the OOF utilities planned for v0.2).
+2. ~~Frequency encoding~~ — implemented (Phase 15,
+   `frequency_encoded_features`). **Target encoding** remains future work:
+   it needs OOF leakage protection (ties into the `oof_predictions` utility
+   from v0.2).
 3. **Category embeddings in the encoder** — learned embedding tables per
    categorical feature feeding the leaf models, once PyTorch encoders land.
    This makes categorical information available to the *smooth* part of the
    model, not only the router.
-4. **pandas dtype fidelity** — respect `pandas.Categorical` category order,
-   stable dtype inference rules, explicit warnings on high-cardinality
-   columns.
+4. ~~pandas dtype fidelity~~ — implemented (Phase 15): `pandas.Categorical`
+   declared order respected, clear cast errors for mistyped numerical
+   columns, high-cardinality warnings.
 5. **CatBoost backend** (backend_strategy.md) for categorical-heavy datasets
    as an external-model diversity source.
 

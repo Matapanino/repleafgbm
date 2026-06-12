@@ -29,12 +29,14 @@ from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.encoders import encoder_from_config
 from repleafgbm.encoders.base import BaseEncoder
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 #: Older versions this build can still read. v1 lacks per-node
 #: ``missing_left`` (defaulted to True, the convention those trees used);
 #: v2 lacks categorical subset splits (``left_categories``), which v1/v2
-#: trees never contained.
-READABLE_VERSIONS = (1, 2, 3)
+#: trees never contained; v4 adds optional ``frequency_maps`` to
+#: feature_metadata.json (written only when frequency encoding is used, so
+#: ordinal-only models stay readable by v3 builds).
+READABLE_VERSIONS = (1, 2, 3, 4)
 
 
 def save_model_dir(
@@ -50,7 +52,9 @@ def save_model_dir(
     path.mkdir(parents=True, exist_ok=True)
 
     model_config = {
-        "format_version": FORMAT_VERSION,
+        # frequency_maps is the only v4 schema addition; models that don't
+        # use it keep writing v3 so older builds can still read them.
+        "format_version": FORMAT_VERSION if metadata.frequency_maps else 3,
         "model_class": model_class,
         "objective": booster.objective.name,
         "config": config,
@@ -90,7 +94,10 @@ def load_model_dir(path: str | Path) -> dict:
 
     Returns a dict with keys: model_class, config, objective, booster,
     encoder (or None), metadata. The sklearn-facing classes reassemble
-    themselves from these parts.
+    themselves from these parts. The directory schema is validated up
+    front: missing files, missing keys, or leaf-parameter arrays that do
+    not match the trees raise with the offending file named, instead of
+    failing deep inside prediction.
     """
     path = Path(path)
     if not (path / "model_config.json").exists():
@@ -103,9 +110,12 @@ def load_model_dir(path: str | Path) -> dict:
             f"Unsupported model format version {version!r}; this build reads "
             f"versions {READABLE_VERSIONS}"
         )
+    _require_keys(model_config, ("model_class", "objective", "config"), "model_config.json")
+    _require_files(path, ("tree_ensemble.json", "leaf_params.npz", "feature_metadata.json"))
 
     config = model_config["config"]
     ensemble = _load_json(path / "tree_ensemble.json")
+    _require_keys(ensemble, ("init_score", "learning_rate", "trees"), "tree_ensemble.json")
     defaults = BoosterParams()
     params = BoosterParams(
         n_estimators=config.get("n_estimators", len(ensemble["trees"])),
@@ -127,6 +137,19 @@ def load_model_dir(path: str | Path) -> dict:
 
     with np.load(path / "leaf_params.npz") as data:
         keys = set(data.files)
+        n_trees = len(booster.trees_)
+        missing = [
+            f"tree_{i}_{part}"
+            for i in range(n_trees)
+            for part in ("bias", "weights")
+            if f"tree_{i}_{part}" not in keys
+        ]
+        if missing:
+            raise ValueError(
+                f"leaf_params.npz is missing arrays {missing[:4]} for the "
+                f"{n_trees} trees in tree_ensemble.json; the model directory "
+                "is incomplete or corrupted"
+            )
         booster.leaf_values_ = [
             LeafValues(
                 bias=data[f"tree_{i}_bias"],
@@ -138,11 +161,18 @@ def load_model_dir(path: str | Path) -> dict:
             )
             for i in range(len(booster.trees_))
         ]
+    _validate_leaf_values(booster)
 
     encoder = None
     enc_config_path = path / "encoder_config.json"
     if enc_config_path.exists():
+        if not (path / "encoder_state.npz").exists():
+            raise FileNotFoundError(
+                "encoder_config.json is present but encoder_state.npz is "
+                "missing; the model directory is incomplete or corrupted"
+            )
         enc_info = _load_json(enc_config_path)
+        _require_keys(enc_info, ("name", "config"), "encoder_config.json")
         encoder = encoder_from_config(enc_info["name"], enc_info["config"])
         with np.load(path / "encoder_state.npz") as data:
             encoder.set_state(dict(data))
@@ -157,6 +187,53 @@ def load_model_dir(path: str | Path) -> dict:
         "encoder": encoder,
         "metadata": metadata,
     }
+
+
+def _require_files(path: Path, names: tuple[str, ...]) -> None:
+    missing = [n for n in names if not (path / n).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"Model directory {path} is missing {missing}; "
+            "it is incomplete or corrupted"
+        )
+
+
+def _require_keys(obj: dict, keys: tuple[str, ...], file_name: str) -> None:
+    missing = [k for k in keys if k not in obj]
+    if missing:
+        raise ValueError(
+            f"{file_name} is missing required keys {missing}; "
+            "the model directory is incomplete or corrupted"
+        )
+
+
+def _validate_leaf_values(booster: Booster) -> None:
+    """Cross-check leaf parameter arrays against the routing trees."""
+    for i, (tree, lv) in enumerate(zip(booster.trees_, booster.leaf_values_)):
+        if lv.bias.ndim != 1 or lv.weights.ndim != 2:
+            raise ValueError(
+                f"leaf_params.npz tree_{i}: bias must be 1-D and weights 2-D, "
+                f"got shapes {lv.bias.shape} and {lv.weights.shape}"
+            )
+        if lv.bias.shape[0] != tree.n_leaves or lv.weights.shape[0] != tree.n_leaves:
+            raise ValueError(
+                f"leaf_params.npz tree_{i} has {lv.bias.shape[0]} bias / "
+                f"{lv.weights.shape[0]} weight rows but the tree has "
+                f"{tree.n_leaves} leaves; the model directory is inconsistent"
+            )
+        if (lv.z_min is None) != (lv.z_max is None):
+            raise ValueError(
+                f"leaf_params.npz tree_{i} has only one of zmin/zmax; "
+                "the extrapolation-guard bounds must come in pairs"
+            )
+        if lv.z_min is not None and (
+            lv.z_min.shape != lv.weights.shape or lv.z_max.shape != lv.weights.shape
+        ):
+            raise ValueError(
+                f"leaf_params.npz tree_{i}: zmin/zmax shapes "
+                f"{lv.z_min.shape}/{lv.z_max.shape} do not match the weight "
+                f"matrix shape {lv.weights.shape}"
+            )
 
 
 def _dump_json(path: Path, obj: dict) -> None:

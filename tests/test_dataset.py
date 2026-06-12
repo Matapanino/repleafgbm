@@ -63,6 +63,78 @@ def test_numerical_view_excludes_categoricals():
     assert ds.get_numerical_features().shape == (4, 2)
 
 
+def test_pandas_categorical_declared_order_preserved():
+    df = _make_df()
+    # Declared order "b" < "a", plus "c" declared but never observed.
+    df["cat1"] = pd.Categorical(df["cat1"], categories=["b", "a", "c"])
+    ds = RepLeafDataset(df)
+    assert ds.metadata.category_maps["cat1"] == ["b", "a", "c"]
+    cat_col = ds.get_raw_features()[:, ds.feature_names.index("cat1")]
+    # "a" -> 1, "b" -> 0 (declared order, not sorted), missing -> NaN
+    assert cat_col[0] == 1.0 and cat_col[1] == 0.0 and cat_col[2] == 1.0
+    assert np.isnan(cat_col[3])
+
+    # The declared-but-unobserved category has a stable code at predict time.
+    df_new = _make_df()
+    df_new.loc[0, "cat1"] = "c"
+    ds_new = RepLeafDataset(df_new, metadata=ds.metadata)
+    assert ds_new.get_raw_features()[0, ds.feature_names.index("cat1")] == 2.0
+
+
+def test_frequency_encoding():
+    df = pd.DataFrame(
+        {
+            "num1": [1.0, 2.0, 3.0, 4.0],
+            "city": ["tokyo", "tokyo", "osaka", None],
+        }
+    )
+    ds = RepLeafDataset(df, frequency_encoded_features=["city"])
+    # Frequency-encoded columns are numerical downstream.
+    assert ds.metadata.categorical_features == []
+    assert "city" in ds.metadata.numerical_features
+    assert ds.get_numerical_features().shape == (4, 2)
+
+    col = ds.get_raw_features()[:, ds.feature_names.index("city")]
+    np.testing.assert_allclose(col[:3], [0.5, 0.5, 0.25])
+    assert np.isnan(col[3])
+
+    # Unseen category -> 0.0 (zero training frequency), missing stays NaN.
+    df_new = df.copy()
+    df_new.loc[0, "city"] = "kyoto"
+    ds_new = RepLeafDataset(df_new, metadata=ds.metadata)
+    col_new = ds_new.get_raw_features()[:, ds.feature_names.index("city")]
+    assert col_new[0] == 0.0
+
+
+def test_frequency_encoding_roundtrips_metadata():
+    from repleafgbm.data.metadata import FeatureMetadata
+
+    df = pd.DataFrame({"num1": [1.0, 2.0], "city": ["a", "b"]})
+    ds = RepLeafDataset(df, frequency_encoded_features=["city"])
+    restored = FeatureMetadata.from_dict(ds.metadata.to_dict())
+    assert restored.frequency_maps == ds.metadata.frequency_maps
+
+
+def test_frequency_and_categorical_overlap_rejected():
+    df = pd.DataFrame({"city": ["a", "b"]})
+    with pytest.raises(ValueError, match="both categorical"):
+        RepLeafDataset(
+            df, categorical_features=["city"], frequency_encoded_features=["city"]
+        )
+
+
+def test_uncastable_numerical_column_message():
+    df = pd.DataFrame({"num1": [1.0, 2.0], "messy": ["1.5", "oops"]})
+    with pytest.raises(ValueError, match="messy.*categorical_features"):
+        RepLeafDataset(df, numerical_features=["num1", "messy"], categorical_features=[])
+
+
+def test_high_cardinality_warning():
+    df = pd.DataFrame({"id": [f"u{i}" for i in range(300)]})
+    with pytest.warns(UserWarning, match="300 categories"):
+        RepLeafDataset(df)
+
+
 def test_y_length_mismatch_raises():
     with pytest.raises(ValueError, match="rows"):
         RepLeafDataset(np.zeros((4, 2)), y=[1.0, 2.0])

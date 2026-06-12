@@ -3,6 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# torch and lightgbm each bundle their own OpenMP runtime; loading both into
+# one process can deadlock parallel regions on macOS. Single-threaded OpenMP
+# avoids it, and the test suite/examples are small enough not to care.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+
 if python3 -m ruff --version >/dev/null 2>&1; then
     python3 -m ruff check src tests examples benchmarks
 fi

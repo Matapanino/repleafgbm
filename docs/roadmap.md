@@ -166,15 +166,35 @@ Everything below v0 is a plan, not a promise of API stability.
 - The remaining encoder direction on real data is interaction-aware
   features (cross-feature blocks)
 
-## v0.1 — robustness
+## Phase 15 — v0.1 robustness ✅ (2026-06-12)
+
+- Categorical preprocessing (docs/categorical_features.md):
+  `pandas.Categorical` declared category order respected (unobserved
+  declared categories keep stable codes); opt-in **frequency encoding**
+  (`frequency_encoded_features` — column becomes numerical: threshold
+  splits + encoder visibility, unseen → 0.0); clear cast errors for
+  mistyped numerical columns; UserWarning above 256 categories
+- Serialization (docs/serialization.md): schema validation on load
+  (required files/keys, leaf params cross-checked against tree leaf
+  counts, paired extrapolation bounds); `model.summary()` +
+  `summary.txt` written on save; format_version 4 for frequency maps
+  (ordinal-only models keep writing v3); v2 migration test added
+- User-supplied eval metrics: `eval_metric` accepts a name, a
+  `BaseMetric` instance, or a plain callable; `repleafgbm.make_metric`
+  for named/greater-is-better wrapping; custom metrics serialize by name
+- Target encoding deliberately deferred (needs OOF leakage protection,
+  ties to `oof_predictions`)
+
+## v0.1 — robustness ✅ (closed by Phase 15)
 
 - ~~Early stopping on eval sets~~ done in Phase 1a
-- ~~More metrics (MAE, AUC, accuracy)~~ done in Phase 1a; user-supplied
-  callable metrics still open
-- Improved categorical preprocessing (frequency/target encoding options,
-  explicit `pandas.Categorical` dtype support, better dtype inference)
-- Better serialization (schema validation, format migration tests,
-  human-readable model summary)
+- ~~More metrics (MAE, AUC, accuracy)~~ done in Phase 1a;
+  ~~user-supplied callable metrics~~ done in Phase 15 (`make_metric`)
+- ~~Improved categorical preprocessing~~ done in Phase 15 (frequency
+  encoding, `pandas.Categorical` dtype support, clearer dtype errors);
+  target encoding deferred to the OOF utilities line
+- ~~Better serialization (schema validation, format migration tests,
+  human-readable model summary)~~ done in Phase 15
 - ~~Feature importance (split count / gain)~~ done in Phase 5
   (`feature_importances_` gain-normalized, `get_feature_importance` raw;
   split gains stored per tree node, imported from LightGBM dumps for

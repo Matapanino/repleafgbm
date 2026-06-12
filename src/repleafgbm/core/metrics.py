@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 import numpy as np
 
@@ -69,6 +70,43 @@ class AUC(BaseMetric):
         ranks = avg_rank[inverse]
         u = ranks[pos].sum() - n_pos * (n_pos + 1) / 2.0
         return float(u / (n_pos * n_neg))
+
+
+class _CallableMetric(BaseMetric):
+    """Adapter wrapping a plain ``(y_true, y_pred) -> float`` callable."""
+
+    def __init__(
+        self,
+        fn: Callable[[np.ndarray, np.ndarray], float],
+        name: str,
+        minimize: bool,
+    ) -> None:
+        self._fn = fn
+        self.name = name
+        self.minimize = minimize
+
+    def __call__(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        return float(self._fn(y_true, y_pred))
+
+
+def make_metric(
+    fn: Callable[[np.ndarray, np.ndarray], float],
+    name: str | None = None,
+    minimize: bool = True,
+) -> BaseMetric:
+    """Wrap a callable as an eval metric usable for monitoring/early stopping.
+
+    Args:
+        fn: ``(y_true, y_pred) -> float``. ``y_pred`` is on the prediction
+            scale (probabilities for binary classification, values for
+            regression).
+        name: Key used in ``evals_result_``; defaults to ``fn.__name__``.
+        minimize: False for greater-is-better metrics — this drives the early
+            stopping direction.
+    """
+    if not callable(fn):
+        raise TypeError(f"make_metric expects a callable, got {type(fn).__name__}")
+    return _CallableMetric(fn, name or getattr(fn, "__name__", "custom_metric"), minimize)
 
 
 _METRIC_REGISTRY: dict[str, type[BaseMetric]] = {

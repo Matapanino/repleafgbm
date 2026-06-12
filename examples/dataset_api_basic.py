@@ -51,10 +51,22 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "repleaf_model"
-        model.save_model(path)
+        model.save_model(path)  # also writes a human-readable summary.txt
         loaded = RepLeafRegressor.load_model(path)
         same = np.allclose(model.predict(df_valid), loaded.predict(df_valid))
         print(f"save/load round-trip predictions identical: {same}")
+        print("--- summary.txt ---")
+        print((path / "summary.txt").read_text(), end="")
+
+    # Frequency encoding: an opt-in alternative for (high-cardinality)
+    # categoricals — the column becomes numerical (its training frequency),
+    # so it gets threshold splits and is visible to the encoder.
+    freq_train = RepLeafDataset(df_train, y_train, frequency_encoded_features=["city"])
+    freq_model = RepLeafRegressor(n_estimators=40, num_leaves=8, random_state=42)
+    freq_model.fit(freq_train)
+    pred = freq_model.predict(RepLeafDataset(df_valid, metadata=freq_train.metadata))
+    rmse = float(np.sqrt(np.mean((pred - y_valid) ** 2)))
+    print(f"frequency-encoded city: valid RMSE {rmse:.4f}")
 
 
 if __name__ == "__main__":

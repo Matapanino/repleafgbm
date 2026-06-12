@@ -1,9 +1,22 @@
-"""Save/load round-trip tests."""
+"""Save/load round-trip, schema-validation, and format-migration tests."""
+
+import json
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from repleafgbm import RepLeafClassifier, RepLeafRegressor
+from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor
+
+
+def _fitted_model(tmp_path, regression_data, **kwargs):
+    Xtr, ytr, Xte, _ = regression_data
+    params = dict(n_estimators=5, num_leaves=8, random_state=42)
+    params.update(kwargs)
+    model = RepLeafRegressor(**params).fit(Xtr, ytr)
+    path = tmp_path / "model"
+    model.save_model(path)
+    return model, path, Xte
 
 
 @pytest.mark.parametrize(
@@ -62,3 +75,126 @@ def test_missing_directory_rejected(tmp_path):
 def test_unfitted_save_rejected(tmp_path):
     with pytest.raises(RuntimeError, match="not fitted"):
         RepLeafRegressor().save_model(tmp_path / "model")
+
+
+# --------------------------------------------------------------------- #
+# Schema validation
+# --------------------------------------------------------------------- #
+def test_missing_required_file_rejected(tmp_path, regression_data):
+    _, path, _ = _fitted_model(tmp_path, regression_data)
+    (path / "leaf_params.npz").unlink()
+    with pytest.raises(FileNotFoundError, match="leaf_params.npz"):
+        RepLeafRegressor.load_model(path)
+
+
+def test_missing_ensemble_key_rejected(tmp_path, regression_data):
+    _, path, _ = _fitted_model(tmp_path, regression_data)
+    ensemble = json.loads((path / "tree_ensemble.json").read_text())
+    del ensemble["trees"]
+    (path / "tree_ensemble.json").write_text(json.dumps(ensemble))
+    with pytest.raises(ValueError, match="tree_ensemble.json.*trees"):
+        RepLeafRegressor.load_model(path)
+
+
+def test_missing_leaf_arrays_rejected(tmp_path, regression_data):
+    _, path, _ = _fitted_model(tmp_path, regression_data)
+    with np.load(path / "leaf_params.npz") as data:
+        arrays = {k: data[k] for k in data.files if k != "tree_0_bias"}
+    np.savez(path / "leaf_params.npz", **arrays)
+    with pytest.raises(ValueError, match="tree_0_bias"):
+        RepLeafRegressor.load_model(path)
+
+
+def test_inconsistent_leaf_arrays_rejected(tmp_path, regression_data):
+    _, path, _ = _fitted_model(tmp_path, regression_data)
+    with np.load(path / "leaf_params.npz") as data:
+        arrays = {k: data[k] for k in data.files}
+    arrays["tree_0_bias"] = arrays["tree_0_bias"][:-1]  # one leaf short
+    np.savez(path / "leaf_params.npz", **arrays)
+    with pytest.raises(ValueError, match="tree_0.*leaves"):
+        RepLeafRegressor.load_model(path)
+
+
+def test_missing_encoder_state_rejected(tmp_path, regression_data):
+    _, path, _ = _fitted_model(tmp_path, regression_data)
+    (path / "encoder_state.npz").unlink()
+    with pytest.raises(FileNotFoundError, match="encoder_state.npz"):
+        RepLeafRegressor.load_model(path)
+
+
+# --------------------------------------------------------------------- #
+# Format migration
+# --------------------------------------------------------------------- #
+def test_format_v2_compat(tmp_path, regression_data):
+    """v2 directories (no left_categories) load and predict identically."""
+    model, path, Xte = _fitted_model(tmp_path, regression_data)
+    pred = model.predict(Xte)
+
+    cfg = json.loads((path / "model_config.json").read_text())
+    cfg["format_version"] = 2
+    (path / "model_config.json").write_text(json.dumps(cfg))
+    ensemble = json.loads((path / "tree_ensemble.json").read_text())
+    for tree in ensemble["trees"]:
+        tree.pop("left_categories", None)
+    (path / "tree_ensemble.json").write_text(json.dumps(ensemble))
+
+    loaded = RepLeafRegressor.load_model(path)
+    np.testing.assert_allclose(loaded.predict(Xte), pred)
+
+
+def test_ordinal_models_stay_version_3(tmp_path, regression_data):
+    """Models without frequency encoding keep the v3 format for old readers."""
+    _, path, _ = _fitted_model(tmp_path, regression_data)
+    cfg = json.loads((path / "model_config.json").read_text())
+    assert cfg["format_version"] == 3
+
+
+def test_frequency_encoded_roundtrip_is_version_4(tmp_path):
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame(
+        {
+            "num1": rng.normal(size=200),
+            "city": rng.choice(["tokyo", "osaka", "kyoto"], size=200),
+        }
+    )
+    y = df["num1"] * 2 + (df["city"] == "tokyo") + rng.normal(0, 0.1, 200)
+    train = RepLeafDataset(df, y, frequency_encoded_features=["city"])
+    model = RepLeafRegressor(n_estimators=5, num_leaves=8, random_state=42)
+    model.fit(train)
+    test = RepLeafDataset(df, metadata=train.metadata)
+    pred = model.predict(test)
+
+    path = tmp_path / "model"
+    model.save_model(path)
+    cfg = json.loads((path / "model_config.json").read_text())
+    assert cfg["format_version"] == 4
+
+    loaded = RepLeafRegressor.load_model(path)
+    assert loaded.metadata_.frequency_maps == train.metadata.frequency_maps
+    np.testing.assert_allclose(loaded.predict(df), pred)
+
+
+# --------------------------------------------------------------------- #
+# Model summary
+# --------------------------------------------------------------------- #
+def test_summary_written_and_readable(tmp_path, regression_data):
+    model, path, _ = _fitted_model(tmp_path, regression_data)
+    text = (path / "summary.txt").read_text()
+    assert text == model.summary() + "\n"
+    assert "RepLeafRegressor" in text
+    assert "trees: 5 grown" in text
+    assert "top features by gain" in text
+
+
+def test_summary_reports_early_stopping(regression_data):
+    Xtr, ytr, Xte, yte = regression_data
+    model = RepLeafRegressor(
+        n_estimators=50, num_leaves=8, early_stopping_rounds=3, random_state=42
+    ).fit(Xtr, ytr, eval_set=[(Xte, yte)])
+    if model.best_iteration_ is not None:
+        assert "early stopping" in model.summary()
+
+
+def test_summary_requires_fit():
+    with pytest.raises(RuntimeError, match="not fitted"):
+        RepLeafRegressor().summary()

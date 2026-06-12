@@ -34,6 +34,10 @@ class RepLeafDataset:
             use "f<index>" names. If None and X is a DataFrame, object /
             category / bool columns are auto-detected as categorical.
         numerical_features: Names of numerical columns. Usually inferred.
+        frequency_encoded_features: Columns to encode by training frequency
+            instead of an ordinal code. They are numerical downstream
+            (threshold splits, encoder input); unseen categories encode to
+            0.0, missing values to NaN. See docs/categorical_features.md.
         metadata: Pre-fitted FeatureMetadata. When given (e.g. at prediction
             time), the dataset re-applies the training-time encoding instead
             of inferring a new one.
@@ -49,6 +53,7 @@ class RepLeafDataset:
         y: Any | None = None,
         categorical_features: list[str] | None = None,
         numerical_features: list[str] | None = None,
+        frequency_encoded_features: list[str] | None = None,
         metadata: FeatureMetadata | None = None,
     ) -> None:
         if metadata is None:
@@ -56,6 +61,7 @@ class RepLeafDataset:
                 X,
                 categorical_features=categorical_features,
                 numerical_features=numerical_features,
+                frequency_encoded_features=frequency_encoded_features,
             )
         self.metadata = metadata
         self._X_raw = encode_features(X, metadata)

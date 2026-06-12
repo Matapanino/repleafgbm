@@ -9,7 +9,7 @@
 - Stay diff-able and inspectable where possible (JSON for structure, npz for
   numeric payloads).
 
-## Directory layout (format_version = 3)
+## Directory layout (format_version = 3 / 4)
 
 ```text
 model_dir/
@@ -18,7 +18,8 @@ model_dir/
   leaf_params.npz        # tree_{i}_bias (n_leaves,), tree_{i}_weights (n_leaves, d_z)
   encoder_config.json    # encoder registry name + constructor config (absent for constant leaves)
   encoder_state.npz      # fitted encoder arrays (bin edges, means/scales, projection)
-  feature_metadata.json  # feature names/types, categorical code maps
+  feature_metadata.json  # feature names/types, categorical code maps, frequency maps (v4)
+  summary.txt            # human-readable model summary; informational, never read back
 ```
 
 What each file owns:
@@ -49,17 +50,43 @@ What each file owns:
   its base encoder's config and prefixes its state keys with `base__`.
 - **feature_metadata.json** — the train-time `FeatureMetadata`; applied to
   prediction inputs so categorical codes and column order always match.
+  `frequency_maps` (Phase 15 frequency encoding) is written only when used —
+  that is the only v4 schema addition, so ordinal-only models keep writing
+  format_version 3 and stay readable by older builds.
+- **summary.txt** — the output of `model.summary()`: class, objective, tree
+  counts (with early-stopping state), leaf model + encoder, feature counts,
+  key hyperparameters, and the top features by gain. Written for humans;
+  the loader ignores it.
+
+## Validation on load (Phase 15)
+
+`load_model_dir` validates the schema up front instead of failing deep
+inside prediction, with the offending file named in the error:
+
+- required files exist (`tree_ensemble.json`, `leaf_params.npz`,
+  `feature_metadata.json`; `encoder_state.npz` whenever
+  `encoder_config.json` is present),
+- required keys exist (`model_class` / `objective` / `config`;
+  `init_score` / `learning_rate` / `trees`; encoder `name` / `config`),
+- leaf parameters are cross-checked against the routing trees: every tree
+  has its bias/weights arrays, row counts equal the tree's leaf count, and
+  the extrapolation-guard bounds (`zmin`/`zmax`) come in pairs with the
+  weight matrix's shape.
 
 ## Versioning policy
 
 - `format_version` increments on any breaking layout change.
 - Loaders reject unknown versions rather than guessing.
-- Supported read versions: **1, 2, and 3**. v1 directories lack
+- Supported read versions: **1, 2, 3, and 4**. v1 directories lack
   `missing_left` (loaded with the all-True default those trees were trained
   under, covered by `test_format_v1_compat`); v1/v2 lack `left_categories`
-  (categorical subset splits, v3) — such trees never contained them.
-- Once the library is public: migration code for at least one previous
-  version, and a round-trip test per supported version.
+  (categorical subset splits, v3; covered by `test_format_v2_compat`);
+  v4 adds optional `frequency_maps` to feature_metadata.json and is only
+  written when frequency encoding is used (covered by
+  `test_frequency_encoded_roundtrip_is_version_4` /
+  `test_ordinal_models_stay_version_3`).
+- Custom (callable) eval metrics are stored by name only; a reloaded model
+  must be handed the metric object again before refitting with eval sets.
 
 ## Future extensions (not implemented)
 

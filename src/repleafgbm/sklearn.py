@@ -18,7 +18,7 @@ from sklearn.base import BaseEstimator
 
 from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.leaf_models import make_leaf_model
-from repleafgbm.core.metrics import get_metric
+from repleafgbm.core.metrics import BaseMetric, get_metric, make_metric
 from repleafgbm.core.objectives import get_objective
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
@@ -65,9 +65,16 @@ class BaseRepLeafModel(BaseEstimator):
         early_stopping_rounds: Stop training when the first eval_set's metric
             has not improved for this many rounds; ``best_iteration_`` is set
             and ``predict`` uses the best iteration. Requires eval_set.
-        eval_metric: Metric name for eval_set monitoring (and early stopping).
-            Defaults to "rmse" for regression and "logloss" for
-            classification; also available: "mae", "auc", "accuracy".
+        eval_metric: Metric for eval_set monitoring (and early stopping). A
+            registered name ("rmse", "mae", "logloss", "auc", "accuracy"), a
+            :class:`~repleafgbm.core.metrics.BaseMetric` instance, or a plain
+            ``(y_true, y_pred) -> float`` callable (wrapped via
+            :func:`~repleafgbm.core.metrics.make_metric`; assumed
+            smaller-is-better — pass a ``make_metric(..., minimize=False)``
+            result for greater-is-better metrics). Defaults to "rmse" for
+            regression and "logloss" for classification. Custom metrics are
+            saved by name only: a reloaded model must be given the metric
+            object again before refitting with eval sets.
         random_state: Seed controlling all internal randomness.
     """
 
@@ -93,7 +100,7 @@ class BaseRepLeafModel(BaseEstimator):
         max_cat_threshold: int = 32,
         split_backend: str = "auto",
         early_stopping_rounds: int | None = None,
-        eval_metric: str | None = None,
+        eval_metric: str | BaseMetric | Any | None = None,
         random_state: int | None = 42,
     ) -> None:
         self.n_estimators = n_estimators
@@ -179,7 +186,7 @@ class BaseRepLeafModel(BaseEstimator):
             self.encoder_,
             leaf_model,
             eval_sets=eval_sets or None,
-            eval_metric=get_metric(self.eval_metric or self._eval_metric_name),
+            eval_metric=self._resolve_eval_metric(),
         )
         self.evals_result_ = self.booster_.evals_result_
         return self
@@ -211,6 +218,17 @@ class BaseRepLeafModel(BaseEstimator):
         """Eval metric value at ``best_iteration_`` (None if unused/unfitted)."""
         booster = getattr(self, "booster_", None)
         return None if booster is None else booster.best_score_
+
+    def _resolve_eval_metric(self) -> BaseMetric:
+        """Accept a metric name, BaseMetric instance, or plain callable."""
+        metric = self.eval_metric
+        if metric is None:
+            return get_metric(self._eval_metric_name)
+        if isinstance(metric, BaseMetric):
+            return metric
+        if callable(metric):
+            return make_metric(metric)
+        return get_metric(metric)
 
     def _build_dataset(self, X: Any, y: Any | None) -> RepLeafDataset:
         if isinstance(X, RepLeafDataset):
@@ -350,6 +368,62 @@ class BaseRepLeafModel(BaseEstimator):
             encoder=self.encoder_,
             metadata=self.metadata_,
         )
+        # Informational only; the loader never reads it.
+        (Path(path) / "summary.txt").write_text(self.summary() + "\n")
+
+    def summary(self, top_features: int = 10) -> str:
+        """Human-readable description of the fitted model.
+
+        Also written to ``summary.txt`` inside the model directory by
+        :meth:`save_model` so a saved model can be inspected without loading
+        it.
+        """
+        self._check_is_fitted()
+        booster = self.booster_
+        n_trees = len(booster.trees_)
+        n_used = booster.best_iteration_ or n_trees
+        md = self.metadata_
+
+        lines = [f"{type(self).__name__} (objective: {booster.objective.name})"]
+        used = f"trees: {n_trees} grown, {n_used} used for prediction"
+        if booster.best_iteration_ is not None:
+            used += f" (early stopping, best_score={booster.best_score_:.6g})"
+        lines.append(used)
+        # Subclasses (e.g. router extraction) drop some hyperparameters, so
+        # describe only what this estimator actually has.
+        params = self.get_params()
+        leaf_line = f"leaf_model: {params.get('leaf_model', 'constant')}"
+        if self.encoder_ is not None:
+            leaf_line += (
+                f", encoder: {self.encoder_.name} "
+                f"(output_dim={self.encoder_.output_dim})"
+            )
+        lines.append(leaf_line)
+        feats = (
+            f"features: {md.n_features} ({len(md.numerical_features)} numerical, "
+            f"{len(md.categorical_features)} categorical"
+        )
+        if md.frequency_maps:
+            feats += f", {len(md.frequency_maps)} frequency-encoded"
+        lines.append(feats + ")")
+        shown = [
+            f"{k}={params[k]}"
+            for k in ("num_leaves", "learning_rate", "l2_leaf",
+                      "min_samples_leaf", "max_bins")
+            if k in params
+        ]
+        if shown:
+            lines.append(", ".join(shown))
+
+        importance = self.feature_importances_
+        order = np.argsort(importance)[::-1]
+        top = [i for i in order[:top_features] if importance[i] > 0]
+        if top:
+            lines.append(f"top features by gain (of {md.n_features}):")
+            lines += [
+                f"  {self.feature_names_in_[i]}: {importance[i]:.1%}" for i in top
+            ]
+        return "\n".join(lines)
 
     def _serializable_config(self, config: dict) -> dict:
         """Make get_params() JSON-safe; subclasses extend for their params."""
@@ -357,6 +431,13 @@ class BaseRepLeafModel(BaseEstimator):
         # and record only its registry name here.
         if isinstance(config.get("encoder"), BaseEncoder):
             config["encoder"] = config["encoder"].name
+        # Metric objects/callables are saved by name only; registered names
+        # resolve on refit, custom metrics must be passed in again.
+        metric = config.get("eval_metric")
+        if isinstance(metric, BaseMetric):
+            config["eval_metric"] = metric.name
+        elif metric is not None and not isinstance(metric, str):
+            config["eval_metric"] = getattr(metric, "__name__", str(metric))
         return config
 
     def _extra_config(self) -> dict:

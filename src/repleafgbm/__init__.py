@@ -6,6 +6,7 @@ local predictors.
 """
 
 from repleafgbm.classifier import RepLeafClassifier
+from repleafgbm.core.metrics import make_metric
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.regressor import RepLeafRegressor
 
@@ -15,5 +16,6 @@ __all__ = [
     "RepLeafRegressor",
     "RepLeafClassifier",
     "RepLeafDataset",
+    "make_metric",
     "__version__",
 ]
