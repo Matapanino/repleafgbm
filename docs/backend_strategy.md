@@ -76,7 +76,9 @@ The integration honors the guardrails: nothing in the native path imports
 `repleafgbm.external`; lightgbm is an optional extra
 (`pip install "repleafgbm[external]"`) checked at call time; the stacking
 recipe (OOF scores for train rows) lives in `examples/stacking_lightgbm.py`.
-XGBoost/CatBoost external models are still planned (v0.3).
+`XGBoostExternalModel` (Phase 19) provides the same duck-typed contract for
+XGBoost (xgboost checked at call time, custom objectives via `xgb_params`);
+CatBoost external models are still planned (v0.3).
 
 **router_extraction** — train a tree ensemble with the external library,
 freeze its routing, and fit RepLeaf-style embedded leaf models on the fixed

@@ -6,9 +6,9 @@ External libraries are trained as independent base models whose outputs
 diversity, not a wrapper. Guardrails:
 
 * Nothing in the native path imports this package.
-* Importing ``repleafgbm.external`` itself is safe without lightgbm
-  installed; the dependency is checked at call time with a clear message
-  (``pip install repleafgbm[external]``).
+* Importing ``repleafgbm.external`` itself is safe without lightgbm or
+  xgboost installed; each dependency is checked at call time with a clear
+  message (``pip install repleafgbm[external]`` / ``pip install xgboost``).
 """
 
 from repleafgbm.external.features import augment_features, external_feature_frame
@@ -19,9 +19,11 @@ from repleafgbm.external.router_extraction import (
     RouterExtractionRegressor,
     extract_routes,
 )
+from repleafgbm.external.xgboost_model import XGBoostExternalModel
 
 __all__ = [
     "LightGBMExternalModel",
+    "XGBoostExternalModel",
     "oof_predictions",
     "external_feature_frame",
     "augment_features",

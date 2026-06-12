@@ -243,7 +243,12 @@ Everything below v0 is a plan, not a promise of API stability.
 
 ## v0.3 — more external backends
 
-- XGBoost external_model backend (DMatrix path, custom objectives)
+- ~~XGBoost external_model backend~~ done in Phase 19 (2026-06-12):
+  `XGBoostExternalModel` with the same duck-typed contract as the LightGBM
+  one (fit / predict_score / predict_leaf_indices, native early stopping
+  with predictions pinned to the best iteration) — works unchanged with
+  `oof_predictions` / `augment_features`; custom XGBoost objectives pass
+  through `xgb_params`. Route extraction stays LightGBM-only
 - CatBoost external_model backend (categorical-heavy datasets; deep
   integration is known to be harder and may stay shallow)
 
