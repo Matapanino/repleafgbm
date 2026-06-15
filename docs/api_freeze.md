@@ -55,11 +55,12 @@ format changes bump the version and ship a migration test.
 
 ## Deliberately deferred (documented limitations, not blockers)
 
-- **Numeric ndarray predict for categorical models**: object-dtype arrays and
-  DataFrames both encode categoricals correctly; a *numeric* ndarray passed to
-  a model with declared categoricals still maps to NaN (the codes don't match
-  the string category maps). DataFrames remain the supported path for
-  categorical data. (audit_v0.md item 3 — narrowed, not yet detect-and-raise.)
+- **Numeric ndarray predict for categorical models**: a *numeric* ndarray
+  cannot carry category labels (its float codes never match the training string
+  category maps), so passing one to a model with declared categoricals now
+  **raises `ValueError`** instead of silently routing every row through the
+  missing branch (Phase 28b). DataFrames and `RepLeafDataset` (built with the
+  model's metadata) remain the supported paths for categorical data.
 - **`min_samples_linear`** stays hardwired to `2 * min_samples_leaf`. Exposing
   it is a backwards-compatible MINOR addition if a use case appears.
 - Compact (non-JSON) serialization remains a future option; the directory

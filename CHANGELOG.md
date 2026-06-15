@@ -5,6 +5,30 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.0.2] - 2026-06-15
+
+OSS-quality hardening; no public API or model-format changes.
+
+### Added
+- **PEP 561 typing marker** (`py.typed`): the shipped package now advertises its
+  inline type hints, so type checkers (mypy, pyright) resolve `repleafgbm`'s
+  public API.
+- **Cross-platform native wheels**: the optional Rust extension
+  `repleafgbm-native` is now built and published as Linux/macOS/Windows wheels
+  for CPython 3.10-3.12 (`.github/workflows/publish-native.yml`, maturin +
+  OIDC trusted publishing). `pip install repleafgbm-native` now gives PyPI users
+  the Rust split/leaf kernels (auto-detected) instead of a NumPy-only fallback.
+- **Coverage gate**: the test suite runs under `pytest-cov` on the Linux/3.12
+  lane with a `fail_under` floor (`pytest-cov` added to the `dev` extra;
+  `[tool.coverage]` configured in `pyproject.toml`).
+
+### Changed
+- **Cross-platform CI**: the `test` and `rust-backend` jobs now run on
+  ubuntu/macos/windows (`OMP_NUM_THREADS=1` to avoid the torch+lightgbm libomp
+  deadlock; `shell: bash` for uniform scripting). scikit-learn floor/1.6 pins
+  stay on Linux; macOS/Windows smoke-test the latest stack.
+- `CONTRIBUTING.md` documents the deprecation cycle (summarizing ADR 0003).
+
 ## [1.0.1] - 2026-06-15
 
 ### Fixed

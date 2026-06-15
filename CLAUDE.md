@@ -121,3 +121,50 @@ Conventions baked into the core (keep them consistent):
 - Rust/C++/CUDA native backend behind `backends/`
 - GPU / multi-GPU / distributed training
 - Benchmark suite
+
+## Subagents
+
+A specialized, context-isolated subagent fleet lives in `.claude/agents/`. Each agent
+is scoped to a RepLeafGBM task (not a generic job title), carries the core invariants in
+its own prompt (so it starts correct from cold), and owns a single write surface. Models
+are tiered: Opus for judgment/design, Sonnet for execution.
+
+| agent | model | owns / when to invoke |
+|---|---|---|
+| `literature-scout` | sonnet | External papers/methods/competitor techniques → dated note in `docs/research/`. Invoke before proposing/implementing something new. |
+| `experiment-runner` | sonnet | Runs `experiments/*.py` + `benchmarks/*.py` (multi-seed, detached OK), ensures the report lands in `experiments/results/`. Invoke to *run* a study. Does not interpret. |
+| `results-analyst` | opus | Interprets `experiments/results/*` into an evidence-backed verdict (keep/change a default, null result, follow-up). Invoke after a run finishes. |
+| `research-proposer` | opus | Designs a new encoder/objective/metric/experiment as a spec in `docs/proposals/` (with code-map touch points + validating experiment). Invoke to plan a direction. |
+| `core-reviewer` | opus | Architectural + correctness review of a diff against the invariants, ADRs, and test adequacy. Invoke before committing/merging source. |
+| `native-optimizer` | opus | Rust/`native/` + `backends/` performance; keeps NumPy⇄Rust parity green (both paths change together). Invoke for kernel/perf work or parity failures. |
+| `qa-verifier` | sonnet | Green-gate: runs `scripts/check.sh`/ruff/pytest with `OMP_NUM_THREADS=1`, fixes only mechanical (lint/import/format) failures, escalates the rest. Invoke as the pre-commit gate. |
+| `agent-architect` | opus | Meta-agent that owns the fleet: creates/edits agents, audits overlap/utilization, proposes merges/splits, keeps this section in sync. Edit agent files through it, not by hand. |
+
+### Invocation examples
+- "Use `experiment-runner` to run the OpenML suite (`--quick`), then `results-analyst` to give the verdict."
+- "Have `literature-scout` survey periodic feature encoders, then `research-proposer` turn the strongest idea into a spec."
+- "Run `native-optimizer` to add rayon to the histogram kernel; it must keep `test_rust_backend.py` parity green."
+- "Before commit: `qa-verifier` for green, then `core-reviewer` for sign-off."
+- "Ask `agent-architect` to audit the fleet for overlap."
+
+### Recommended workflows
+- **Research loop:** `literature-scout` → `research-proposer` → (implement) → `experiment-runner` → `results-analyst` → `core-reviewer` → `qa-verifier`.
+- **Perf loop:** `native-optimizer` → `qa-verifier` (parity + suite) → `core-reviewer`.
+- **Ship loop:** `qa-verifier` (green) + `core-reviewer` (sign-off) before any commit.
+
+### Multi-agent / parallel patterns
+- Launch `experiment-runner` on a long detached run **in parallel** with `literature-scout` — they share no state.
+- Fan out independent benchmarks across multiple `experiment-runner` invocations, then have one `results-analyst` aggregate the reports.
+- Keep `core-reviewer` (reads/judges) and `qa-verifier` (runs/fixes) as a cost split: cheap Sonnet establishes green, Opus reasons about the diff and trusts that report.
+
+### Best practices
+- Keep each agent's scope tight; pass file paths, not pasted dumps.
+- Let `agent-architect` own all agent-file edits (single source of truth).
+- Always end a source change with `qa-verifier` + `core-reviewer`.
+- Change a model-behavior default only with a `results-analyst`-backed report.
+
+### Anti-patterns
+- Generic role-based agents ("backend engineer"); editing agent files by hand instead of via `agent-architect`.
+- Touching the Rust path without moving NumPy too / without parity tests.
+- Importing torch/lightgbm/`external/` into the native path.
+- Splitting on embedding dims or unfreezing the encoder during boosting (breaks the thesis).

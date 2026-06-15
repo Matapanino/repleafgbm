@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "repleafgbm"
-version = "1.0.1"
+version = "1.0.2"
 description = "Representation-enhanced Leaf Gradient Boosting Machine: raw-feature tree routing with representation-conditioned leaf models."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,7 +33,7 @@ external = ["lightgbm>=4.0"]
 bench = ["lightgbm>=4.0", "xgboost>=2.0", "catboost>=1.2"]
 # API reference generation (scripts/build_docs.sh).
 docs = ["pdoc>=14"]
-dev = ["pytest>=7.0", "ruff>=0.4"]
+dev = ["pytest>=7.0", "pytest-cov>=4", "ruff>=0.4"]
 
 [project.urls]
 Homepage = "https://github.com/Matapanino/repleafgbm"
@@ -41,9 +41,30 @@ Repository = "https://github.com/Matapanino/repleafgbm"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/repleafgbm"]
+# Ship the PEP 561 marker so type checkers honour the inline annotations.
+force-include = { "src/repleafgbm/py.typed" = "repleafgbm/py.typed" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["repleafgbm"]
+branch = true
+# Optional-dependency paths are not exercised on the default coverage lane
+# (which installs only the `dev` extra); they have their own CI jobs
+# (torch-encoders, rust-backend) and the external_model tests. Omitting them
+# keeps the gate measuring the always-installed core, so the floor is stable
+# regardless of which optional packages happen to be present.
+omit = [
+    "*/encoders/torch_encoders.py",
+    "*/external/*",
+    "*/backends/rust_backend.py",
+]
+
+[tool.coverage.report]
+# Floor for the always-installed core; raise as coverage is tightened.
+fail_under = 85
+show_missing = true
 
 [tool.ruff]
 line-length = 100

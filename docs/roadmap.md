@@ -455,9 +455,18 @@ additive assumption analyzed in docs/math.md and must be designed against it.
 - ~~CI (lint + tests)~~, ~~contribution guide~~ done (Phases 0.5 / 5);
   git history initialized in Phase 5; publication steps tracked in
   docs/publishing_checklist.md
-- ~~Issue templates, SECURITY.md~~ done (Phase 20, 2026-06-12); PyPI
-  release deferred until API stability
+- ~~Issue templates, SECURITY.md~~ done (Phase 20, 2026-06-12); ~~PyPI
+  release~~ shipped from Phase 27 (v1.0.0; v1.0.1 followed) via OIDC trusted
+  publishing on `v*` tags
 - ~~Benchmark suite (OpenML/tabular benchmarks) under `benchmarks/`~~ done in
-  Phase 25 (`benchmarks/openml_suite.py`, 9-dataset reproducible leaderboard)
+  Phase 25 (`benchmarks/openml_suite.py`, 9-dataset reproducible leaderboard);
+  Phase 28 added a `--strict` release mode (fail on missing GBM) and a
+  reproducibility manifest
 - ~~API reference generation~~ done in Phase 26 (pdoc, `scripts/build_docs.sh`,
-  CI docs job); versioned/hosted docs still open (publish the built site)
+  CI docs job); ~~versioned/hosted docs~~ published via GitHub Pages
+- ~~PEP 561 typing marker (`py.typed`)~~, ~~cross-platform CI
+  (ubuntu/macos/windows)~~, ~~coverage gate (`pytest-cov` `fail_under`)~~, and
+  ~~prebuilt native wheels for `repleafgbm-native` (Linux/macOS/Windows ×
+  CPython 3.10-3.12 via maturin + OIDC trusted publishing)~~ done in Phase 28
+  (v1.0.2). Optional: a Codecov badge (needs an external service token) and a
+  Windows/macOS source-build smoke for the docs/torch lanes remain nice-to-haves.

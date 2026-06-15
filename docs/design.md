@@ -188,7 +188,8 @@ separate, higher-level axis described in docs/backend_strategy.md.
 
 ## Future extensions
 
-See docs/roadmap.md. Headlines: early stopping, multiclass/vector leaves,
-external GBM backends (`external_model`, `router_extraction` modes), PyTorch
-encoders with optional pretraining, native high-performance backend,
-GPU/multi-GPU/distributed training.
+See docs/roadmap.md for the full shipped-vs-planned breakdown. Early stopping,
+multiclass/vector leaves, external GBM backends (`external_model`,
+`router_extraction` modes), PyTorch encoders with optional pretraining, and the
+native high-performance backend have all **shipped** (Phases 1–22); the
+remaining genuinely future work is GPU / multi-GPU / distributed training.

@@ -11,25 +11,90 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    # Pin OpenMP to a single thread: torch + lightgbm can deadlock on a shared
+    # libomp otherwise (mirrors scripts/check.sh and the local dev setup).
+    env:
+      OMP_NUM_THREADS: "1"
+    # Use bash on every runner (git-bash on Windows) so the pre-quoted
+    # extra-deps spec and the multi-line example/coverage scripts behave
+    # identically across operating systems.
+    defaults:
+      run:
+        shell: bash
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        # Cover the declared support floor (scikit-learn >= 1.2), the modern
+        # tag API (1.6), and the latest release on Linux; smoke-test the latest
+        # stack on macOS and Windows for cross-platform confidence. The full
+        # check_estimator battery only runs on >= 1.6 (gated in
+        # tests/test_sklearn_compat.py); the older lanes still run the
+        # hand-written compatibility tests. scikit-learn 1.2 wheels predate the
+        # NumPy 2.0 ABI, so pin numpy<2 on that lane.
+        include:
+          # Specs are pre-quoted: they are substituted verbatim into the shell
+          # command, so the quotes must survive to stop `<` redirecting and `*`
+          # globbing.
+          - os: ubuntu-latest
+            python-version: "3.10"
+            extra-deps: '"scikit-learn==1.2.*" "numpy<2"'
+            coverage: false
+          - os: ubuntu-latest
+            python-version: "3.12"
+            extra-deps: '"scikit-learn==1.6.*"'
+            coverage: false
+          - os: ubuntu-latest
+            python-version: "3.12"
+            extra-deps: ""
+            coverage: true
+          - os: macos-latest
+            python-version: "3.12"
+            extra-deps: ""
+            coverage: false
+          - os: windows-latest
+            python-version: "3.12"
+            extra-deps: ""
+            coverage: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      - if: matrix.extra-deps != ''
+        run: pip install ${{ matrix.extra-deps }}
       - run: ruff check src tests examples benchmarks
-      - run: python -m pytest tests/ -q
-      - run: |
+      - name: Run tests
+        run: |
+          if [ "${{ matrix.coverage }}" = "true" ]; then
+            python -m pytest tests/ -q \
+              --cov=repleafgbm --cov-report=term-missing --cov-report=xml
+          else
+            python -m pytest tests/ -q
+          fi
+      # Mirror scripts/check.sh: run every example so CI matches local checks.
+      # stacking_lightgbm self-skips without lightgbm (not in the dev extras).
+      - name: Run examples
+        run: |
           python examples/regression_basic.py
           python examples/binary_classification_basic.py
+          python examples/multiclass_classification_basic.py
+          python examples/multioutput_regression_basic.py
           python examples/dataset_api_basic.py
+          python examples/stacking_lightgbm.py
 
   rust-backend:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      OMP_NUM_THREADS: "1"
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,6 +106,8 @@ jobs:
 
   torch-encoders:
     runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -59,3 +126,19 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[docs]"
       - run: bash scripts/build_docs.sh  # API reference must build cleanly
+
+  # Stable aggregation gate: a single fixed-name check that branch protection
+  # can require, so the required-check name never has to track the (matrixed,
+  # frequently renamed) job contexts above. Add new CI jobs to `needs`.
+  ci-success:
+    name: ci-success
+    if: always()
+    needs: [test, rust-backend, torch-encoders, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required job did not succeed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "One or more CI jobs did not succeed: ${{ join(needs.*.result, ', ') }}"
+          exit 1
+      - run: echo "All required CI jobs passed."

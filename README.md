@@ -109,8 +109,9 @@ Implemented:
 
 - Native NumPy backend: histogram-based split search with sibling-histogram
   subtraction, leaf-wise tree growth — plus optional Rust kernels
-  (`pip install ./native`, auto-detected; ~5.8x faster constant-leaf
-  training, parity-tested against the NumPy reference)
+  (`pip install repleafgbm-native`, or `pip install ./native` from source;
+  auto-detected; ~5.8x faster constant-leaf training, parity-tested against
+  the NumPy reference)
 - `leaf_model`: `"constant"`, `"embedded_linear"`, `"raw_linear"`
 - Encoders: `"identity"`, `"plr"` (simplified piecewise-linear + linear
   term), `"periodic"` (PBLD-style frozen sinusoidal features), `"cross"`
@@ -141,8 +142,10 @@ Implemented:
   models (scores + leaf indices, optional native early stopping), generic
   OOF utility, stacking feature builders, and `RouterExtractionRegressor` /
   `RouterExtractionClassifier` — LightGBM routing with RepLeaf leaf models
-  refit on the frozen routes, with replay-stage early stopping
-  (`pip install "repleafgbm[external]"`)
+  refit on the frozen routes, with replay-stage early stopping.
+  `pip install "repleafgbm[external]"` pulls **LightGBM** (the base used by
+  `router_extraction`); XGBoost/CatBoost support is exercised via the
+  `[bench]` extra.
 - pytest suite, runnable examples, and an `experiments/` research scaffold
 
 Not implemented (see [docs/roadmap.md](docs/roadmap.md)): encoder updates
@@ -152,10 +155,17 @@ during boosting, GPU/distributed training.
 
 ```bash
 pip install repleafgbm                 # core (numpy, pandas, scikit-learn)
+pip install repleafgbm-native          # + optional Rust split/leaf kernels (auto-detected)
 pip install "repleafgbm[external]"     # + LightGBM external_model / router_extraction
 pip install "repleafgbm[bench]"        # + XGBoost / CatBoost for benchmarks
 pip install "repleafgbm[torch]"        # + learned torch encoders
 ```
+
+`repleafgbm` ships type information (PEP 561) — type checkers see its public API
+out of the box. `repleafgbm-native` is a separate package of prebuilt
+Linux/macOS/Windows wheels; once installed the Rust backend is selected
+automatically (`split_backend="auto"`), giving ~5.8x faster constant-leaf
+training while staying parity-tested against the NumPy reference.
 
 ### Development
 

@@ -1,7 +1,7 @@
 # GitHub Publication Checklist
 
-Status of each item as of Phase 5 (2026-06-11). Items marked ☐ need a human
-decision or a GitHub-side action that cannot be done from this repo alone.
+Status of each item as of v1.0.2 (Phase 28, 2026-06-15). Items marked ☐ need a
+human decision or a GitHub-side action that cannot be done from this repo alone.
 
 ## Ready ✅
 
@@ -30,7 +30,7 @@ decision or a GitHub-side action that cannot be done from this repo alone.
       string-dtype bug in categorical auto-detection — fixed); badge added
       to README
 - [x] Tagged `v0.0.1`
-- [ ] Branch protection on `main` (require CI) if collaborators join
+- [x] Branch protection on `main` (require CI)
 - [x] Issue templates (`.github/ISSUE_TEMPLATE/`) and `SECURITY.md`
       (private reporting via GitHub security advisories) — added 2026-06-12,
       Phase 20
@@ -54,17 +54,44 @@ Done in this repo:
 
 Manual one-time actions (PyPI / GitHub side — cannot be done from the repo):
 
-- [ ] **PyPI trusted publisher**: pypi.org/manage/account/publishing — add
-      publisher `repleafgbm`, owner `Matapanino`, repo `repleafgbm`, workflow
-      `publish.yml`, environment blank. (Optional: repeat on test.pypi.org and
-      run the workflow manually for a TestPyPI dry run.)
-- [ ] **Push the release tag** `v1.0.0` → triggers `publish.yml` → PyPI
-- [ ] Branch protection on `main` (require CI) if collaborators join
+- [x] **PyPI trusted publisher**: `repleafgbm`, owner `Matapanino`, repo
+      `repleafgbm`, workflow `publish.yml` — configured on pypi.org.
+- [x] **Push the release tag** `v1.0.0` → `publish.yml` → PyPI (v1.0.1
+      followed; see `CHANGELOG.md`)
+- [x] Branch protection on `main` (require CI)
+- [x] GitHub Pages for the built API docs
 
-## Working-copy location (Google Drive caveat)
+## v1.0.2 hardening (Phase 28, 2026-06-15)
 
-The working copy currently lives under Google Drive (CloudStorage). Git and
-sync clients interact badly; see the recommendations in the Phase 5 report
-and prefer moving the clone to a local path with GitHub as the only sync
-mechanism. At minimum, never run git operations while Drive is actively
-syncing `.git/`.
+OSS-quality polish; no public API or model-format changes.
+
+Done in this repo:
+
+- [x] `py.typed` marker shipped (PEP 561); `pyproject.toml` force-includes it in
+      the wheel so type checkers honour the inline annotations
+- [x] Coverage gate: `pytest-cov` in the `dev` extra, `[tool.coverage]` config,
+      `--cov` on the Linux/3.12 CI lane with a `fail_under` floor
+- [x] Cross-platform CI: `test` + `rust-backend` jobs on ubuntu/macos/windows
+      (`OMP_NUM_THREADS=1`, `shell: bash`)
+- [x] `.github/workflows/publish-native.yml` — Linux/macOS/Windows × CPython
+      3.10-3.12 wheels for `repleafgbm-native` via maturin + OIDC (tag → PyPI,
+      manual dispatch → TestPyPI dry run)
+- [x] `CONTRIBUTING.md` documents the deprecation cycle (ADR 0003)
+
+Manual one-time actions (PyPI / GitHub side — cannot be done from the repo):
+
+- [ ] **Second PyPI trusted publisher** for the native wheels: project
+      `repleafgbm-native`, owner `Matapanino`, repo `repleafgbm`, workflow
+      `publish-native.yml` — configure on pypi.org (and test.pypi.org for the
+      dry run) before the first `v1.0.2` tag.
+- [ ] **Dry run** `publish-native.yml` via `workflow_dispatch` and confirm all
+      3 OS × 3 Python wheels + sdist build and upload to TestPyPI.
+- [ ] Optional: a Codecov (or shields.io endpoint) coverage badge — deferred
+      because it needs an external-service token; the CI `fail_under` gate is the
+      enforced contract.
+
+## Working-copy location
+
+The canonical working copy lives at a local path (`~/dev/repleafgbm`) with
+GitHub as the only sync mechanism; the earlier Google Drive (CloudStorage)
+location was abandoned because git and the sync client interacted badly.

@@ -17,6 +17,9 @@ weights (e.g. PyTorch state dicts) that do not belong in JSON.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -58,64 +61,83 @@ def save_model_dir(
     encoder: BaseEncoder | None,
     metadata: FeatureMetadata,
 ) -> None:
-    """Serialize a fitted model into ``path`` (created if missing)."""
+    """Serialize a fitted model into ``path`` (created if missing).
+
+    The directory is written atomically: all files are first written into a
+    sibling temporary directory, which then replaces ``path``. This both
+    avoids leaving a half-written directory on failure and guarantees that
+    stale optional files from a previous save (e.g. ``encoder_*`` left behind
+    when re-saving an embedded model as ``constant``) never survive into the
+    new model — they would otherwise be reloaded and corrupt prediction.
+    """
     path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Write into a sibling temp dir (same filesystem ⇒ os.replace is atomic).
+    out = Path(tempfile.mkdtemp(prefix=".repleaf_save_", dir=path.parent))
+    try:
+        multiclass = isinstance(booster, MulticlassBooster)
+        multioutput = isinstance(booster, MultiOutputBooster)
+        vector_init = multiclass or multioutput
+        # Each schema addition bumps the written version only for models that
+        # use it, so unaffected models stay readable by older builds:
+        # multi-output -> 6, multiclass -> 5, frequency maps -> 4, else -> 3.
+        if multioutput:
+            version = 6
+        elif multiclass:
+            version = 5
+        elif metadata.frequency_maps:
+            version = 4
+        else:
+            version = 3
+        model_config = {
+            "format_version": version,
+            "model_class": model_class,
+            "objective": booster.objective.name,
+            "config": config,
+        }
+        _dump_json(out / "model_config.json", model_config)
 
-    multiclass = isinstance(booster, MulticlassBooster)
-    multioutput = isinstance(booster, MultiOutputBooster)
-    vector_init = multiclass or multioutput
-    # Each schema addition bumps the written version only for models that
-    # use it, so unaffected models stay readable by older builds:
-    # multi-output -> 6, multiclass -> 5, frequency maps -> 4, else -> 3.
-    if multioutput:
-        version = 6
-    elif multiclass:
-        version = 5
-    elif metadata.frequency_maps:
-        version = 4
-    else:
-        version = 3
-    model_config = {
-        "format_version": version,
-        "model_class": model_class,
-        "objective": booster.objective.name,
-        "config": config,
-    }
-    _dump_json(path / "model_config.json", model_config)
+        ensemble = {
+            "init_score": (
+                booster.init_score_.tolist() if vector_init else booster.init_score_
+            ),
+            "learning_rate": booster.params.learning_rate,
+            "best_iteration": booster.best_iteration_,
+            "best_score": booster.best_score_,
+            "trees": [t.to_dict() for t in booster.trees_],
+        }
+        if multiclass:
+            ensemble["n_classes"] = booster.n_classes
+        if multioutput:
+            ensemble["n_outputs"] = booster.n_outputs
+        _dump_json(out / "tree_ensemble.json", ensemble)
 
-    ensemble = {
-        "init_score": (
-            booster.init_score_.tolist() if vector_init else booster.init_score_
-        ),
-        "learning_rate": booster.params.learning_rate,
-        "best_iteration": booster.best_iteration_,
-        "best_score": booster.best_score_,
-        "trees": [t.to_dict() for t in booster.trees_],
-    }
-    if multiclass:
-        ensemble["n_classes"] = booster.n_classes
-    if multioutput:
-        ensemble["n_outputs"] = booster.n_outputs
-    _dump_json(path / "tree_ensemble.json", ensemble)
+        leaf_arrays: dict[str, np.ndarray] = {}
+        for i, lv in enumerate(booster.leaf_values_):
+            leaf_arrays[f"tree_{i}_bias"] = lv.bias
+            leaf_arrays[f"tree_{i}_weights"] = lv.weights
+            if lv.z_min is not None:
+                leaf_arrays[f"tree_{i}_zmin"] = lv.z_min
+                leaf_arrays[f"tree_{i}_zmax"] = lv.z_max
+        np.savez(out / "leaf_params.npz", **leaf_arrays)
 
-    leaf_arrays: dict[str, np.ndarray] = {}
-    for i, lv in enumerate(booster.leaf_values_):
-        leaf_arrays[f"tree_{i}_bias"] = lv.bias
-        leaf_arrays[f"tree_{i}_weights"] = lv.weights
-        if lv.z_min is not None:
-            leaf_arrays[f"tree_{i}_zmin"] = lv.z_min
-            leaf_arrays[f"tree_{i}_zmax"] = lv.z_max
-    np.savez(path / "leaf_params.npz", **leaf_arrays)
+        if encoder is not None:
+            _dump_json(
+                out / "encoder_config.json",
+                {"name": encoder.name, "config": encoder.get_config()},
+            )
+            np.savez(out / "encoder_state.npz", **encoder.get_state())
 
-    if encoder is not None:
-        _dump_json(
-            path / "encoder_config.json",
-            {"name": encoder.name, "config": encoder.get_config()},
-        )
-        np.savez(path / "encoder_state.npz", **encoder.get_state())
+        _dump_json(out / "feature_metadata.json", metadata.to_dict())
 
-    _dump_json(path / "feature_metadata.json", metadata.to_dict())
+        # Swap the freshly written directory in for the target. os.replace
+        # cannot overwrite a non-empty directory, so remove the old one first.
+        if path.exists():
+            shutil.rmtree(path)
+        os.replace(out, path)
+    except BaseException:
+        shutil.rmtree(out, ignore_errors=True)
+        raise
 
 
 def load_model_dir(path: str | Path) -> dict:

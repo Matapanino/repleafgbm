@@ -13,16 +13,22 @@ Design choices for fairness and reproducibility:
   RepLeafGBM uses (``RepLeafDataset.get_raw_features()``), so differences are
   in the model, not in categorical preprocessing. NaN is passed through (all
   the libraries here handle it).
-* Fixed seed, a 60/20/20 train/valid/test split, and early stopping on the
-  validation split for every model that supports it.
+* Fixed seed, a 60/20/20 train/valid/test split (**stratified by class** for
+  classification, random for regression), and early stopping on the validation
+  split for every model that supports it.
 * Datasets are downloaded once and cached by scikit-learn in
-  ``~/scikit_learn_data``; a failed download or a missing optional library is
-  skipped (recorded as ``--``) rather than aborting the run.
+  ``~/scikit_learn_data``. By default a failed download or a missing optional
+  library is skipped rather than aborting the run; pass ``--strict`` for a
+  release-grade run that **fails** if any required external GBM is missing or
+  any model errors, so published numbers can't quietly omit a competitor.
+* The report embeds a reproducibility manifest (package versions, OpenML
+  dataset version anchors, seeds, split policy).
 
 Run from the repository root (needs ``PYTHONPATH=src`` or an editable install;
 LightGBM/XGBoost/CatBoost are optional ``[bench]`` extras)::
 
     PYTHONPATH=src python3 benchmarks/openml_suite.py [--quick] [--seeds K]
+    PYTHONPATH=src python3 benchmarks/openml_suite.py --strict   # release run
 
 Results are written to ``experiments/results/openml_benchmark.md``.
 """
@@ -30,7 +36,10 @@ Results are written to ``experiments/results/openml_benchmark.md``.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import os
+import platform
+import sys
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -58,6 +67,9 @@ from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor
 
 ES_ROUNDS = 25
 MAX_CATEGORIES = 100
+
+#: External GBMs that a release-grade (``--strict``) run must be able to train.
+REQUIRED_GBMS = ("lightgbm", "xgboost", "catboost")
 
 # name -> (openml data_id or None for a sklearn builtin, task)
 DATASETS: list[tuple[str, int | None, str]] = [
@@ -132,9 +144,14 @@ def r2(y, p):
     return float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
 
 
-def _external_models(task: str, seed: int):
-    """(label, builder) pairs for installed external GBMs. builder(n) -> model."""
+def _external_models(task: str, seed: int, strict: bool = False):
+    """(label, builder) pairs for installed external GBMs. builder(n) -> model.
+
+    In ``strict`` mode a missing required library is a hard error instead of a
+    silent skip, so a release-grade run cannot quietly publish numbers with a
+    competitor absent."""
     out = []
+    missing = []
     try:
         import lightgbm as lgb
 
@@ -145,7 +162,7 @@ def _external_models(task: str, seed: int):
 
         out.append(("lightgbm", lgb_model))
     except ImportError:
-        pass
+        missing.append("lightgbm")
     try:
         import xgboost as xgb
 
@@ -157,7 +174,7 @@ def _external_models(task: str, seed: int):
 
         out.append(("xgboost", xgb_model))
     except ImportError:
-        pass
+        missing.append("xgboost")
     try:
         import catboost as cb
 
@@ -168,7 +185,12 @@ def _external_models(task: str, seed: int):
 
         out.append(("catboost", cb_model))
     except ImportError:
-        pass
+        missing.append("catboost")
+    if strict and missing:
+        raise RuntimeError(
+            f"--strict run requires all external GBMs {list(REQUIRED_GBMS)} but "
+            f"{missing} are not installed; `pip install \"repleafgbm[bench]\"`."
+        )
     return out
 
 
@@ -196,7 +218,29 @@ def _score(task, model, X, y, classes):
     return model.predict_proba(X)
 
 
-def run_dataset(name, data_id, task, max_rows, seeds):
+def _split_indices(idx, y_sub, task, rng):
+    """60/20/20 split of the (already random-subsampled) absolute indices
+    ``idx``. Classification is **stratified** by class so every split keeps each
+    label's proportion — important for the small/imbalanced datasets and the
+    AUC/logloss metrics. Regression keeps the plain random split (``idx`` is
+    already permuted)."""
+    if task == "regression":
+        n = len(idx)
+        n_tr, n_va = int(n * 0.60), int(n * 0.20)
+        return idx[:n_tr], idx[n_tr:n_tr + n_va], idx[n_tr + n_va:]
+    tr, va, te = [], [], []
+    for c in np.unique(y_sub):
+        pos = np.where(y_sub == c)[0]
+        rng.shuffle(pos)
+        n_tr, n_va = int(len(pos) * 0.60), int(len(pos) * 0.20)
+        tr.extend(idx[pos[:n_tr]])
+        va.extend(idx[pos[n_tr:n_tr + n_va]])
+        te.extend(idx[pos[n_tr + n_va:]])
+    return (np.array(tr, dtype=int), np.array(va, dtype=int),
+            np.array(te, dtype=int))
+
+
+def run_dataset(name, data_id, task, max_rows, seeds, strict=False):
     X_all, y_all, task = load_dataset(name, data_id, task)
     X_all, cats = clean_features(X_all)
     classes = np.unique(y_all) if task != "regression" else None
@@ -222,9 +266,7 @@ def run_dataset(name, data_id, task, max_rows, seeds):
     for seed in seeds:
         rng = np.random.default_rng(seed)
         idx = rng.permutation(len(X_all))[: min(max_rows, len(X_all))]
-        n = len(idx)
-        n_tr, n_va = int(n * 0.60), int(n * 0.20)
-        i_tr, i_va, i_te = idx[:n_tr], idx[n_tr:n_tr + n_va], idx[n_tr + n_va:]
+        i_tr, i_va, i_te = _split_indices(idx, y_all[idx], task, rng)
         Xtr, Xva, Xte = (X_all.iloc[i] for i in (i_tr, i_va, i_te))
         ytr, yva, yte = y_all[i_tr], y_all[i_va], y_all[i_te]
 
@@ -256,6 +298,8 @@ def run_dataset(name, data_id, task, max_rows, seeds):
                 p, s = metrics(yte, pred)
                 record(label, p, s, fit_s)
             except Exception as exc:  # pragma: no cover - robustness
+                if strict:
+                    raise
                 print(f"  [skip] {label} on {name}: {type(exc).__name__}: {exc}")
 
         # --- sklearn HistGradientBoosting (internal early stopping) --------
@@ -272,10 +316,12 @@ def run_dataset(name, data_id, task, max_rows, seeds):
             p, s = metrics(yte, pred)
             record("hist_gradient_boosting", p, s, fit_s)
         except Exception as exc:  # pragma: no cover
+            if strict:
+                raise
             print(f"  [skip] hist_gradient_boosting on {name}: {exc}")
 
         # --- external GBMs -------------------------------------------------
-        for label, build in _external_models(task, seed):
+        for label, build in _external_models(task, seed, strict=strict):
             try:
                 model, fit_s = _fit_external(label, build, task, Xtr_e, ytr,
                                              Xva_e, yva)
@@ -283,9 +329,42 @@ def run_dataset(name, data_id, task, max_rows, seeds):
                 p, s = metrics(yte, pred)
                 record(label, p, s, fit_s)
             except Exception as exc:  # pragma: no cover
+                if strict:
+                    raise
                 print(f"  [skip] {label} on {name}: {type(exc).__name__}: {exc}")
 
     return rows, task, len(idx), len(cats)
+
+
+def _version_manifest(selected, seeds, args) -> list[str]:
+    """Reproducibility block: exact package versions, dataset version anchors
+    (the OpenML data_id pins a specific dataset version), seeds, and split
+    policy. Embedded in the report so a published leaderboard can be tied to
+    the environment that produced it."""
+    def ver(dist):
+        try:
+            return importlib.metadata.version(dist)
+        except importlib.metadata.PackageNotFoundError:
+            return "(not installed)"
+
+    pkgs = ["numpy", "pandas", "scipy", "scikit-learn", "repleafgbm",
+            "lightgbm", "xgboost", "catboost"]
+    lines = [
+        "## Reproducibility manifest",
+        "",
+        f"- Python: {platform.python_version()} ({sys.platform})",
+        "- Packages: " + ", ".join(f"{p}={ver(p)}" for p in pkgs),
+        f"- Seeds: {seeds}",
+        f"- max_rows: {args.max_rows}; early stopping: {ES_ROUNDS} rounds",
+        "- Split: 60/20/20 — stratified by class for classification, random "
+        "for regression",
+        f"- strict mode: {bool(args.strict)}",
+        "- Datasets (version anchor = OpenML data_id):",
+    ]
+    for name, data_id, task in selected:
+        src = "sklearn builtin" if data_id is None else f"openml data_id={data_id}"
+        lines.append(f"  - {name} ({task}, {src})")
+    return lines
 
 
 def main() -> None:
@@ -295,6 +374,11 @@ def main() -> None:
     parser.add_argument("--quick", action="store_true",
                         help="fewer datasets and rows for a smoke run")
     parser.add_argument("--datasets", nargs="*", default=None)
+    parser.add_argument(
+        "--strict", action="store_true",
+        help="release mode: fail (don't skip) if a required external GBM "
+             f"{list(REQUIRED_GBMS)} is missing or any model errors",
+    )
     args = parser.parse_args()
     seeds = list(range(args.seeds))
     warnings.filterwarnings("ignore", category=FutureWarning)
@@ -319,6 +403,8 @@ def main() -> None:
         "",
         f"Settings: max_rows={args.max_rows}, seeds={seeds}, "
         f"early_stopping={ES_ROUNDS} rounds.",
+        "",
+        *_version_manifest(selected, seeds, args),
     ]
     # ranking accumulators per task family
     reg_ranks: dict[str, list[float]] = {}
@@ -328,8 +414,10 @@ def main() -> None:
         print(f"=== {name} ({task}) ===", flush=True)
         try:
             rows, task, n_used, n_cats = run_dataset(
-                name, data_id, task, args.max_rows, seeds)
+                name, data_id, task, args.max_rows, seeds, strict=args.strict)
         except Exception as exc:
+            if args.strict:
+                raise
             print(f"  [skip dataset] {name}: {type(exc).__name__}: {exc}")
             out += ["", f"## {name} — skipped ({type(exc).__name__})"]
             continue

@@ -46,6 +46,80 @@ def test_regressor_roundtrip(tmp_path, regression_data, leaf_model, encoder):
     assert loaded.get_params()["n_estimators"] == 10
 
 
+def test_overwrite_embedded_with_constant_clears_stale_encoder(
+    tmp_path, regression_data
+):
+    """Re-saving a constant model over an embedded one must not leave stale
+    encoder files behind (they would be reloaded and corrupt prediction)."""
+    Xtr, ytr, Xte, _ = regression_data
+    path = tmp_path / "model"
+
+    embedded = RepLeafRegressor(
+        n_estimators=10,
+        num_leaves=8,
+        leaf_model="embedded_linear",
+        encoder="plr",
+        max_leaf_emb_dim=10,
+        random_state=42,
+    ).fit(Xtr, ytr)
+    embedded.save_model(path)
+    assert (path / "encoder_config.json").exists()
+    assert (path / "encoder_state.npz").exists()
+
+    constant = RepLeafRegressor(
+        n_estimators=10, num_leaves=8, leaf_model="constant", random_state=42
+    ).fit(Xtr, ytr)
+    constant_pred = constant.predict(Xte)
+    constant.save_model(path)  # same directory
+
+    # Stale encoder artifacts from the embedded model are gone.
+    assert not (path / "encoder_config.json").exists()
+    assert not (path / "encoder_state.npz").exists()
+
+    loaded = RepLeafRegressor.load_model(path)
+    assert loaded.encoder_ is None
+    np.testing.assert_allclose(loaded.predict(Xte), constant_pred)
+
+
+def test_overwrite_all_categorical_constant_after_embedded(tmp_path, regression_data):
+    """The all-categorical constant case is the one the stale encoder would
+    break hardest: an orphaned encoder cannot transform a no-numerical-feature
+    dataset, so prediction would fail outright."""
+    Xtr, ytr, _, _ = regression_data
+    path = tmp_path / "model"
+
+    # First an embedded model on numeric data writes encoder_* files.
+    RepLeafRegressor(
+        n_estimators=5,
+        num_leaves=8,
+        leaf_model="embedded_linear",
+        encoder="plr",
+        max_leaf_emb_dim=10,
+        random_state=42,
+    ).fit(Xtr, ytr).save_model(path)
+
+    # Then an all-categorical constant model is saved over the same path.
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame(
+        {
+            "city": rng.choice(["tokyo", "osaka", "kyoto"], size=200),
+            "size": rng.choice(["s", "m", "l"], size=200),
+        }
+    )
+    y = (df["city"] == "tokyo").to_numpy(float) + rng.normal(0, 0.1, 200)
+    train = RepLeafDataset(df, y)
+    cat = RepLeafRegressor(
+        n_estimators=5, num_leaves=8, leaf_model="constant", random_state=42
+    ).fit(train)
+    pred = cat.predict(df)
+    cat.save_model(path)
+
+    assert not (path / "encoder_config.json").exists()
+    loaded = RepLeafRegressor.load_model(path)
+    assert loaded.encoder_ is None
+    np.testing.assert_allclose(loaded.predict(df), pred)
+
+
 def test_classifier_roundtrip(tmp_path, classification_data):
     Xtr, ytr, Xte, _ = classification_data
     model = RepLeafClassifier(n_estimators=10, num_leaves=8, random_state=42)

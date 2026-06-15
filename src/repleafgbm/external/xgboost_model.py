@@ -29,7 +29,7 @@ def _require_xgboost():
     except ImportError as exc:  # pragma: no cover - exercised via mocked test
         raise ImportError(
             "XGBoost is required for repleafgbm.external.XGBoostExternalModel. "
-            "Install it with: pip install xgboost"
+            'Install it with: pip install xgboost  (or pip install "repleafgbm[bench]")'
         ) from exc
     return xgboost
 
