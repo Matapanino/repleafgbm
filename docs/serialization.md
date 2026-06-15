@@ -9,7 +9,7 @@
 - Stay diff-able and inspectable where possible (JSON for structure, npz for
   numeric payloads).
 
-## Directory layout (format_version = 3 / 4 / 5)
+## Directory layout (format_version = 3 / 4 / 5 / 6)
 
 ```text
 model_dir/
@@ -41,13 +41,18 @@ What each file owns:
   hyperparameter of their own). Multiclass ensembles (v5) additionally store
   `n_classes` and a per-class `init_score` list; trees are round-major
   (round r, class k at index `r * n_classes + k`) and `best_iteration`
-  counts rounds.
+  counts rounds. Multi-output regression ensembles (v6) instead store
+  `n_outputs` and a per-output `init_score` list; there is one shared tree
+  per round (vector leaves), so trees are stored sequentially as usual.
 - **leaf_params.npz** — leaf biases and weight matrices. Constant leaves are
   zero-width weight rows, so one schema covers all leaf models. Linear-leaf
   models additionally store `tree_{i}_zmin` / `tree_{i}_zmax` (per-leaf
   embedding clip bounds, the Phase 7 extrapolation guard); the keys are
   optional on read — older directories load with clipping disabled, exactly
-  reproducing their original predictions.
+  reproducing their original predictions. Multi-output vector leaves (v6)
+  store a 2-D `tree_{i}_bias` (n_leaves, n_outputs) and 3-D
+  `tree_{i}_weights` (n_leaves, d_z, n_outputs); the clip bounds stay 2-D
+  (n_leaves, d_z), shared across outputs.
 - **encoder_config.json / encoder_state.npz** — split between constructor
   config (JSON) and fitted arrays (npz). A projection-wrapped encoder nests
   its base encoder's config and prefixes its state keys with `base__`.
@@ -80,7 +85,7 @@ inside prediction, with the offending file named in the error:
 
 - `format_version` increments on any breaking layout change.
 - Loaders reject unknown versions rather than guessing.
-- Supported read versions: **1 through 5**. v1 directories lack
+- Supported read versions: **1 through 6**. v1 directories lack
   `missing_left` (loaded with the all-True default those trees were trained
   under, covered by `test_format_v1_compat`); v1/v2 lack `left_categories`
   (categorical subset splits, v3; covered by `test_format_v2_compat`);
@@ -90,7 +95,10 @@ inside prediction, with the offending file named in the error:
   `test_ordinal_models_stay_version_3`); v5 adds multiclass ensembles
   (`n_classes` + vector `init_score`) and is only written for multiclass
   models (covered by `test_multiclass_models_write_format_v5` /
-  `test_binary_models_keep_format_v3`).
+  `test_binary_models_keep_format_v3`); v6 adds multi-output regression
+  ensembles (`n_outputs` + vector `init_score`, 2-D bias / 3-D weights) and
+  is only written for multi-output models (covered by
+  `test_save_load_roundtrip` in tests/test_multioutput.py).
 - Custom (callable) eval metrics are stored by name only; a reloaded model
   must be handed the metric object again before refitting with eval sets.
 

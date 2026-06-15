@@ -31,9 +31,18 @@ def as_target_array(y: Any, n_rows: int | None = None, name: str = "y") -> np.nd
     """Convert target input to a 1D ndarray, keeping non-numeric labels intact.
 
     Numeric targets become float64; string/object class labels are preserved
-    so the classifier can map them to {0, 1} itself.
+    so the classifier can map them to {0, 1} itself. A 2-D numeric target with
+    more than one column is preserved as a (n_rows, K) matrix for multi-output
+    regression (vector leaves); a single-column 2-D target is flattened.
     """
-    arr = np.asarray(y).ravel()
+    arr = np.asarray(y)
+    multioutput = (
+        arr.ndim == 2
+        and arr.shape[1] > 1
+        and (np.issubdtype(arr.dtype, np.number) or arr.dtype == bool)
+    )
+    if not multioutput:
+        arr = arr.ravel()
     if n_rows is not None and arr.shape[0] != n_rows:
         raise ValueError(f"{name} has {arr.shape[0]} rows but X has {n_rows} rows")
     if np.issubdtype(arr.dtype, np.number) or arr.dtype == bool:

@@ -16,6 +16,7 @@ python3 -m pytest tests/ -q
 python3 examples/regression_basic.py
 python3 examples/binary_classification_basic.py
 python3 examples/multiclass_classification_basic.py
+python3 examples/multioutput_regression_basic.py
 python3 examples/dataset_api_basic.py
 python3 examples/stacking_lightgbm.py  # self-skips without lightgbm
 

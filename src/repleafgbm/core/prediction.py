@@ -60,3 +60,26 @@ def predict_raw_multiclass(
         leaf_idx = tree.apply(X_raw)
         out[:, i % n_classes] += learning_rate * lv.predict(leaf_idx, Z)
     return out
+
+
+def predict_raw_multioutput(
+    trees: list[Tree],
+    leaf_values: list[LeafValues],
+    init_scores: np.ndarray,
+    learning_rate: float,
+    X_raw: np.ndarray,
+    Z: np.ndarray | None,
+    n_trees: int | None = None,
+) -> np.ndarray:
+    """Raw score matrix (n_rows, n_outputs) for shared-routing vector leaves.
+
+    Unlike the multiclass ensemble there is one tree per round; each leaf emits
+    an (n_outputs,) vector, so every tree contributes to all output columns.
+    """
+    n_rows = X_raw.shape[0]
+    out = np.tile(np.asarray(init_scores, dtype=np.float64), (n_rows, 1))
+    if n_trees is None:
+        n_trees = len(trees)
+    for tree, lv in zip(trees[:n_trees], leaf_values[:n_trees]):
+        out += learning_rate * lv.predict(tree.apply(X_raw), Z)
+    return out

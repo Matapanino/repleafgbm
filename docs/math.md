@@ -138,6 +138,33 @@ the scalar Newton-target machinery above, so leaves (constant or linear over
 `z_theta(x)`) carry over unchanged. Output transform: row-wise softmax.
 Hessians are floored at 1e-12.
 
+**Multi-output regression (vector leaves).** Targets and raw scores are
+matrices `Y, F in R^{n x K}`, `g = F - Y`, `h = 1`, `F_0,k = mean(Y[:,k])`.
+Unlike multiclass, **one shared tree per round** routes all outputs: splits
+use the raw features (shared routing), and a leaf emits a vector. The split
+gain sums the per-output Newton gains over a shared partition,
+
+```text
+gain = sum_k [ G_{k,L}^2/(H_{k,L}+lambda) + G_{k,R}^2/(H_{k,R}+lambda) ]
+       - sum_k G_k^2/(H_k+lambda) ,
+```
+
+so a split is chosen to reduce all outputs' residuals jointly. A constant
+vector leaf is the per-output Newton step `b_k = -G_k/(H_k+lambda)`. A linear
+vector leaf solves, per leaf, `K` ridge problems over the shared embedding
+`Z`; since `h = 1` the centered Gram `Z_c^T Z_c + lambda I` is identical
+across outputs, so it is one factorization with `K` right-hand sides
+`Z_c^T t_c` (Newton targets `t = -g/h` centered per output). The
+extrapolation guard's `z_min/z_max` are the leaf's `Z` range, shared across
+outputs. Output transform: identity.
+
+**Label smoothing (classification).** Hard targets are softened before the
+gradients: binary `y -> y(1-eps) + eps/2`, multiclass one-hot
+`-> (1-eps) onehot + eps/K`, applied to both `F_0` and `g` (so
+`g_k = p_k - target_k`). With `eps = 0` the objective is exactly the
+unsmoothed one; `eps > 0` caps how confident the fitted probabilities can
+become, a regularizer against over-confidence.
+
 ## Why encoder updates break stage-wise assumptions
 
 The ensemble after `T` rounds is

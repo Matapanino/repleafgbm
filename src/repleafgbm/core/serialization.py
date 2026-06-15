@@ -24,13 +24,18 @@ import numpy as np
 from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.leaf_models import LeafValues
 from repleafgbm.core.multiclass import MulticlassBooster
-from repleafgbm.core.objectives import MulticlassSoftmax, get_objective
+from repleafgbm.core.multioutput import MultiOutputBooster
+from repleafgbm.core.objectives import (
+    MulticlassSoftmax,
+    MultiOutputSquaredError,
+    get_objective,
+)
 from repleafgbm.core.tree import Tree
 from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.encoders import encoder_from_config
 from repleafgbm.encoders.base import BaseEncoder
 
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 #: Older versions this build can still read. v1 lacks per-node
 #: ``missing_left`` (defaulted to True, the convention those trees used);
 #: v2 lacks categorical subset splits (``left_categories``), which v1/v2
@@ -39,15 +44,17 @@ FORMAT_VERSION = 5
 #: ordinal-only models stay readable by v3 builds); v5 adds multiclass
 #: ensembles (``n_classes`` + vector ``init_score`` in tree_ensemble.json,
 #: written only for multiclass models — binary/regression models keep
-#: writing v3/v4).
-READABLE_VERSIONS = (1, 2, 3, 4, 5)
+#: writing v3/v4); v6 adds shared-routing vector leaves for multi-output
+#: regression (``n_outputs`` + vector ``init_score``; per-tree ``bias`` is
+#: 2-D and ``weights`` 3-D), written only for multi-output models.
+READABLE_VERSIONS = (1, 2, 3, 4, 5, 6)
 
 
 def save_model_dir(
     path: str | Path,
     model_class: str,
     config: dict,
-    booster: Booster | MulticlassBooster,
+    booster: Booster | MulticlassBooster | MultiOutputBooster,
     encoder: BaseEncoder | None,
     metadata: FeatureMetadata,
 ) -> None:
@@ -56,10 +63,14 @@ def save_model_dir(
     path.mkdir(parents=True, exist_ok=True)
 
     multiclass = isinstance(booster, MulticlassBooster)
+    multioutput = isinstance(booster, MultiOutputBooster)
+    vector_init = multiclass or multioutput
     # Each schema addition bumps the written version only for models that
     # use it, so unaffected models stay readable by older builds:
-    # multiclass -> 5, frequency maps -> 4, everything else -> 3.
-    if multiclass:
+    # multi-output -> 6, multiclass -> 5, frequency maps -> 4, else -> 3.
+    if multioutput:
+        version = 6
+    elif multiclass:
         version = 5
     elif metadata.frequency_maps:
         version = 4
@@ -75,7 +86,7 @@ def save_model_dir(
 
     ensemble = {
         "init_score": (
-            booster.init_score_.tolist() if multiclass else booster.init_score_
+            booster.init_score_.tolist() if vector_init else booster.init_score_
         ),
         "learning_rate": booster.params.learning_rate,
         "best_iteration": booster.best_iteration_,
@@ -84,6 +95,8 @@ def save_model_dir(
     }
     if multiclass:
         ensemble["n_classes"] = booster.n_classes
+    if multioutput:
+        ensemble["n_outputs"] = booster.n_outputs
     _dump_json(path / "tree_ensemble.json", ensemble)
 
     leaf_arrays: dict[str, np.ndarray] = {}
@@ -145,9 +158,15 @@ def load_model_dir(path: str | Path) -> dict:
         l2_leaf=config.get("l2_leaf", defaults.l2_leaf),
         max_bins=config.get("max_bins", defaults.max_bins),
     )
-    if "n_classes" in ensemble:  # multiclass ensemble (format v5)
+    if "n_outputs" in ensemble:  # multi-output ensemble (format v6)
+        mo_objective = MultiOutputSquaredError(int(ensemble["n_outputs"]))
+        booster: Booster | MulticlassBooster | MultiOutputBooster = MultiOutputBooster(
+            params, mo_objective
+        )
+        booster.init_score_ = np.asarray(ensemble["init_score"], dtype=np.float64)
+    elif "n_classes" in ensemble:  # multiclass ensemble (format v5)
         objective = MulticlassSoftmax(int(ensemble["n_classes"]))
-        booster: Booster | MulticlassBooster = MulticlassBooster(params, objective)
+        booster = MulticlassBooster(params, objective)
         booster.init_score_ = np.asarray(ensemble["init_score"], dtype=np.float64)
     else:
         booster = Booster(params, get_objective(model_config["objective"]))
@@ -228,13 +247,24 @@ def _require_keys(obj: dict, keys: tuple[str, ...], file_name: str) -> None:
         )
 
 
-def _validate_leaf_values(booster: Booster | MulticlassBooster) -> None:
-    """Cross-check leaf parameter arrays against the routing trees."""
+def _validate_leaf_values(booster: Booster | MulticlassBooster | MultiOutputBooster) -> None:
+    """Cross-check leaf parameter arrays against the routing trees.
+
+    Scalar leaves have a 1-D ``bias`` and 2-D ``weights``; multi-output vector
+    leaves (format v6) have a 2-D ``bias`` (n_leaves, n_outputs) and 3-D
+    ``weights`` (n_leaves, emb_dim, n_outputs). The extrapolation bounds are
+    always (n_leaves, emb_dim) — shared across outputs — i.e. ``weights``
+    without its trailing output axis.
+    """
     for i, (tree, lv) in enumerate(zip(booster.trees_, booster.leaf_values_)):
-        if lv.bias.ndim != 1 or lv.weights.ndim != 2:
+        if not (
+            (lv.bias.ndim == 1 and lv.weights.ndim == 2)
+            or (lv.bias.ndim == 2 and lv.weights.ndim == 3)
+        ):
             raise ValueError(
-                f"leaf_params.npz tree_{i}: bias must be 1-D and weights 2-D, "
-                f"got shapes {lv.bias.shape} and {lv.weights.shape}"
+                f"leaf_params.npz tree_{i}: expected scalar (1-D bias, 2-D "
+                f"weights) or vector (2-D bias, 3-D weights) leaves, got shapes "
+                f"{lv.bias.shape} and {lv.weights.shape}"
             )
         if lv.bias.shape[0] != tree.n_leaves or lv.weights.shape[0] != tree.n_leaves:
             raise ValueError(
@@ -247,13 +277,15 @@ def _validate_leaf_values(booster: Booster | MulticlassBooster) -> None:
                 f"leaf_params.npz tree_{i} has only one of zmin/zmax; "
                 "the extrapolation-guard bounds must come in pairs"
             )
+        # Guard bounds match the weight matrix minus its trailing output axis.
+        bound_shape = lv.weights.shape[:2]
         if lv.z_min is not None and (
-            lv.z_min.shape != lv.weights.shape or lv.z_max.shape != lv.weights.shape
+            lv.z_min.shape != bound_shape or lv.z_max.shape != bound_shape
         ):
             raise ValueError(
                 f"leaf_params.npz tree_{i}: zmin/zmax shapes "
-                f"{lv.z_min.shape}/{lv.z_max.shape} do not match the weight "
-                f"matrix shape {lv.weights.shape}"
+                f"{lv.z_min.shape}/{lv.z_max.shape} do not match the leaf "
+                f"weight shape {bound_shape}"
             )
 
 

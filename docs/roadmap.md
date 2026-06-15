@@ -314,14 +314,51 @@ Everything below v0 is a plan, not a promise of API stability.
   quantile ordering/coverage, poisson positivity + baseline,
   save/load round-trips (tests/test_regression_objectives.py)
 
-## v1.5 — outputs and objectives
+## Phase 22 — vector leaves (multi-output regression) ✅ (2026-06-15)
+
+- `MultiOutputBooster` (core/multioutput.py): **one shared routing tree per
+  round** whose leaves emit an `(n_outputs,)` vector — distinct from
+  multiclass (one tree *per class* per round). Routing splits use the raw
+  features shared across outputs; the split gain is the per-output Newton gain
+  summed over outputs (`backends/numpy_backend.find_best_split_multioutput`,
+  dispatched from `Splitter` when grad/hess are 2-D). The encoder stays frozen
+  and all outputs reuse the same embedding matrix Z.
+- Vector leaves reuse the leaf machinery lifted to a trailing output axis:
+  `LeafValues` carries (n_leaves, K) bias and (n_leaves, emb, K) weights;
+  constant and embedded_linear both work. Because multi-output is
+  squared-error (Hessian = 1), the embedded-linear leaf's centered Gram is
+  shared across outputs (one factorization, K right-hand sides). Per-leaf
+  extrapolation guards (z_min/z_max) are shared across outputs.
+- API: `RepLeafRegressor` auto-detects a 2-D `y` and returns
+  (n_rows, n_outputs); `predict`/`score`/eval_set/early stopping all work.
+  Serialization format v6 (`n_outputs` + vector init_score, 2-D bias / 3-D
+  weights). Tests (tests/test_multioutput.py), example
+  (examples/multioutput_regression_basic.py), math.md vector-leaf section
+- Scope (documented limitations): multi-output is **squared-error only**
+  (Huber/quantile multi-output is a future extension), categorical features
+  route via **ordered thresholds** on the ordinal code rather than
+  gradient-sorted subset splits (single-output keeps subset splits), and the
+  Rust backend builds the per-output histograms but the multi-output split
+  scan stays NumPy (Rust kernel is a possible v2 follow-up)
+
+## Phase 23 — label smoothing ✅ (2026-06-15)
+
+- `label_smoothing` estimator parameter (classification only): binary targets
+  soften to `y*(1-eps) + eps/2`, multiclass one-hot to `(1-eps)*onehot + eps/K`
+  in both the init score and the gradients of `BinaryLogistic` /
+  `MulticlassSoftmax`. `eps = 0` reproduces the unsmoothed objective exactly
+- The objective serializes by registry name only, so eps is restored from the
+  estimator config on reload (same convention as Huber's delta); predictions
+  reload exactly. Tests (tests/test_label_smoothing.py)
+
+## v1.5 — outputs and objectives ✅ (closed by Phases 22 + 23)
 
 - ~~Multiclass classification (softmax)~~ done in Phase 17 (one tree per
-  class per round; a shared-routing vector-leaf variant remains a research
-  idea)
-- Vector leaves (multi-output regression)
+  class per round)
+- ~~Vector leaves (multi-output regression)~~ done in Phase 22 (shared-routing
+  vector leaves; squared-error only)
 - ~~Improved objectives (Huber, quantile, Poisson)~~ done in Phase 18;
-  label smoothing still open
+  ~~label smoothing~~ done in Phase 23
 
 ## v2 — native high-performance backend (Phase 10: core shipped ✅)
 

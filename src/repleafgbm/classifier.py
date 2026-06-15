@@ -17,7 +17,13 @@ from sklearn.base import ClassifierMixin
 from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.metrics import BaseMetric, get_metric
 from repleafgbm.core.multiclass import MulticlassBooster
-from repleafgbm.core.objectives import MulticlassSoftmax, _sigmoid, _softmax
+from repleafgbm.core.objectives import (
+    BaseObjective,
+    BinaryLogistic,
+    MulticlassSoftmax,
+    _sigmoid,
+    _softmax,
+)
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.sklearn import BaseRepLeafModel
 
@@ -79,8 +85,25 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
 
     def _make_booster(self, params: BoosterParams) -> Booster | MulticlassBooster:
         if self.n_classes_ > 2:
-            return MulticlassBooster(params, MulticlassSoftmax(self.n_classes_))
+            return MulticlassBooster(
+                params,
+                MulticlassSoftmax(
+                    self.n_classes_, label_smoothing=self._label_smoothing
+                ),
+            )
         return super()._make_booster(params)
+
+    def _build_objective(self) -> BaseObjective:
+        """Binary logistic objective with the estimator's label smoothing.
+        The objective is selected from the target (the ``objective`` parameter
+        is rejected in :meth:`_prepare_target`)."""
+        return BinaryLogistic(label_smoothing=self._label_smoothing)
+
+    @property
+    def _label_smoothing(self) -> float:
+        """Label smoothing, defaulting to 0 for subclasses (router extraction)
+        whose reduced ``__init__`` omits the parameter."""
+        return getattr(self, "label_smoothing", 0.0)
 
     def _resolve_eval_metric(self) -> BaseMetric:
         if self.eval_metric is None and self.n_classes_ > 2:

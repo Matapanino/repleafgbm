@@ -41,12 +41,18 @@ _NATIVE_STATS_MAX_DIM = 32
 
 @dataclass
 class LeafValues:
-    bias: np.ndarray  # (n_leaves,)
-    weights: np.ndarray  # (n_leaves, emb_dim) — emb_dim may be 0
-    #: Per-leaf embedding clip bounds, (n_leaves, emb_dim). At prediction
-    #: time Z is clipped to the range the leaf was fitted on, so beyond its
-    #: training support a leaf extrapolates as a constant — the guard that
-    #: prevents linear blow-ups on feature-space outliers (Phase 6/7,
+    #: Per-leaf intercept: (n_leaves,) for scalar leaves, or (n_leaves,
+    #: n_outputs) for vector leaves (multi-output regression).
+    bias: np.ndarray
+    #: Per-leaf linear weights over the representation Z: (n_leaves, emb_dim)
+    #: for scalar leaves, or (n_leaves, emb_dim, n_outputs) for vector leaves.
+    #: ``emb_dim`` may be 0 (constant leaves).
+    weights: np.ndarray
+    #: Per-leaf embedding clip bounds, (n_leaves, emb_dim) — shared across
+    #: outputs for vector leaves. At prediction time Z is clipped to the range
+    #: the leaf was fitted on, so beyond its training support a leaf
+    #: extrapolates as a constant — the guard that prevents linear blow-ups on
+    #: feature-space outliers (Phase 6/7,
     #: experiments/results/real_data_validation.md). None disables clipping
     #: (models saved before this guard existed).
     z_min: np.ndarray | None = None
@@ -57,8 +63,9 @@ class LeafValues:
     ) -> np.ndarray:
         """Leaf outputs for routed rows.
 
-        ``clip=False`` skips the extrapolation guard; it is only valid for
-        the rows the leaves were fitted on (the booster's training-score
+        Returns (n_rows,) for scalar leaves or (n_rows, n_outputs) for vector
+        leaves. ``clip=False`` skips the extrapolation guard; it is only valid
+        for the rows the leaves were fitted on (the booster's training-score
         update), where clipping to the leaf's own min/max is exactly the
         identity.
         """
@@ -67,12 +74,20 @@ class LeafValues:
             assert Z is not None, "embedding matrix required for linear leaves"
             if clip and self.z_min is not None:
                 Z = np.clip(Z, self.z_min[leaf_idx], self.z_max[leaf_idx])
-            out = out + np.einsum("ij,ij->i", Z, self.weights[leaf_idx])
+            if self.weights.ndim == 3:  # vector leaves: (n_leaves, emb, K)
+                out = out + np.einsum("ij,ijk->ik", Z, self.weights[leaf_idx])
+            else:
+                out = out + np.einsum("ij,ij->i", Z, self.weights[leaf_idx])
         return out
 
     @property
     def emb_dim(self) -> int:
         return int(self.weights.shape[1])
+
+    @property
+    def n_outputs(self) -> int:
+        """Number of outputs (1 for scalar leaves)."""
+        return 1 if self.bias.ndim == 1 else int(self.bias.shape[1])
 
 
 class BaseLeafModel(ABC):
