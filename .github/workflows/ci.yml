@@ -13,20 +13,43 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        # Cover the declared support floor (scikit-learn >= 1.2), the modern
+        # tag API (1.6), and the latest release. The full check_estimator
+        # battery only runs on >= 1.6 (gated in tests/test_sklearn_compat.py);
+        # the older lanes still run the hand-written compatibility tests.
+        # scikit-learn 1.2 wheels predate the NumPy 2.0 ABI, so pin numpy<2
+        # on that lane.
+        include:
+          # Specs are pre-quoted: they are substituted verbatim into the shell
+          # command, so the quotes must survive to stop `<` redirecting and `*`
+          # globbing.
+          - python-version: "3.10"
+            extra-deps: '"scikit-learn==1.2.*" "numpy<2"'
+          - python-version: "3.12"
+            extra-deps: '"scikit-learn==1.6.*"'
+          - python-version: "3.12"
+            extra-deps: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      - if: matrix.extra-deps != ''
+        run: pip install ${{ matrix.extra-deps }}
       - run: ruff check src tests examples benchmarks
       - run: python -m pytest tests/ -q
+      # Mirror scripts/check.sh: run every example so CI matches local checks.
+      # stacking_lightgbm self-skips without lightgbm (not in the dev extras).
       - run: |
           python examples/regression_basic.py
           python examples/binary_classification_basic.py
+          python examples/multiclass_classification_basic.py
+          python examples/multioutput_regression_basic.py
           python examples/dataset_api_basic.py
+          python examples/stacking_lightgbm.py
 
   rust-backend:
     runs-on: ubuntu-latest

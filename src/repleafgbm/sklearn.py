@@ -52,7 +52,12 @@ class BaseRepLeafModel(BaseEstimator):
         num_leaves: Maximum leaves per tree (leaf-wise growth).
         max_depth: Maximum tree depth; -1 means unlimited.
         min_samples_leaf: Minimum rows per leaf for a split to be valid.
-        leaf_model: "constant", "embedded_linear", or "raw_linear".
+        leaf_model: "constant", "embedded_linear", or "raw_linear". Defaults to
+            "embedded_linear"; on unknown real-world tabular data the OpenML
+            benchmark (docs/roadmap.md, Phase 25) found "constant" the honest
+            practical choice — embedded leaves help mainly on smooth/periodic
+            structure. The default is kept for backwards compatibility and may
+            change only in a major release.
         encoder: Encoder name ("identity", "plr") or a BaseEncoder instance.
             Ignored for leaf_model="constant"; for "raw_linear" a standardizing
             identity encoder is always used.
@@ -127,7 +132,15 @@ class BaseRepLeafModel(BaseEstimator):
     def __sklearn_tags__(self):
         # scikit-learn >= 1.6 tag API (the dataclass form). Implementing both
         # keeps the estimator working across sklearn versions (1.6 raises if
-        # only ``_more_tags`` is defined).
+        # only ``_more_tags`` is defined). On < 1.6 ``BaseEstimator`` has no
+        # ``__sklearn_tags__`` (it reads ``_more_tags`` via ``_get_tags``);
+        # sklearn never calls this method there, but guard the super() call so
+        # a direct invocation fails with a clear message instead of an opaque
+        # AttributeError about the missing base implementation.
+        if not hasattr(super(), "__sklearn_tags__"):
+            raise AttributeError(
+                "__sklearn_tags__ is only available with scikit-learn >= 1.6"
+            )
         tags = super().__sklearn_tags__()
         tags.input_tags.allow_nan = True
         tags.target_tags.required = True
@@ -445,6 +458,19 @@ class BaseRepLeafModel(BaseEstimator):
                         f"X has {X.shape[1]} features, but "
                         f"{type(self).__name__} is expecting "
                         f"{self.n_features_in_} features as input."
+                    )
+                # A numeric ndarray cannot carry category labels: its float
+                # codes never match the training string category maps, so every
+                # row would silently route through the missing branch. Refuse it
+                # and point at the supported categorical inputs instead of
+                # returning quietly wrong predictions.
+                if self.metadata_.categorical_features:
+                    raise ValueError(
+                        f"{type(self).__name__} was trained with categorical "
+                        f"features {self.metadata_.categorical_features}, which a "
+                        "numeric array cannot represent. Pass a pandas DataFrame "
+                        "with the original category labels, or a RepLeafDataset "
+                        "built with this model's metadata."
                     )
             dataset = RepLeafDataset(X, metadata=self.metadata_)
         X_raw = dataset.get_raw_features()

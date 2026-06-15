@@ -141,8 +141,10 @@ Implemented:
   models (scores + leaf indices, optional native early stopping), generic
   OOF utility, stacking feature builders, and `RouterExtractionRegressor` /
   `RouterExtractionClassifier` — LightGBM routing with RepLeaf leaf models
-  refit on the frozen routes, with replay-stage early stopping
-  (`pip install "repleafgbm[external]"`)
+  refit on the frozen routes, with replay-stage early stopping.
+  `pip install "repleafgbm[external]"` pulls **LightGBM** (the base used by
+  `router_extraction`); XGBoost/CatBoost support is exercised via the
+  `[bench]` extra.
 - pytest suite, runnable examples, and an `experiments/` research scaffold
 
 Not implemented (see [docs/roadmap.md](docs/roadmap.md)): encoder updates

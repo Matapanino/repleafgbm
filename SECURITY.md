@@ -1,14 +1,13 @@
 # Security Policy
 
-RepLeafGBM is experimental research software (pre-1.0, no PyPI release).
-It is not intended for production use, and model directories are loaded
-with `numpy.load` / JSON parsing only — no pickle, no code execution from
-model files.
+RepLeafGBM is research-oriented tabular ML software, released on PyPI from
+v1.0.0 onward. Model directories are loaded with `numpy.load` / JSON parsing
+only — no pickle, no code execution from model files.
 
 ## Supported versions
 
-Only the latest commit on `main` is supported. There are no maintained
-release branches.
+Security fixes target the latest released version on PyPI and the latest
+commit on `main`. There are no maintained older release branches.
 
 ## Reporting a vulnerability
 

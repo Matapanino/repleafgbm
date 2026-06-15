@@ -203,3 +203,38 @@ def test_classifier_with_categorical_splits():
     model.fit(RepLeafDataset(df, y, categorical_features=["c"]))
     acc = (model.predict(df) == y).mean()
     assert acc > 0.9
+
+
+def test_numeric_ndarray_predict_on_categorical_model_raises():
+    """A numeric ndarray cannot carry category labels, so predicting with one
+    on a categorical model must raise rather than silently route every row
+    through the missing branch (Phase 28b)."""
+    import pytest
+
+    df, y = _subset_frame(n=300)
+    model = RepLeafRegressor(
+        n_estimators=5, num_leaves=4, min_samples_leaf=10,
+        leaf_model="constant", random_state=42,
+    )
+    model.fit(RepLeafDataset(df, y, categorical_features=["c"]))
+
+    X_numeric = np.zeros((4, df.shape[1]), dtype=float)
+    with pytest.raises(ValueError, match="categorical features"):
+        model.predict(X_numeric)
+
+    # The supported categorical inputs still predict fine.
+    pred_df = model.predict(df)
+    pred_ds = model.predict(RepLeafDataset(df, metadata=model.metadata_))
+    np.testing.assert_allclose(pred_ds, pred_df)
+
+
+def test_numeric_ndarray_predict_on_numeric_model_still_works():
+    """Models without categorical features keep accepting numeric ndarrays."""
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(200, 3))
+    y = X[:, 0] * 2 + rng.normal(0, 0.1, 200)
+    model = RepLeafRegressor(
+        n_estimators=5, num_leaves=4, leaf_model="constant", random_state=42
+    ).fit(X, y)
+    pred = model.predict(rng.normal(size=(10, 3)))
+    assert pred.shape == (10,)

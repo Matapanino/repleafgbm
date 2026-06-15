@@ -38,7 +38,7 @@ def _require_catboost():
     except ImportError as exc:  # pragma: no cover - exercised via mocked test
         raise ImportError(
             "CatBoost is required for repleafgbm.external.CatBoostExternalModel. "
-            "Install it with: pip install catboost"
+            'Install it with: pip install catboost  (or pip install "repleafgbm[bench]")'
         ) from exc
     return catboost
 
