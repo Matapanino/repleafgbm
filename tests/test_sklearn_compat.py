@@ -3,10 +3,18 @@
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn
 from sklearn.base import clone
 from sklearn.utils.estimator_checks import parametrize_with_checks
 
 from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor
+
+# The check_estimator battery's contents change between scikit-learn releases.
+# The modern (dataclass-tags) contract stabilized in 1.6, so the full battery
+# is exercised there and later; older installs (the library still supports
+# >=1.2) skip it but keep the hand-written compatibility tests below.
+_SKLEARN_VERSION = tuple(int(p) for p in sklearn.__version__.split(".")[:2])
+_HAS_MODERN_CHECKS = _SKLEARN_VERSION >= (1, 6)
 
 # Tiny-data-friendly config: check_estimator validates behavior on very small
 # synthetic datasets, so min_samples_leaf must be small enough to allow splits;
@@ -16,6 +24,10 @@ _CHECK_CONFIG = dict(
 )
 
 
+@pytest.mark.skipif(
+    not _HAS_MODERN_CHECKS,
+    reason="check_estimator battery targets scikit-learn >= 1.6",
+)
 @parametrize_with_checks(
     [RepLeafRegressor(**_CHECK_CONFIG), RepLeafClassifier(**_CHECK_CONFIG)]
 )

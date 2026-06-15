@@ -18,6 +18,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:  # manual TestPyPI dry run
 
+# Run JavaScript actions on Node.js 24 (Node.js 20 is deprecated on runners).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ubuntu-latest

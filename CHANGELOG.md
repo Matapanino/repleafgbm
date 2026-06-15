@@ -5,6 +5,22 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.0.1] - 2026-06-15
+
+### Fixed
+- **Compatibility with scikit-learn >= 1.6** (1.0.0 broke on modern sklearn):
+  estimators now implement `__sklearn_tags__` in addition to `_more_tags`, and
+  array validation selects `ensure_all_finite` vs the removed `force_all_finite`
+  keyword depending on the installed version. Verified against scikit-learn 1.9.
+- `predict` on an array with the wrong number of features now raises the
+  standard "X has N features, but ... is expecting M features" message.
+
+### Changed
+- The `check_estimator` compliance battery (`tests/test_sklearn_compat.py`)
+  runs on scikit-learn >= 1.6 (where the modern contract is stable) and is
+  skipped on older installs; the hand-written compatibility tests still run.
+- CI/publish workflows opt into the Node.js 24 action runtime.
+
 ## [1.0.0] - 2026-06-15
 
 First stable release. The API, on-disk model format, and registered
