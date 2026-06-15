@@ -14,14 +14,21 @@ over learned representations inside each leaf.
 ⚠️ **This is experimental research software.** APIs, file formats, and
 behavior will change without notice. Do not use it in production.
 
-**Highlights from the experiment log** (synthetic data; see
+**Highlights from the experiment log** (see
 [docs/audit_v0.md](docs/audit_v0.md) and `experiments/results/`):
 
-- Embedded-linear leaves beat constant leaves, LightGBM, and sklearn
-  HistGradientBoosting on signals with smooth structure inside regimes.
+- On synthetic signals with smooth structure inside regimes, embedded-linear
+  leaves beat constant leaves, LightGBM, and sklearn HistGradientBoosting.
 - Refitting *LightGBM's own* routes with representation-conditioned leaves
   (router_extraction) improves LightGBM by 2-12% RMSE — isolating the leaf
   contribution from split quality.
+- On standard real OpenML datasets RepLeafGBM is **competitive with the major
+  GBM libraries** (mean rank across 9 datasets; constant-leaf RepLeaf even
+  edges out LightGBM and XGBoost on classification), though there the leaf
+  embeddings add no real-data accuracy over a constant leaf — consistent with
+  the documented finding that their advantage is specific to smooth/periodic
+  structure. Reproduce: `python benchmarks/openml_suite.py` (see
+  [experiments/results/openml_benchmark.md](experiments/results/openml_benchmark.md)).
 
 ## Motivation
 
