@@ -126,3 +126,19 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[docs]"
       - run: bash scripts/build_docs.sh  # API reference must build cleanly
+
+  # Stable aggregation gate: a single fixed-name check that branch protection
+  # can require, so the required-check name never has to track the (matrixed,
+  # frequently renamed) job contexts above. Add new CI jobs to `needs`.
+  ci-success:
+    name: ci-success
+    if: always()
+    needs: [test, rust-backend, torch-encoders, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required job did not succeed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "One or more CI jobs did not succeed: ${{ join(needs.*.result, ', ') }}"
+          exit 1
+      - run: echo "All required CI jobs passed."
