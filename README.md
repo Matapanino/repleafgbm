@@ -1,6 +1,7 @@
 # RepLeafGBM
 
 ![CI](https://github.com/Matapanino/repleafgbm/actions/workflows/ci.yml/badge.svg)
+![PyPI](https://img.shields.io/pypi/v/repleafgbm.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 **Representation-enhanced Leaf Gradient Boosting Machine** — gradient
@@ -11,8 +12,12 @@ over learned representations inside each leaf.
 > embeddings. It is a boosted ensemble of raw-feature routers with
 > representation-conditioned local predictors.
 
-⚠️ **This is experimental research software.** APIs, file formats, and
-behavior will change without notice. Do not use it in production.
+> **Stability:** from **1.0.0** the public API follows
+> [Semantic Versioning](https://semver.org). What that covers (estimator
+> parameters, the save/load format, registered encoder/objective/metric names,
+> exported symbols) and what stays experimental
+> (`repleafgbm.external`, `router_extraction`, native-backend internals) is
+> spelled out in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 **Highlights from the experiment log** (see
 [docs/audit_v0.md](docs/audit_v0.md) and `experiments/results/`):
@@ -143,7 +148,16 @@ Implemented:
 Not implemented (see [docs/roadmap.md](docs/roadmap.md)): encoder updates
 during boosting, GPU/distributed training.
 
-## Installation (development)
+## Installation
+
+```bash
+pip install repleafgbm                 # core (numpy, pandas, scikit-learn)
+pip install "repleafgbm[external]"     # + LightGBM external_model / router_extraction
+pip install "repleafgbm[bench]"        # + XGBoost / CatBoost for benchmarks
+pip install "repleafgbm[torch]"        # + learned torch encoders
+```
+
+### Development
 
 ```bash
 git clone <repo-url> && cd repleafgbm
@@ -151,7 +165,8 @@ pip install -e ".[dev]"
 ```
 
 Or without installing, run everything from the repo root with
-`PYTHONPATH=src`.
+`PYTHONPATH=src`. Build the API reference with
+`pip install -e ".[docs]" && bash scripts/build_docs.sh`.
 
 ## Running tests and examples
 

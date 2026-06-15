@@ -31,6 +31,8 @@ torch = ["torch>=2.0"]
 external = ["lightgbm>=4.0"]
 # External GBMs used as optional benchmark comparisons (and future backends).
 bench = ["lightgbm>=4.0", "xgboost>=2.0", "catboost>=1.2"]
+# API reference generation (scripts/build_docs.sh).
+docs = ["pdoc>=14"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [project.urls]
