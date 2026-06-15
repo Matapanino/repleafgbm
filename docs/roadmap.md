@@ -464,3 +464,9 @@ additive assumption analyzed in docs/math.md and must be designed against it.
   reproducibility manifest
 - ~~API reference generation~~ done in Phase 26 (pdoc, `scripts/build_docs.sh`,
   CI docs job); ~~versioned/hosted docs~~ published via GitHub Pages
+- ~~PEP 561 typing marker (`py.typed`)~~, ~~cross-platform CI
+  (ubuntu/macos/windows)~~, ~~coverage gate (`pytest-cov` `fail_under`)~~, and
+  ~~prebuilt native wheels for `repleafgbm-native` (Linux/macOS/Windows ×
+  CPython 3.10-3.12 via maturin + OIDC trusted publishing)~~ done in Phase 28
+  (v1.0.2). Optional: a Codecov badge (needs an external service token) and a
+  Windows/macOS source-build smoke for the docs/torch lanes remain nice-to-haves.

@@ -39,6 +39,15 @@ bash scripts/check.sh              # lint + tests + examples — must pass
   docs/serialization.md) and a backward-compat test.
 - Optional dependencies (lightgbm, torch) must never be imported by the
   native path; guard them at call time with actionable messages.
+- **Deprecation cycle.** From 1.0.0 the public API follows SemVer
+  ([docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md)). Don't
+  remove or change the behavior of public API (exported symbols, constructor
+  hyperparameters, documented fitted attributes/methods, registered
+  encoder/objective/metric names, the on-disk format) in a MINOR/PATCH release.
+  To retire something: emit a `DeprecationWarning` that names the replacement,
+  keep it working for **at least one MINOR release**, and remove it only in the
+  next MAJOR. New serialized fields must keep the read ladder backward-compatible
+  (see docs/serialization.md).
 
 ## Pull request checklist
 

@@ -61,6 +61,35 @@ Manual one-time actions (PyPI / GitHub side — cannot be done from the repo):
 - [x] Branch protection on `main` (require CI)
 - [x] GitHub Pages for the built API docs
 
+## v1.0.2 hardening (Phase 28, 2026-06-15)
+
+OSS-quality polish; no public API or model-format changes.
+
+Done in this repo:
+
+- [x] `py.typed` marker shipped (PEP 561); `pyproject.toml` force-includes it in
+      the wheel so type checkers honour the inline annotations
+- [x] Coverage gate: `pytest-cov` in the `dev` extra, `[tool.coverage]` config,
+      `--cov` on the Linux/3.12 CI lane with a `fail_under` floor
+- [x] Cross-platform CI: `test` + `rust-backend` jobs on ubuntu/macos/windows
+      (`OMP_NUM_THREADS=1`, `shell: bash`)
+- [x] `.github/workflows/publish-native.yml` — Linux/macOS/Windows × CPython
+      3.10-3.12 wheels for `repleafgbm-native` via maturin + OIDC (tag → PyPI,
+      manual dispatch → TestPyPI dry run)
+- [x] `CONTRIBUTING.md` documents the deprecation cycle (ADR 0003)
+
+Manual one-time actions (PyPI / GitHub side — cannot be done from the repo):
+
+- [ ] **Second PyPI trusted publisher** for the native wheels: project
+      `repleafgbm-native`, owner `Matapanino`, repo `repleafgbm`, workflow
+      `publish-native.yml` — configure on pypi.org (and test.pypi.org for the
+      dry run) before the first `v1.0.2` tag.
+- [ ] **Dry run** `publish-native.yml` via `workflow_dispatch` and confirm all
+      3 OS × 3 Python wheels + sdist build and upload to TestPyPI.
+- [ ] Optional: a Codecov (or shields.io endpoint) coverage badge — deferred
+      because it needs an external-service token; the CI `fail_under` gate is the
+      enforced contract.
+
 ## Working-copy location
 
 The canonical working copy lives at a local path (`~/dev/repleafgbm`) with
