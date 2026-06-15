@@ -351,6 +351,29 @@ Everything below v0 is a plan, not a promise of API stability.
   estimator config on reload (same convention as Huber's delta); predictions
   reload exactly. Tests (tests/test_label_smoothing.py)
 
+## Phase 25 — OpenML benchmark suite ✅ (2026-06-15)
+
+- `benchmarks/openml_suite.py`: a reproducible breadth-first leaderboard over 9
+  curated OpenML datasets (4 regression, 3 binary, 2 multiclass) comparing
+  RepLeafGBM (constant + embedded_linear) against LightGBM, XGBoost, CatBoost,
+  and sklearn HistGradientBoosting. Every model trains on the **same**
+  ordinal-encoded matrix, fixed seed, 60/20/20 split, early stopping. Report:
+  experiments/results/openml_benchmark.md (regenerate with one command);
+  cached via `~/scikit_learn_data` for offline reruns. Part of the v1.0 OSS
+  quality track.
+- Findings (mean rank, lower better): regression — CatBoost 2.00 < LightGBM
+  2.50 < XGBoost 2.75 < RepLeaf-constant 4.00 < RepLeaf-embedded 4.50 < HistGB
+  5.25; classification — CatBoost 2.00 < **RepLeaf-constant 2.60** < XGBoost
+  3.40 < LightGBM 3.60 < RepLeaf-embedded 4.20 < HistGB 5.20. RepLeafGBM is
+  competitive with the major libraries on standard real data (constant-leaf
+  notably edges out LightGBM/XGBoost on classification), and CatBoost leads
+  overall.
+- Confirms at breadth what Phases 14/16 found in depth: **embedded leaves add
+  no real-data accuracy over a constant leaf** here (embedded ranks below
+  constant on 8/9 datasets) — their advantage is specific to smooth/periodic
+  synthetic structure, not typical tabular targets. `leaf_model="constant"`
+  remains the honest default recommendation on unknown real data.
+
 ## v1.5 — outputs and objectives ✅ (closed by Phases 22 + 23)
 
 - ~~Multiclass classification (softmax)~~ done in Phase 17 (one tree per
@@ -416,5 +439,6 @@ additive assumption analyzed in docs/math.md and must be designed against it.
   docs/publishing_checklist.md
 - ~~Issue templates, SECURITY.md~~ done (Phase 20, 2026-06-12); PyPI
   release deferred until API stability
-- Benchmark suite (OpenML/tabular benchmarks) under `benchmarks/`
+- ~~Benchmark suite (OpenML/tabular benchmarks) under `benchmarks/`~~ done in
+  Phase 25 (`benchmarks/openml_suite.py`, 9-dataset reproducible leaderboard)
 - Versioned docs; API reference generation
