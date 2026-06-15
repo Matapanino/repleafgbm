@@ -113,6 +113,9 @@ Implemented:
   `"poisson"` — parameterized instances like `Quantile(alpha=0.9)` work
   too), binary classification (logistic), and multiclass classification
   (softmax, one tree per class per round — automatic at 3+ classes)
+- Multi-output regression via shared-routing **vector leaves** (pass a 2-D
+  `y`; one tree per round whose leaves emit a vector — squared-error only),
+  and `label_smoothing` for classification
 - Early stopping (`early_stopping_rounds`, `best_iteration_`, prediction at
   the best iteration) and eval metrics: rmse, mae, logloss, multi_logloss,
   auc, accuracy, or any user-supplied callable (`repleafgbm.make_metric`)
@@ -131,7 +134,7 @@ Implemented:
 - pytest suite, runnable examples, and an `experiments/` research scaffold
 
 Not implemented (see [docs/roadmap.md](docs/roadmap.md)): encoder updates
-during boosting, multi-output regression, GPU/distributed training.
+during boosting, GPU/distributed training.
 
 ## Installation (development)
 

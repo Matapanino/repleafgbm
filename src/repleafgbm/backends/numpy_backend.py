@@ -192,3 +192,66 @@ class NumPySplitBackend(BaseSplitBackend):
 def _leaf_score(g, h, l2: float):
     """Newton objective reduction of a leaf: G^2 / (H + l2) (factor 1/2 dropped)."""
     return g * g / (h + l2)
+
+
+def find_best_split_multioutput(
+    hist: np.ndarray,
+    n_bins_per_feature: np.ndarray,
+    min_samples_leaf: int,
+    l2: float,
+) -> SplitCandidate | None:
+    """Best numerical split for a shared-routing multi-output node.
+
+    ``hist`` is the stacked layout ``(n_features, n_bins_max, 3, n_outputs)``
+    (the scalar 3-channel histogram built once per output). Routing is shared
+    across outputs, so the split gain is the per-output Newton gain summed over
+    outputs: ``sum_k G_k^2 / (H_k + l2)``. Missing values always go left,
+    exactly as in the scalar :meth:`NumPySplitBackend.find_best_split`.
+
+    Categorical subset splits are not produced here (multi-output trees route
+    categoricals as ordered thresholds); this scan handles every feature as an
+    ordered-threshold candidate.
+    """
+    g, h, n = hist[:, :, 0, :], hist[:, :, 1, :], hist[:, :, 2, 0]
+    n_features, n_bins_max, n_outputs = g.shape
+    feat_idx = np.arange(n_features)
+
+    # Per-output totals (same across features); read off feature 0.
+    g_total = g[0].sum(axis=0)  # (K,)
+    h_total = h[0].sum(axis=0)  # (K,)
+    n_total = float(n[0].sum())
+    parent_score = float(_leaf_score(g_total, h_total, l2).sum())
+
+    miss_g = g[feat_idx, n_bins_per_feature, :][:, None, :]  # (F, 1, K)
+    miss_h = h[feat_idx, n_bins_per_feature, :][:, None, :]
+    miss_n = n[feat_idx, n_bins_per_feature][:, None]  # (F, 1)
+
+    left_g = np.cumsum(g, axis=1) + miss_g  # (F, B, K)
+    left_h = np.cumsum(h, axis=1) + miss_h
+    left_n = np.cumsum(n, axis=1) + miss_n  # (F, B)
+    right_n = n_total - left_n
+
+    valid = (
+        (np.arange(n_bins_max)[None, :] <= (n_bins_per_feature - 2)[:, None])
+        & (left_n >= min_samples_leaf)
+        & (right_n >= min_samples_leaf)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        gain = (
+            _leaf_score(left_g, left_h, l2)
+            + _leaf_score(g_total - left_g, h_total - left_h, l2)
+        ).sum(axis=2) - parent_score  # (F, B)
+    gain = np.where(valid & np.isfinite(gain), gain, -np.inf)
+
+    best_flat = int(np.argmax(gain))  # deterministic tie-break: lowest index
+    best_gain = float(gain.flat[best_flat])
+    if best_gain <= 1e-12:
+        return None
+    f, c = divmod(best_flat, n_bins_max)
+    return SplitCandidate(
+        feature=int(f),
+        bin=int(c),
+        gain=best_gain,
+        n_left=int(left_n[f, c]),
+        n_right=int(right_n[f, c]),
+    )

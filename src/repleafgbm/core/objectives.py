@@ -50,17 +50,35 @@ class BinaryLogistic(BaseObjective):
     """Logistic loss for binary classification on labels in {0, 1}.
 
     g = sigmoid(F) - y, h = sigmoid(F) * (1 - sigmoid(F)).
+
+    Args:
+        label_smoothing: If >0, the hard targets are softened to
+            ``y * (1 - eps) + eps / 2`` before computing gradients and the
+            init score. This regularizes over-confident probabilities;
+            ``eps = 0`` reproduces the unsmoothed objective exactly.
     """
 
     name = "binary_logistic"
 
+    def __init__(self, label_smoothing: float = 0.0) -> None:
+        if not 0.0 <= label_smoothing < 1.0:
+            raise ValueError(
+                f"label_smoothing must be in [0, 1), got {label_smoothing}"
+            )
+        self.label_smoothing = label_smoothing
+
+    def _smooth(self, y: np.ndarray) -> np.ndarray:
+        if self.label_smoothing == 0.0:
+            return y
+        return y * (1.0 - self.label_smoothing) + self.label_smoothing / 2.0
+
     def init_score(self, y: np.ndarray) -> float:
-        p = float(np.clip(np.mean(y), 1e-12, 1 - 1e-12))
+        p = float(np.clip(np.mean(self._smooth(y)), 1e-12, 1 - 1e-12))
         return float(np.log(p / (1.0 - p)))
 
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         p = _sigmoid(raw_pred)
-        return p - y, np.maximum(p * (1.0 - p), 1e-12)
+        return p - self._smooth(y), np.maximum(p * (1.0 - p), 1e-12)
 
     def transform(self, raw_pred: np.ndarray) -> np.ndarray:
         return _sigmoid(raw_pred)
@@ -162,31 +180,81 @@ class MulticlassSoftmax:
 
     name = "multiclass_softmax"
 
-    def __init__(self, n_classes: int) -> None:
+    def __init__(self, n_classes: int, label_smoothing: float = 0.0) -> None:
         if n_classes < 3:
             raise ValueError(
                 f"MulticlassSoftmax requires n_classes >= 3, got {n_classes}; "
                 "use binary_logistic for two classes"
             )
+        if not 0.0 <= label_smoothing < 1.0:
+            raise ValueError(
+                f"label_smoothing must be in [0, 1), got {label_smoothing}"
+            )
         self.n_classes = n_classes
+        self.label_smoothing = label_smoothing
 
     def init_score(self, y: np.ndarray) -> np.ndarray:
         """Log class priors, shape (n_classes,). Softmax-invariant shift aside,
-        this is the optimal constant score matrix."""
+        this is the optimal constant score matrix. With label smoothing the
+        priors are the mean smoothed target ``(1 - eps) * empirical + eps / K``."""
         counts = np.bincount(y.astype(np.int64), minlength=self.n_classes)
-        priors = np.clip(counts / y.shape[0], 1e-12, None)
-        return np.log(priors)
+        priors = counts / y.shape[0]
+        if self.label_smoothing:
+            priors = (
+                (1.0 - self.label_smoothing) * priors
+                + self.label_smoothing / self.n_classes
+            )
+        return np.log(np.clip(priors, 1e-12, None))
 
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Per-row, per-class gradient and Hessian, both (n_rows, n_classes)."""
+        """Per-row, per-class gradient and Hessian, both (n_rows, n_classes).
+
+        The hard one-hot target is softened to
+        ``(1 - eps) * onehot + eps / K`` when ``label_smoothing`` is set, so
+        ``g_k = p_k - target_k``."""
         p = _softmax(raw_pred)
         grad = p.copy()
-        grad[np.arange(y.shape[0]), y.astype(np.int64)] -= 1.0
+        eps = self.label_smoothing
+        if eps:
+            grad -= eps / self.n_classes
+        grad[np.arange(y.shape[0]), y.astype(np.int64)] -= 1.0 - eps
         hess = np.maximum(p * (1.0 - p), 1e-12)
         return grad, hess
 
     def transform(self, raw_pred: np.ndarray) -> np.ndarray:
         return _softmax(raw_pred)
+
+
+class MultiOutputSquaredError:
+    """Squared error for multi-output (vector-valued) regression.
+
+    The vector-valued counterpart of :class:`SquaredError`: raw scores and
+    targets are (n_rows, n_outputs) matrices and every output shares the same
+    routing tree (vector leaves, docs/math.md). g = F - Y, h = 1. Consumed by
+    :class:`~repleafgbm.core.multioutput.MultiOutputBooster`, which grows one
+    tree per round whose leaves emit an (n_outputs,) vector.
+    """
+
+    name = "multioutput_squared_error"
+
+    def __init__(self, n_outputs: int) -> None:
+        if n_outputs < 2:
+            raise ValueError(
+                f"MultiOutputSquaredError requires n_outputs >= 2, got {n_outputs}; "
+                "use squared_error for a single target"
+            )
+        self.n_outputs = n_outputs
+
+    def init_score(self, y: np.ndarray) -> np.ndarray:
+        """Per-output means, shape (n_outputs,)."""
+        return np.mean(y, axis=0)
+
+    def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-row, per-output gradient and Hessian, both (n_rows, n_outputs)."""
+        return raw_pred - y, np.ones_like(y)
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray:
+        return raw_pred
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:

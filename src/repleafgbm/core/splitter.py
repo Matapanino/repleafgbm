@@ -10,7 +10,10 @@ from __future__ import annotations
 import numpy as np
 
 from repleafgbm.backends.base import BaseSplitBackend, SplitCandidate
-from repleafgbm.backends.numpy_backend import NumPySplitBackend
+from repleafgbm.backends.numpy_backend import (
+    NumPySplitBackend,
+    find_best_split_multioutput,
+)
 from repleafgbm.core.histogram import bin_features, compute_bin_thresholds
 
 
@@ -80,12 +83,34 @@ class Splitter:
     def build_histograms(
         self, rows: np.ndarray, grad: np.ndarray, hess: np.ndarray
     ) -> np.ndarray:
-        """Node histogram (n_features, n_bins_max, 3); see backends.base."""
-        return self.backend.build_histograms(
-            self.binned, rows, grad, hess, self.n_bins_max
+        """Node histogram; see backends.base.
+
+        Scalar grad/hess give the ``(n_features, n_bins_max, 3)`` layout. For
+        multi-output regression grad/hess are ``(n_rows, n_outputs)`` and the
+        per-output scalar histograms are stacked into
+        ``(n_features, n_bins_max, 3, n_outputs)`` — sibling subtraction stays
+        valid (it is linear in the stacked array), and the same compiled or
+        NumPy ``build_histograms`` kernel is reused per output.
+        """
+        if grad.ndim == 1:
+            return self.backend.build_histograms(
+                self.binned, rows, grad, hess, self.n_bins_max
+            )
+        return np.stack(
+            [
+                self.backend.build_histograms(
+                    self.binned, rows, grad[:, k], hess[:, k], self.n_bins_max
+                )
+                for k in range(grad.shape[1])
+            ],
+            axis=-1,
         )
 
     def find_best_split(self, hist: np.ndarray) -> SplitCandidate | None:
+        if hist.ndim == 4:  # multi-output: shared-routing numerical scan
+            return find_best_split_multioutput(
+                hist, self.n_bins_per_feature, self.min_samples_leaf, self.l2
+            )
         return self.backend.find_best_split(
             hist,
             self.n_bins_per_feature,
@@ -98,7 +123,16 @@ class Splitter:
         )
 
     def threshold_value(self, split: SplitCandidate) -> float:
-        """Real-valued threshold for a winning bin split (x <= t goes left)."""
+        """Real-valued threshold for a winning bin split (x <= t goes left).
+
+        Numerical features map the winning bin to its quantile threshold.
+        Categorical features have no threshold array: in single-output trees
+        they always produce subset splits (handled via ``left_categories``),
+        but multi-output trees route them as ordered thresholds on the ordinal
+        code, where the code value itself is the threshold (``code <= bin``).
+        """
+        if self.is_categorical[split.feature]:
+            return float(split.bin)
         return float(self.thresholds[split.feature][split.bin])
 
     def partition(self, rows: np.ndarray, split: SplitCandidate) -> tuple[np.ndarray, np.ndarray]:

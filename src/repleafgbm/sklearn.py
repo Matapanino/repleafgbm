@@ -86,6 +86,12 @@ class BaseRepLeafModel(BaseEstimator):
             exactly, but refitting a reloaded model uses the named
             objective's default parameters unless the instance is passed
             again.
+        label_smoothing: Classification only (ignored by the regressor). If
+            >0, hard targets are softened before computing gradients —
+            ``y*(1-eps) + eps/2`` for binary, ``(1-eps)*onehot + eps/K`` for
+            multiclass — which regularizes over-confident probabilities. It is
+            restored from the saved config on reload (the objective itself
+            serializes by name only). Must be in [0, 1).
         random_state: Seed controlling all internal randomness.
     """
 
@@ -113,6 +119,7 @@ class BaseRepLeafModel(BaseEstimator):
         early_stopping_rounds: int | None = None,
         eval_metric: str | BaseMetric | Any | None = None,
         objective: str | BaseObjective | None = None,
+        label_smoothing: float = 0.0,
         random_state: int | None = 42,
     ) -> None:
         self.n_estimators = n_estimators
@@ -134,6 +141,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.early_stopping_rounds = early_stopping_rounds
         self.eval_metric = eval_metric
         self.objective = objective
+        self.label_smoothing = label_smoothing
         self.random_state = random_state
 
     # ------------------------------------------------------------------ #
