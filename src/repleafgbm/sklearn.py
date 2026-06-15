@@ -15,6 +15,9 @@ from typing import Any
 
 import numpy as np
 from sklearn.base import BaseEstimator
+from sklearn.exceptions import NotFittedError
+from sklearn.utils import check_array, check_X_y
+from sklearn.utils.validation import column_or_1d
 
 from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.leaf_models import make_leaf_model
@@ -97,6 +100,15 @@ class BaseRepLeafModel(BaseEstimator):
 
     _objective_name: str = "squared_error"
     _eval_metric_name: str = "rmse"
+    #: Whether the target must be numeric (regressor) or may be labels
+    #: (classifier overrides to False). Drives array validation of ``y``.
+    _y_numeric: bool = True
+
+    def _more_tags(self) -> dict:
+        # NaN is a supported value (missing routes left), so check_estimator's
+        # finiteness checks should test inf-rejection only, not NaN-rejection.
+        # Both estimators are supervised and require y.
+        return {"allow_nan": True, "requires_y": True}
 
     def __init__(
         self,
@@ -267,11 +279,52 @@ class BaseRepLeafModel(BaseEstimator):
             return make_metric(metric)
         return get_metric(metric)
 
+    #: Regression supports 2-D multi-output targets; the classifier does not.
+    _multi_output: bool = True
+
+    @staticmethod
+    def _is_dataframe(X: Any) -> bool:
+        """Duck-typed pandas DataFrame check (avoids a hard import here)."""
+        return hasattr(X, "iloc") and hasattr(X, "columns")
+
+    def _validate_array_X(self, X: Any) -> Any:
+        """sklearn-conformant validation for plain array-likes (rejects sparse,
+        complex, infinite, empty, and 1-D inputs with the standard messages).
+        DataFrame / RepLeafDataset inputs keep their own preprocessing path,
+        which handles categoricals. NaN is allowed (it routes left)."""
+        return check_array(
+            X, accept_sparse=False, force_all_finite="allow-nan", dtype="numeric"
+        )
+
+    def _validate_array_Xy(self, X: Any, y: Any) -> tuple[Any, Any]:
+        X, y = check_X_y(
+            X,
+            y,
+            accept_sparse=False,
+            force_all_finite="allow-nan",
+            dtype="numeric",
+            multi_output=self._multi_output,
+            y_numeric=self._y_numeric,
+        )
+        # A single-column 2-D target is raveled with a DataConversionWarning,
+        # matching sklearn convention; a genuine multi-output (n, k>1) target
+        # is kept (regression vector leaves, Phase 22).
+        if self._multi_output and y.ndim == 2 and y.shape[1] == 1:
+            y = column_or_1d(y, warn=True)
+        return X, y
+
     def _build_dataset(self, X: Any, y: Any | None) -> RepLeafDataset:
         if isinstance(X, RepLeafDataset):
             if y is not None:
                 raise ValueError("Pass y inside the RepLeafDataset, not separately")
             return X
+        if not self._is_dataframe(X):
+            if y is None:
+                raise ValueError(
+                    f"This {type(self).__name__} estimator requires y to be "
+                    "passed, but the target y is None."
+                )
+            X, y = self._validate_array_Xy(X, y)
         return RepLeafDataset(X, y)
 
     def _prepare_eval_sets(self, eval_set: Any) -> list[tuple[str, RepLeafDataset]]:
@@ -361,6 +414,8 @@ class BaseRepLeafModel(BaseEstimator):
             self._check_metadata_compatible(X, context="predict input")
             dataset = X
         else:
+            if not self._is_dataframe(X):
+                X = self._validate_array_X(X)
             dataset = RepLeafDataset(X, metadata=self.metadata_)
         X_raw = dataset.get_raw_features()
         Z = dataset.get_embeddings(self.encoder_) if self.encoder_ is not None else None
@@ -390,8 +445,9 @@ class BaseRepLeafModel(BaseEstimator):
 
     def _check_is_fitted(self) -> None:
         if getattr(self, "booster_", None) is None:
-            raise RuntimeError(
-                f"{type(self).__name__} is not fitted yet; call fit() first"
+            raise NotFittedError(
+                f"This {type(self).__name__} instance is not fitted yet; call "
+                "fit() with appropriate arguments before using this estimator."
             )
 
     # ------------------------------------------------------------------ #

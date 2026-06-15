@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 from sklearn.base import ClassifierMixin
+from sklearn.utils.multiclass import type_of_target
 
 from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.metrics import BaseMetric, get_metric
@@ -41,6 +42,9 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
 
     _objective_name = "binary_logistic"
     _eval_metric_name = "logloss"
+    #: Targets are class labels (not numeric) and never multi-output.
+    _y_numeric = False
+    _multi_output = False
     #: Subclasses that replay external binary routes (router_extraction)
     #: set this to False to keep rejecting 3+ class targets.
     _supports_multiclass = True
@@ -48,6 +52,14 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
     def _prepare_target(self, dataset: RepLeafDataset, is_train: bool) -> RepLeafDataset:
         if dataset.y is None:
             raise ValueError("Training data must include a target (y)")
+        if is_train:
+            target_type = type_of_target(dataset.y)
+            if target_type not in ("binary", "multiclass"):
+                raise ValueError(
+                    f"Unknown label type: {target_type!r}. RepLeafClassifier "
+                    "requires a classification target (binary or multiclass); "
+                    "use RepLeafRegressor for continuous targets."
+                )
         if is_train and getattr(self, "objective", None) is not None:
             raise ValueError(
                 "RepLeafClassifier selects its objective from the target "
@@ -58,7 +70,8 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
         if is_train:
             if classes.shape[0] < 2:
                 raise ValueError(
-                    f"RepLeafClassifier needs at least 2 classes; got {classes.shape[0]}"
+                    f"RepLeafClassifier needs at least 2 classes; got "
+                    f"{classes.shape[0]} class in the training target"
                 )
             if classes.shape[0] > 2 and not self._supports_multiclass:
                 raise ValueError(

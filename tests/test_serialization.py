@@ -5,6 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.exceptions import NotFittedError
 
 from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor
 
@@ -73,7 +74,7 @@ def test_missing_directory_rejected(tmp_path):
 
 
 def test_unfitted_save_rejected(tmp_path):
-    with pytest.raises(RuntimeError, match="not fitted"):
+    with pytest.raises(NotFittedError, match="not fitted"):
         RepLeafRegressor().save_model(tmp_path / "model")
 
 
@@ -196,5 +197,5 @@ def test_summary_reports_early_stopping(regression_data):
 
 
 def test_summary_requires_fit():
-    with pytest.raises(RuntimeError, match="not fitted"):
+    with pytest.raises(NotFittedError, match="not fitted"):
         RepLeafRegressor().summary()
