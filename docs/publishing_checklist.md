@@ -34,11 +34,32 @@ decision or a GitHub-side action that cannot be done from this repo alone.
 - [x] Issue templates (`.github/ISSUE_TEMPLATE/`) and `SECURITY.md`
       (private reporting via GitHub security advisories) — added 2026-06-12,
       Phase 20
-- [ ] PyPI publication (defer until the API stabilizes — the README already
-      warns about instability)
-- [ ] Move the working copy out of Google Drive to a local path (see the
-      Phase 9 report for the procedure); afterwards GitHub is the canonical
-      remote
+- [x] Move the working copy out of Google Drive to a local path
+      (`~/dev/repleafgbm`); GitHub is now the canonical remote
+
+## v1.0.0 release (Phase 27, 2026-06-15)
+
+API stabilized in Phase 24 (ADR 0003), so the PyPI deferral is lifted.
+
+Done in this repo:
+
+- [x] Version bumped to `1.0.0` (`pyproject.toml`, `__init__.py`); classifier
+      `Development Status :: 5 - Production/Stable`
+- [x] `python -m build` + `twine check dist/*` pass locally (pure-Python
+      universal wheel; the Rust `native/` extension is built separately and is
+      not part of the PyPI distribution for 1.0)
+- [x] `.github/workflows/publish.yml` — OIDC trusted publishing on `v*` tags
+      (manual dispatch → TestPyPI dry run)
+- [x] `CHANGELOG.md`
+
+Manual one-time actions (PyPI / GitHub side — cannot be done from the repo):
+
+- [ ] **PyPI trusted publisher**: pypi.org/manage/account/publishing — add
+      publisher `repleafgbm`, owner `Matapanino`, repo `repleafgbm`, workflow
+      `publish.yml`, environment blank. (Optional: repeat on test.pypi.org and
+      run the workflow manually for a TestPyPI dry run.)
+- [ ] **Push the release tag** `v1.0.0` → triggers `publish.yml` → PyPI
+- [ ] Branch protection on `main` (require CI) if collaborators join
 
 ## Working-copy location (Google Drive caveat)
 

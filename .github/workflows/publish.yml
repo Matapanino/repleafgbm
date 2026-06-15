@@ -1,0 +1,65 @@
+name: Publish
+
+# Build sdist+wheel on every version tag and publish to PyPI via OIDC
+# "trusted publishing" (no API token stored in the repo). A manual run
+# (workflow_dispatch) publishes to TestPyPI instead, for a dry run.
+#
+# Prerequisites (one-time, PyPI side — see docs/publishing_checklist.md):
+#   pypi.org/manage/account/publishing -> add a trusted publisher
+#     PyPI Project Name: repleafgbm
+#     Owner:             Matapanino
+#     Repository name:   repleafgbm
+#     Workflow name:     publish.yml
+#     Environment:       (leave blank)
+#   For the TestPyPI dry run, repeat at test.pypi.org.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # manual TestPyPI dry run
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    # Dry run: manual dispatch publishes to TestPyPI.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    # Real release: a version tag (vX.Y.Z) publishes to PyPI.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
