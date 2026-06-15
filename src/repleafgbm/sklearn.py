@@ -28,6 +28,20 @@ from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders import RandomProjectionEncoder, make_encoder
 from repleafgbm.encoders.base import BaseEncoder
 
+# scikit-learn renamed ``force_all_finite`` -> ``ensure_all_finite`` in 1.6 and
+# removed the old name in 1.8. Pick whichever the installed version accepts so
+# the estimators work across the supported range (scikit-learn >= 1.2).
+_FINITE_KW = (
+    "ensure_all_finite"
+    if "ensure_all_finite" in inspect.signature(check_array).parameters
+    else "force_all_finite"
+)
+
+
+def _allow_nan_kwargs() -> dict:
+    """Validation kwargs that permit NaN (it routes left) but reject inf."""
+    return {_FINITE_KW: "allow-nan"}
+
 
 class BaseRepLeafModel(BaseEstimator):
     """Shared implementation for RepLeafRegressor / RepLeafClassifier.
@@ -105,10 +119,19 @@ class BaseRepLeafModel(BaseEstimator):
     _y_numeric: bool = True
 
     def _more_tags(self) -> dict:
-        # NaN is a supported value (missing routes left), so check_estimator's
-        # finiteness checks should test inf-rejection only, not NaN-rejection.
-        # Both estimators are supervised and require y.
+        # scikit-learn < 1.6 tag API. NaN is a supported value (missing routes
+        # left), so check_estimator's finiteness checks should test
+        # inf-rejection only, not NaN-rejection. Both estimators require y.
         return {"allow_nan": True, "requires_y": True}
+
+    def __sklearn_tags__(self):
+        # scikit-learn >= 1.6 tag API (the dataclass form). Implementing both
+        # keeps the estimator working across sklearn versions (1.6 raises if
+        # only ``_more_tags`` is defined).
+        tags = super().__sklearn_tags__()
+        tags.input_tags.allow_nan = True
+        tags.target_tags.required = True
+        return tags
 
     def __init__(
         self,
@@ -293,7 +316,7 @@ class BaseRepLeafModel(BaseEstimator):
         DataFrame / RepLeafDataset inputs keep their own preprocessing path,
         which handles categoricals. NaN is allowed (it routes left)."""
         return check_array(
-            X, accept_sparse=False, force_all_finite="allow-nan", dtype="numeric"
+            X, accept_sparse=False, dtype="numeric", **_allow_nan_kwargs()
         )
 
     def _validate_array_Xy(self, X: Any, y: Any) -> tuple[Any, Any]:
@@ -301,10 +324,10 @@ class BaseRepLeafModel(BaseEstimator):
             X,
             y,
             accept_sparse=False,
-            force_all_finite="allow-nan",
             dtype="numeric",
             multi_output=self._multi_output,
             y_numeric=self._y_numeric,
+            **_allow_nan_kwargs(),
         )
         # A single-column 2-D target is raveled with a DataConversionWarning,
         # matching sklearn convention; a genuine multi-output (n, k>1) target
@@ -416,6 +439,13 @@ class BaseRepLeafModel(BaseEstimator):
         else:
             if not self._is_dataframe(X):
                 X = self._validate_array_X(X)
+                if X.shape[1] != self.n_features_in_:
+                    # Standard scikit-learn message (matches check_estimator).
+                    raise ValueError(
+                        f"X has {X.shape[1]} features, but "
+                        f"{type(self).__name__} is expecting "
+                        f"{self.n_features_in_} features as input."
+                    )
             dataset = RepLeafDataset(X, metadata=self.metadata_)
         X_raw = dataset.get_raw_features()
         Z = dataset.get_embeddings(self.encoder_) if self.encoder_ is not None else None
