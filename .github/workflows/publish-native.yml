@@ -38,13 +38,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # maturin-action builds for the interpreter set up above; on Linux it runs
-      # inside a manylinux container (manylinux: auto) for portable wheels.
+      # On Linux the build runs inside a manylinux container (manylinux: auto)
+      # for portable wheels; the host setup-python is not visible there, so we
+      # tell maturin which interpreter to use (the numeric form resolves to the
+      # container's /opt/python). macOS/Windows have no container and
+      # auto-detect the setup-python above (where the numeric -i form would not
+      # resolve), so the interpreter flag is added on Linux only.
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: native
           command: build
-          args: --release --out dist
+          args: --release --out dist ${{ matrix.os == 'ubuntu-latest' && format('-i {0}', matrix.python-version) || '' }}
           manylinux: auto
           sccache: true
       - uses: actions/upload-artifact@v4
