@@ -4,8 +4,28 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.base import clone
+from sklearn.utils.estimator_checks import parametrize_with_checks
 
 from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor
+
+# Tiny-data-friendly config: check_estimator validates behavior on very small
+# synthetic datasets, so min_samples_leaf must be small enough to allow splits;
+# the production defaults are deliberately more conservative.
+_CHECK_CONFIG = dict(
+    n_estimators=30, num_leaves=8, learning_rate=0.3, min_samples_leaf=2, random_state=0
+)
+
+
+@parametrize_with_checks(
+    [RepLeafRegressor(**_CHECK_CONFIG), RepLeafClassifier(**_CHECK_CONFIG)]
+)
+def test_sklearn_check_estimator(estimator, check):
+    """Full scikit-learn estimator-compliance battery (Phase 24, v1.0).
+
+    NaN is a supported feature value (routes left), so the estimators set the
+    ``allow_nan`` tag and the finiteness checks only require inf-rejection.
+    """
+    check(estimator)
 
 
 def test_clone_and_set_params(regression_data):

@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from sklearn.exceptions import NotFittedError
 
 from repleafgbm import RepLeafDataset, RepLeafRegressor
 
@@ -45,7 +46,7 @@ def test_invalid_importance_type(fitted):
 
 
 def test_unfitted_raises():
-    with pytest.raises(RuntimeError, match="not fitted"):
+    with pytest.raises(NotFittedError, match="not fitted"):
         RepLeafRegressor().feature_importances_  # noqa: B018
 
 

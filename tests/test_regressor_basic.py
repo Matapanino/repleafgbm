@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.exceptions import NotFittedError
 
 from repleafgbm import RepLeafDataset, RepLeafRegressor
 
@@ -146,5 +147,5 @@ def test_freeze_encoder_false_rejected(regression_data):
 
 
 def test_predict_before_fit_raises():
-    with pytest.raises(RuntimeError, match="not fitted"):
+    with pytest.raises(NotFittedError, match="not fitted"):
         RepLeafRegressor().predict(np.zeros((2, 2)))

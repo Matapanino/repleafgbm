@@ -222,7 +222,10 @@ def _declared_categories(X: Any, name: str) -> list[str] | None:
 
 def _get_column(X: Any, feature_names: list[str], name: str):
     if _is_dataframe(X):
-        return X[name].to_numpy()
+        # Match by stringified column label so non-string columns (e.g. an
+        # integer RangeIndex) resolve the same way metadata stores them.
+        col_map = {str(c): c for c in X.columns}
+        return X[col_map[name]].to_numpy()
     arr = np.asarray(X)
     if arr.ndim == 1:
         arr = arr.reshape(-1, 1)
