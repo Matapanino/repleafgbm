@@ -1,7 +1,13 @@
 # RepLeafGBM Roadmap
 
-This roadmap is honest about status: **v0 is the only implemented stage.**
-Everything below v0 is a plan, not a promise of API stability.
+This roadmap is honest about status. As of the **1.0.0** release the capability
+tiers **v0 through v1.5 are implemented**, plus the v2 native-backend core; the
+public API is stable under [SemVer](docs/adr/0003-api-stability.md). Remaining
+v2 polish and v3 (GPU/scale) are plans, not promises.
+
+> The `v0/v1/v1.5/v2/v3` labels below are **capability tiers**, not package
+> versions. Package versioning is independent and starts its stable line at
+> 1.0.0 (see ADR 0003).
 
 ## v0 — implemented ✅
 
@@ -374,6 +380,18 @@ Everything below v0 is a plan, not a promise of API stability.
   synthetic structure, not typical tabular targets. `leaf_model="constant"`
   remains the honest default recommendation on unknown real data.
 
+## Phase 26 — documentation completion (v1.0) ✅ (2026-06-15)
+
+- API reference generation: `scripts/build_docs.sh` renders the public API
+  from docstrings with pdoc (`[docs]` extra); a dedicated CI job builds it on
+  every push so the reference can never silently break.
+- `CHANGELOG.md` (Keep a Changelog) summarizing v0→1.0.
+- README: the "APIs will change without notice" warning is replaced by the
+  SemVer stability policy (ADR 0003); PyPI install instructions and a version
+  badge added; honest real-data benchmark highlight (Phase 25).
+- Roadmap intro corrected (v0→v1.5 + v2 core shipped) and the
+  capability-tier-vs-package-version distinction stated explicitly.
+
 ## v1.5 — outputs and objectives ✅ (closed by Phases 22 + 23)
 
 - ~~Multiclass classification (softmax)~~ done in Phase 17 (one tree per
@@ -441,4 +459,5 @@ additive assumption analyzed in docs/math.md and must be designed against it.
   release deferred until API stability
 - ~~Benchmark suite (OpenML/tabular benchmarks) under `benchmarks/`~~ done in
   Phase 25 (`benchmarks/openml_suite.py`, 9-dataset reproducible leaderboard)
-- Versioned docs; API reference generation
+- ~~API reference generation~~ done in Phase 26 (pdoc, `scripts/build_docs.sh`,
+  CI docs job); versioned/hosted docs still open (publish the built site)
