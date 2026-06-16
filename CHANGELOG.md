@@ -5,6 +5,36 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.1.0] - 2026-06-16
+
+Imbalanced-classification support and an explicit loss/metric separation. All
+additions are opt-in and backwards-compatible — defaults reproduce prior
+behavior, and the model format is unchanged.
+
+### Added
+- **`sample_weight`** on `fit` (regressor and classifier, including multiclass
+  and multi-output): per-row weights scale each row's gradient/Hessian and the
+  init score (`core.booster.weight_grad_hess`). The Newton leaf target `-g/h`
+  is invariant, so weighting reweights split gains and leaf magnitudes without
+  distorting per-row targets. Weighting happens upstream of the histogram, so
+  the NumPy/Rust split backends and their parity are untouched. `RepLeafDataset`
+  gains an optional `sample_weight`.
+- **`class_weight`** estimator parameter (classifier only): `None`,
+  `"balanced"`, or a `{label: weight}` dict, expanded to per-row weights via
+  sklearn `compute_sample_weight` and composed multiplicatively with
+  `sample_weight`. Serialized with the model config.
+- **`balanced_accuracy`** eval metric (mean per-class recall, greater-is-better;
+  matches `sklearn.metrics.balanced_accuracy_score`) for monitoring/early
+  stopping on imbalanced targets. `get_metric` is now exported.
+- **Capability layer** (`_supports_sample_weight`): estimators that cannot
+  reweight rows — frozen-route replay (`RouterExtraction*`) — drop weights with
+  a `UserWarning` instead of raising. Documented fallback: train the plain loss,
+  early-stop on a built-in metric, and compute balanced accuracy externally.
+- **Docs**: `docs/weighting_and_metrics.md` (usage + the loss / early-stopping /
+  report-metric / regularizer separation), ADR 0004, and the weighted-Newton
+  derivation in `docs/math.md`. `label_smoothing` is clarified as a regularizer,
+  not a class rebalancer.
+
 ## [1.0.2] - 2026-06-15
 
 OSS-quality hardening; no public API or model-format changes.
