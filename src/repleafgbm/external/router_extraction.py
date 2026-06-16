@@ -161,6 +161,9 @@ class _RouterExtractionMixin:
     """
 
     _base_task: str = "regression"
+    #: Frozen-route replay cannot reweight rows of the loss, so sample_weight /
+    #: class_weight are dropped with a UserWarning (see BaseRepLeafModel).
+    _supports_sample_weight: bool = False
 
     def __init__(
         self,
@@ -186,7 +189,12 @@ class _RouterExtractionMixin:
         self.eval_metric = eval_metric
         self.random_state = random_state
 
-    def fit(self, X: Any, y: Any | None = None, eval_set: Any = None):
+    def fit(
+        self, X: Any, y: Any | None = None,
+        sample_weight: Any | None = None, eval_set: Any = None,
+    ):
+        # Replay cannot honor weights; warn and ignore rather than raising.
+        self._enforce_weight_capability(sample_weight)
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
         self.metadata_ = dataset.metadata

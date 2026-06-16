@@ -374,6 +374,12 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 - `class_weight` serializes with the estimator config (`"balanced"`/None
   round-trip exactly). Tests (tests/test_sample_weight.py); experiment
   (experiments/imbalanced_multiclass_class_weight.py).
+- Follow-up: capability layer (`_supports_sample_weight`) — estimators that
+  cannot reweight rows (`RouterExtraction*`, frozen-route replay) drop weights
+  with a `UserWarning` instead of raising; documented fallback is plain loss +
+  built-in early-stopping metric + external balanced accuracy. Usage guide
+  (docs/weighting_and_metrics.md), ADR 0004, `get_metric` export. Tests
+  (tests/test_weight_capability.py).
 
 ## Phase 25 — OpenML benchmark suite ✅ (2026-06-15)
 

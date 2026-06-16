@@ -129,6 +129,14 @@ class BaseRepLeafModel(BaseEstimator):
 
     _objective_name: str = "squared_error"
     _eval_metric_name: str = "rmse"
+    #: Whether this estimator can honor ``sample_weight`` / ``class_weight``.
+    #: The native boosting path always can (it owns the gradients), so this is
+    #: True here. Subclasses whose training cannot reweight rows — frozen-route
+    #: replay (``RouterExtraction*``) — set it False; weights are then dropped
+    #: with a UserWarning instead of raising, and the documented fallback is to
+    #: train the plain loss, early-stop on a built-in metric, and compute
+    #: balanced accuracy externally (docs/weighting_and_metrics.md).
+    _supports_sample_weight: bool = True
     #: Whether the target must be numeric (regressor) or may be labels
     #: (classifier overrides to False). Drives array validation of ``y``.
     _y_numeric: bool = True
@@ -235,7 +243,8 @@ class BaseRepLeafModel(BaseEstimator):
 
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
-        dataset.sample_weight = self._resolve_sample_weight(dataset, sample_weight)
+        weight = self._resolve_sample_weight(dataset, sample_weight)
+        dataset.sample_weight = self._enforce_weight_capability(weight)
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
@@ -334,6 +343,26 @@ class BaseRepLeafModel(BaseEstimator):
         if sample_weight is None:
             return dataset.sample_weight
         return as_sample_weight(sample_weight, n_rows=dataset.n_rows)
+
+    def _enforce_weight_capability(
+        self, weight: np.ndarray | None
+    ) -> np.ndarray | None:
+        """Drop resolved weights (with a UserWarning) for estimators that
+        cannot honor them, rather than raising. Estimators that can
+        (``_supports_sample_weight``, the default) return the weight unchanged.
+        """
+        if weight is not None and not self._supports_sample_weight:
+            warnings.warn(
+                f"{type(self).__name__} cannot apply sample_weight/class_weight "
+                "(it replays frozen routes); the weights are ignored. Train on "
+                "the plain loss, early-stop on a built-in metric, and compute "
+                "balanced accuracy externally for reporting "
+                "(docs/weighting_and_metrics.md).",
+                UserWarning,
+                stacklevel=3,
+            )
+            return None
+        return weight
 
     def _resolve_eval_metric(self) -> BaseMetric:
         """Accept a metric name, BaseMetric instance, or plain callable."""
