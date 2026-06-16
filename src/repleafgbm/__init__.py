@@ -11,7 +11,7 @@ from repleafgbm.core.objectives import Huber, PoissonRegression, Quantile
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.regressor import RepLeafRegressor
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 __all__ = [
     "RepLeafRegressor",
