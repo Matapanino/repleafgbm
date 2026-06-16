@@ -27,6 +27,7 @@ from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders import RandomProjectionEncoder, make_encoder
 from repleafgbm.encoders.base import BaseEncoder
+from repleafgbm.utils.validation import as_sample_weight
 
 # scikit-learn renamed ``force_all_finite`` -> ``ensure_all_finite`` in 1.6 and
 # removed the old name in 1.8. Pick whichever the installed version accepts so
@@ -114,6 +115,15 @@ class BaseRepLeafModel(BaseEstimator):
             multiclass — which regularizes over-confident probabilities. It is
             restored from the saved config on reload (the objective itself
             serializes by name only). Must be in [0, 1).
+        class_weight: Classification only (ignored by the regressor). Per-class
+            weights folded into the per-row sample weight before boosting: a
+            ``{label: weight}`` dict, or "balanced" to weight each class
+            inversely to its frequency (``n_samples / (n_classes * count)``,
+            via sklearn). Combined multiplicatively with any ``sample_weight``
+            passed to :meth:`fit`. None (default) leaves the classes unweighted.
+            Use it to optimize imbalanced targets toward balanced accuracy
+            (pair with ``eval_metric="balanced_accuracy"``). Serialized with
+            the model config.
         random_state: Seed controlling all internal randomness.
     """
 
@@ -168,6 +178,7 @@ class BaseRepLeafModel(BaseEstimator):
         eval_metric: str | BaseMetric | Any | None = None,
         objective: str | BaseObjective | None = None,
         label_smoothing: float = 0.0,
+        class_weight: dict | str | None = None,
         random_state: int | None = 42,
     ) -> None:
         self.n_estimators = n_estimators
@@ -190,6 +201,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.eval_metric = eval_metric
         self.objective = objective
         self.label_smoothing = label_smoothing
+        self.class_weight = class_weight
         self.random_state = random_state
 
     # ------------------------------------------------------------------ #
@@ -199,6 +211,7 @@ class BaseRepLeafModel(BaseEstimator):
         self,
         X: Any,
         y: Any | None = None,
+        sample_weight: Any | None = None,
         eval_set: list[RepLeafDataset | tuple] | None = None,
     ) -> BaseRepLeafModel:
         """Fit on (X, y) arrays/DataFrames or a RepLeafDataset.
@@ -206,6 +219,10 @@ class BaseRepLeafModel(BaseEstimator):
         Args:
             X: Feature matrix or a RepLeafDataset that already contains y.
             y: Target vector; must be None when X is a RepLeafDataset.
+            sample_weight: Optional per-row weights (length n_rows). Non-negative
+                and finite; they scale each row's gradient/Hessian (and the init
+                score) during boosting. The classifier multiplies these by the
+                weights implied by ``class_weight``. None means uniform weights.
             eval_set: Optional list of RepLeafDataset (or (X, y) tuples)
                 evaluated after every boosting round; results are stored in
                 ``evals_result_``.
@@ -218,6 +235,7 @@ class BaseRepLeafModel(BaseEstimator):
 
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
+        dataset.sample_weight = self._resolve_sample_weight(dataset, sample_weight)
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
@@ -303,6 +321,19 @@ class BaseRepLeafModel(BaseEstimator):
         if isinstance(objective, BaseObjective):
             return copy.deepcopy(objective)
         return get_objective(objective)
+
+    def _resolve_sample_weight(
+        self, dataset: RepLeafDataset, sample_weight: Any | None
+    ) -> np.ndarray | None:
+        """Validate the per-row sample weights to attach to the dataset.
+
+        An explicit ``sample_weight`` passed to :meth:`fit` overrides any
+        weights already carried by a RepLeafDataset; None falls back to the
+        dataset's own. The classifier overrides this to fold in ``class_weight``.
+        """
+        if sample_weight is None:
+            return dataset.sample_weight
+        return as_sample_weight(sample_weight, n_rows=dataset.n_rows)
 
     def _resolve_eval_metric(self) -> BaseMetric:
         """Accept a metric name, BaseMetric instance, or plain callable."""

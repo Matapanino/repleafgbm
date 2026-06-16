@@ -67,6 +67,35 @@ class Accuracy(BaseMetric):
         return float(np.mean((y_pred >= 0.5) == (y_true == 1)))
 
 
+class BalancedAccuracy(BaseMetric):
+    """Balanced accuracy: the unweighted mean of per-class recall.
+
+    Binary: ``y_pred`` are probabilities, thresholded at 0.5. Multiclass:
+    ``y_pred`` is an (n_rows, n_classes) probability matrix and ``y_true``
+    holds integer class indices (argmax prediction). This matches
+    ``sklearn.metrics.balanced_accuracy_score`` (without the chance
+    adjustment); classes absent from ``y_true`` are ignored. Greater is
+    better, so it drives early stopping toward minority-class recall — the
+    natural target for imbalanced multiclass tasks (pairs well with
+    ``class_weight='balanced'``)."""
+
+    name = "balanced_accuracy"
+    minimize = False
+
+    def __call__(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        if y_pred.ndim == 2:
+            pred = np.argmax(y_pred, axis=1)
+            true = y_true.astype(np.int64)
+        else:
+            pred = (y_pred >= 0.5).astype(np.int64)
+            true = (y_true == 1).astype(np.int64)
+        recalls = []
+        for c in np.unique(true):
+            mask = true == c
+            recalls.append(np.mean(pred[mask] == c))
+        return float(np.mean(recalls))
+
+
 class AUC(BaseMetric):
     """ROC AUC via the rank-sum (Mann-Whitney U) formulation with tie handling."""
 
@@ -131,6 +160,7 @@ _METRIC_REGISTRY: dict[str, type[BaseMetric]] = {
     LogLoss.name: LogLoss,
     MultiLogLoss.name: MultiLogLoss,
     Accuracy.name: Accuracy,
+    BalancedAccuracy.name: BalancedAccuracy,
     AUC.name: AUC,
 }
 

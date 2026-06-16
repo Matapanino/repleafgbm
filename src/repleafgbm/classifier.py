@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 from sklearn.base import ClassifierMixin
+from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.utils.multiclass import type_of_target
 
 from repleafgbm.core.booster import Booster, BoosterParams
@@ -91,6 +92,35 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
         remapped = copy.copy(dataset)
         remapped.y = y_enc
         return remapped
+
+    def _resolve_sample_weight(
+        self, dataset: RepLeafDataset, sample_weight: Any | None
+    ) -> np.ndarray | None:
+        """Fold ``class_weight`` into the per-row sample weight.
+
+        The explicit ``sample_weight`` (validated by the base) is multiplied by
+        the per-row weights implied by ``class_weight`` — a ``{label: weight}``
+        dict (keyed by the original labels) or "balanced". ``dataset.y`` holds
+        the 0..K-1 class codes at this point, so a dict's keys are remapped to
+        codes via ``classes_``."""
+        base = super()._resolve_sample_weight(dataset, sample_weight)
+        class_weight = getattr(self, "class_weight", None)
+        if class_weight is None:
+            return base
+        y_codes = dataset.y.astype(np.int64)
+        if isinstance(class_weight, dict):
+            remapped: dict[int, float] = {}
+            for label, value in class_weight.items():
+                idx = int(np.searchsorted(self.classes_, label))
+                if idx >= self.classes_.shape[0] or self.classes_[idx] != label:
+                    raise ValueError(
+                        f"class_weight key {label!r} is not one of the training "
+                        f"classes {list(self.classes_)}"
+                    )
+                remapped[idx] = value
+            class_weight = remapped
+        cw_weights = compute_sample_weight(class_weight, y_codes)
+        return cw_weights if base is None else base * cw_weights
 
     @property
     def n_classes_(self) -> int:

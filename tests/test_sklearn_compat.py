@@ -24,18 +24,60 @@ _CHECK_CONFIG = dict(
 )
 
 
+def _expected_failed_checks(estimator):
+    """Generic sklearn checks this histogram GBM legitimately cannot satisfy.
+
+    Both stem from the documented design (docs/adr/0004-sample-weights.md):
+    sample weights scale ``g, h`` while leaves stay guarded by *raw* sample
+    count, and routing uses per-feature quantile bins. So integer weights are
+    not bitwise-equivalent to row duplication (bin edges shift; the count guard
+    differs), and an extreme ``class_weight`` cannot fully suppress a low-weight
+    class the way the generic check assumes a weight-mass leaf guard would.
+    """
+    xfail = {
+        "check_sample_weight_equivalence_on_dense_data": (
+            "Integer sample_weight is not equivalent to row duplication for a "
+            "histogram GBM: quantile bin edges shift and min_samples_leaf counts "
+            "raw rows (docs/adr/0004). Uniform weights still cancel exactly."
+        ),
+        "check_sample_weight_equivalence_on_sparse_data": (
+            "Sparse input is unsupported; the weight/duplication equivalence "
+            "also does not hold here (see the dense variant)."
+        ),
+    }
+    if isinstance(estimator, RepLeafClassifier):
+        xfail["check_class_weight_classifiers"] = (
+            "Leaves are guarded by raw sample count, not weight mass, so an "
+            "extreme class_weight does not force the high-weight class on >87% "
+            "of points the way the generic check expects. class_weight still "
+            "improves balanced accuracy on imbalanced data (Phase 28 study)."
+        )
+    return xfail
+
+
+# ``expected_failed_checks`` (xfail mechanism) only exists on scikit-learn
+# >= 1.6, which is also where the modern battery runs; pass it only then so
+# the decorator still imports cleanly on the older supported versions.
+_BATTERY_KWARGS = (
+    {"expected_failed_checks": _expected_failed_checks} if _HAS_MODERN_CHECKS else {}
+)
+
+
 @pytest.mark.skipif(
     not _HAS_MODERN_CHECKS,
     reason="check_estimator battery targets scikit-learn >= 1.6",
 )
 @parametrize_with_checks(
-    [RepLeafRegressor(**_CHECK_CONFIG), RepLeafClassifier(**_CHECK_CONFIG)]
+    [RepLeafRegressor(**_CHECK_CONFIG), RepLeafClassifier(**_CHECK_CONFIG)],
+    **_BATTERY_KWARGS,
 )
 def test_sklearn_check_estimator(estimator, check):
     """Full scikit-learn estimator-compliance battery (Phase 24, v1.0).
 
     NaN is a supported feature value (routes left), so the estimators set the
     ``allow_nan`` tag and the finiteness checks only require inf-rejection.
+    Sample-weight/class-weight checks that a histogram GBM cannot satisfy are
+    declared as expected failures (see ``_expected_failed_checks``).
     """
     check(estimator)
 

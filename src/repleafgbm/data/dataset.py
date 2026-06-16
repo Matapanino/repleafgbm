@@ -20,7 +20,7 @@ import numpy as np
 
 from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.data.preprocessing import encode_features, infer_metadata
-from repleafgbm.utils.validation import as_target_array
+from repleafgbm.utils.validation import as_sample_weight, as_target_array
 
 
 class RepLeafDataset:
@@ -30,6 +30,9 @@ class RepLeafDataset:
         X: Feature matrix. A pandas DataFrame (recommended for categorical
             data) or a 2D NumPy array.
         y: Optional target vector.
+        sample_weight: Optional per-row weights, length ``n_rows``. Non-negative
+            and finite; they scale each row's gradient/Hessian during boosting
+            (and the optimal init score). None means uniform weights.
         categorical_features: Names of categorical columns. For ndarray input
             use "f<index>" names. If None and X is a DataFrame, object /
             category / bool columns are auto-detected as categorical.
@@ -51,6 +54,7 @@ class RepLeafDataset:
         self,
         X: Any,
         y: Any | None = None,
+        sample_weight: Any | None = None,
         categorical_features: list[str] | None = None,
         numerical_features: list[str] | None = None,
         frequency_encoded_features: list[str] | None = None,
@@ -66,6 +70,13 @@ class RepLeafDataset:
         self.metadata = metadata
         self._X_raw = encode_features(X, metadata)
         self.y = None if y is None else as_target_array(y, n_rows=self._X_raw.shape[0])
+        #: Optional per-row weights (n_rows,) or None for uniform. The booster
+        #: scales gradients/Hessians by these (see core/booster.weight_grad_hess).
+        self.sample_weight = (
+            None
+            if sample_weight is None
+            else as_sample_weight(sample_weight, n_rows=self._X_raw.shape[0])
+        )
         # Embedding cache: at most one encoder's output in v0. The encoder is
         # held by strong reference and compared with `is` — id()-keyed caching
         # would break if a dead encoder's id were reused by a new object.

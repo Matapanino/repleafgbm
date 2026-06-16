@@ -357,6 +357,24 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
   estimator config on reload (same convention as Huber's delta); predictions
   reload exactly. Tests (tests/test_label_smoothing.py)
 
+## Phase 28 — sample weights + class weights + balanced accuracy ✅ (2026-06-16)
+
+- `fit(..., sample_weight=)` (all estimators) and `class_weight` (classifier
+  only: `{label: weight}` dict or `"balanced"`). Class weights are folded
+  multiplicatively into the per-row sample weight before boosting.
+- Implemented by scaling each row's `g, h` (and the optimal init score) via
+  `core.booster.weight_grad_hess` — the split backends, leaf kernels, and
+  NumPy/Rust parity are untouched (weighting happens upstream of the
+  histogram). `min_samples_leaf` keeps counting raw rows; uniform weights
+  cancel exactly at `l2_leaf=0` (the principled invariant, not row
+  duplication — see docs/math.md "Sample weights").
+- New `balanced_accuracy` eval metric (mean per-class recall, greater-better)
+  for monitoring/early stopping on imbalanced targets; matches
+  `sklearn.metrics.balanced_accuracy_score`.
+- `class_weight` serializes with the estimator config (`"balanced"`/None
+  round-trip exactly). Tests (tests/test_sample_weight.py); experiment
+  (experiments/imbalanced_multiclass_class_weight.py).
+
 ## Phase 25 — OpenML benchmark suite ✅ (2026-06-15)
 
 - `benchmarks/openml_suite.py`: a reproducible breadth-first leaderboard over 9

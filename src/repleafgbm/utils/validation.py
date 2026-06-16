@@ -27,6 +27,32 @@ def as_1d_float_array(y: Any, n_rows: int | None = None, name: str = "y") -> np.
     return arr
 
 
+def as_sample_weight(
+    sample_weight: Any, n_rows: int, name: str = "sample_weight"
+) -> np.ndarray:
+    """Convert per-sample weights to a 1D float64 ndarray and validate them.
+
+    Weights must be one-dimensional, length ``n_rows``, finite, and
+    non-negative (they scale the per-row gradient/Hessian during boosting).
+    """
+    arr = np.asarray(sample_weight, dtype=np.float64)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be 1-dimensional, got shape {arr.shape}")
+    if arr.shape[0] != n_rows:
+        raise ValueError(
+            f"{name} has {arr.shape[0]} rows but X has {n_rows} rows"
+        )
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} must be finite (no NaN or inf)")
+    if np.any(arr < 0):
+        raise ValueError(f"{name} must be non-negative")
+    if not arr.any():
+        # All-zero weights carry no information and make the weighted init
+        # score (Σwy / Σw) ill-defined; individual zero weights are fine.
+        raise ValueError(f"{name} must not be all zero (no weight mass)")
+    return arr
+
+
 def as_target_array(y: Any, n_rows: int | None = None, name: str = "y") -> np.ndarray:
     """Convert target input to a 1D ndarray, keeping non-numeric labels intact.
 

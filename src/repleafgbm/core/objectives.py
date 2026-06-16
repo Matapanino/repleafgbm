@@ -19,8 +19,13 @@ class BaseObjective(ABC):
     name: str = "base"
 
     @abstractmethod
-    def init_score(self, y: np.ndarray) -> float:
-        """Optimal constant raw score F_0 for this loss."""
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> float:
+        """Optimal constant raw score F_0 for this loss.
+
+        ``weight`` are optional per-row sample weights; when given the optimum
+        is the weighted one (e.g. weighted mean / weighted class priors).
+        ``weight=None`` reproduces the unweighted result exactly.
+        """
 
     @abstractmethod
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -36,8 +41,8 @@ class SquaredError(BaseObjective):
 
     name = "squared_error"
 
-    def init_score(self, y: np.ndarray) -> float:
-        return float(np.mean(y))
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> float:
+        return float(_weighted_mean(y, weight))
 
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return raw_pred - y, np.ones_like(y)
@@ -72,8 +77,8 @@ class BinaryLogistic(BaseObjective):
             return y
         return y * (1.0 - self.label_smoothing) + self.label_smoothing / 2.0
 
-    def init_score(self, y: np.ndarray) -> float:
-        p = float(np.clip(np.mean(self._smooth(y)), 1e-12, 1 - 1e-12))
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> float:
+        p = float(np.clip(_weighted_mean(self._smooth(y), weight), 1e-12, 1 - 1e-12))
         return float(np.log(p / (1.0 - p)))
 
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -100,8 +105,8 @@ class Huber(BaseObjective):
             raise ValueError(f"huber delta must be positive, got {delta}")
         self.delta = delta
 
-    def init_score(self, y: np.ndarray) -> float:
-        return float(np.median(y))
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> float:
+        return float(_weighted_quantile(y, 0.5, weight))
 
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return np.clip(raw_pred - y, -self.delta, self.delta), np.ones_like(y)
@@ -125,8 +130,8 @@ class Quantile(BaseObjective):
             raise ValueError(f"quantile alpha must be in (0, 1), got {alpha}")
         self.alpha = alpha
 
-    def init_score(self, y: np.ndarray) -> float:
-        return float(np.quantile(y, self.alpha))
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> float:
+        return float(_weighted_quantile(y, self.alpha, weight))
 
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         grad = np.where(raw_pred >= y, 1.0 - self.alpha, -self.alpha)
@@ -145,13 +150,13 @@ class PoissonRegression(BaseObjective):
 
     name = "poisson"
 
-    def init_score(self, y: np.ndarray) -> float:
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> float:
         if (y < 0).any():
             raise ValueError(
                 "objective='poisson' requires non-negative targets; "
                 "found negative values in y"
             )
-        mean = float(np.mean(y))
+        mean = float(_weighted_mean(y, weight))
         if mean <= 0:
             raise ValueError(
                 "objective='poisson' requires a positive target mean "
@@ -193,12 +198,14 @@ class MulticlassSoftmax:
         self.n_classes = n_classes
         self.label_smoothing = label_smoothing
 
-    def init_score(self, y: np.ndarray) -> np.ndarray:
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> np.ndarray:
         """Log class priors, shape (n_classes,). Softmax-invariant shift aside,
         this is the optimal constant score matrix. With label smoothing the
-        priors are the mean smoothed target ``(1 - eps) * empirical + eps / K``."""
-        counts = np.bincount(y.astype(np.int64), minlength=self.n_classes)
-        priors = counts / y.shape[0]
+        priors are the mean smoothed target ``(1 - eps) * empirical + eps / K``.
+        Sample weights make the priors the weighted class frequencies."""
+        labels = y.astype(np.int64)
+        counts = np.bincount(labels, weights=weight, minlength=self.n_classes)
+        priors = counts / counts.sum()
         if self.label_smoothing:
             priors = (
                 (1.0 - self.label_smoothing) * priors
@@ -245,9 +252,12 @@ class MultiOutputSquaredError:
             )
         self.n_outputs = n_outputs
 
-    def init_score(self, y: np.ndarray) -> np.ndarray:
-        """Per-output means, shape (n_outputs,)."""
-        return np.mean(y, axis=0)
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> np.ndarray:
+        """Per-output (weighted) means, shape (n_outputs,)."""
+        if weight is None:
+            return np.mean(y, axis=0)
+        w = weight[:, None]
+        return (w * y).sum(axis=0) / w.sum()
 
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Per-row, per-output gradient and Hessian, both (n_rows, n_outputs)."""
@@ -255,6 +265,35 @@ class MultiOutputSquaredError:
 
     def transform(self, raw_pred: np.ndarray) -> np.ndarray:
         return raw_pred
+
+
+def _weighted_mean(y: np.ndarray, weight: np.ndarray | None) -> float:
+    """Mean of ``y`` (weighted by ``weight`` when given)."""
+    if weight is None:
+        return float(np.mean(y))
+    return float(np.dot(weight, y) / weight.sum())
+
+
+def _weighted_quantile(y: np.ndarray, q: float, weight: np.ndarray | None) -> float:
+    """The ``q``-quantile of ``y`` with optional per-row weights.
+
+    With ``weight=None`` this matches ``np.quantile(y, q)`` (linear
+    interpolation). The weighted version interpolates the inverse of the
+    cumulative weight at the midpoints of each sample's weight interval, which
+    reduces to the unweighted definition when all weights are equal.
+    """
+    if weight is None:
+        return float(np.quantile(y, q))
+    order = np.argsort(y, kind="stable")
+    ys = y[order]
+    ws = weight[order]
+    cum = np.cumsum(ws)
+    total = cum[-1]
+    if total <= 0:
+        return float(np.quantile(y, q))
+    # Midpoint of each sample's cumulative-weight interval, normalized to [0, 1].
+    midpoints = (cum - 0.5 * ws) / total
+    return float(np.interp(q, midpoints, ys))
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:

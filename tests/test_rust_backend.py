@@ -96,6 +96,31 @@ def test_end_to_end_with_categoricals_and_missing():
     np.testing.assert_allclose(preds["numpy"], preds["rust"], rtol=1e-6, atol=1e-8)
 
 
+def test_end_to_end_weighted_backend_agreement():
+    """Sample weights fold into g/h upstream of the split kernels, so the
+    NumPy and Rust paths must stay bitwise-identical under weighting too."""
+    from repleafgbm import RepLeafClassifier
+
+    rng = np.random.default_rng(7)
+    n = 800
+    X = rng.normal(size=(n, 6))
+    y = rng.choice([0, 1, 2, 3], size=n, p=[0.6, 0.25, 0.1, 0.05])
+    w = rng.uniform(0.2, 4.0, size=n)
+    for leaf in ("constant", "embedded_linear"):
+        preds = {}
+        for backend in ("numpy", "rust"):
+            model = RepLeafClassifier(
+                n_estimators=15, num_leaves=8, min_samples_leaf=10,
+                leaf_model=leaf, split_backend=backend,
+                class_weight="balanced", random_state=42,
+            )
+            model.fit(X, y, sample_weight=w)
+            preds[backend] = model.predict_proba(X)
+        np.testing.assert_allclose(
+            preds["numpy"], preds["rust"], rtol=1e-6, atol=1e-8
+        )
+
+
 def test_make_split_backend_auto_prefers_rust():
     assert isinstance(make_split_backend("auto"), RustSplitBackend)
     assert isinstance(make_split_backend("numpy"), NumPySplitBackend)
