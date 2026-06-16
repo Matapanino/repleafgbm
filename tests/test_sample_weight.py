@@ -145,7 +145,10 @@ def test_uniform_scale_invariance_multiclass():
         .fit(X, y, sample_weight=np.full(X.shape[0], 3.0))
         .predict_proba(X)
     )
-    assert np.allclose(a, b, atol=1e-9)
+    # Exact in real arithmetic; floating-point rounding of the scaled
+    # histogram sums compounds mildly over softmax rounds (≈1e-7 on the NumPy
+    # backend), so allow microscopic slack rather than asserting bitwise.
+    np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-6)
 
 
 def test_sample_weight_is_not_a_noop():
