@@ -12,62 +12,53 @@ over learned representations inside each leaf.
 > embeddings. It is a boosted ensemble of raw-feature routers with
 > representation-conditioned local predictors.
 
-> **Stability:** from **1.0.0** the public API follows
-> [Semantic Versioning](https://semver.org). What that covers (estimator
-> parameters, the save/load format, registered encoder/objective/metric names,
-> exported symbols) and what stays experimental
-> (`repleafgbm.external`, `router_extraction`, native-backend internals) is
-> spelled out in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
-
-**Highlights from the experiment log** (see
-[docs/audit_v0.md](docs/audit_v0.md) and `experiments/results/`):
-
-- On synthetic signals with smooth structure inside regimes, embedded-linear
-  leaves beat constant leaves, LightGBM, and sklearn HistGradientBoosting.
-- Refitting *LightGBM's own* routes with representation-conditioned leaves
-  (router_extraction) improves LightGBM by 2-12% RMSE — isolating the leaf
-  contribution from split quality.
-- On standard real OpenML datasets RepLeafGBM is **competitive with the major
-  GBM libraries** (mean rank across 9 datasets; constant-leaf RepLeaf even
-  edges out LightGBM and XGBoost on classification), though there the leaf
-  embeddings add no real-data accuracy over a constant leaf — consistent with
-  the documented finding that their advantage is specific to smooth/periodic
-  structure. Reproduce: `python benchmarks/openml_suite.py` (see
-  [experiments/results/openml_benchmark.md](experiments/results/openml_benchmark.md)).
-
-## Motivation
+## How it works
 
 GBDTs dominate tabular ML because axis-aligned splits on raw features handle
 discontinuities, interactions, and messy data extremely well. Tabular deep
 learning has shown that numerical feature embeddings (PLR, periodic) capture
-smooth nonlinear structure that constant-leaf trees approximate only with
-many splits.
-
-RepLeafGBM combines both with a deliberately asymmetric design:
+smooth nonlinear structure that constant-leaf trees approximate only with many
+splits. RepLeafGBM combines both with a deliberately **asymmetric** design:
 
 - **Routing** — every split is on a raw feature, exactly like a normal GBDT.
-  Trees do what trees are good at: finding discontinuous boundaries and
-  partitioning the space into local regions.
-- **Leaf output** — each leaf holds a small ridge-regularized linear model
-  over a learned representation `z_theta(x)` instead of a constant. The
-  embedding does what it is good at: smooth interpolation within a local
-  region.
+  Trees find the discontinuous boundaries and partition the space into local
+  regions.
+- **Leaf output** — each leaf holds a small ridge-regularized **linear model
+  over a learned representation** `z_theta(x)` instead of a constant. The
+  embedding does the smooth interpolation within each region.
 
 ```text
-f_t(x) = b_{t, l_t(x_raw)} + w_{t, l_t(x_raw)}^T z_theta(x)
-F_T(x) = F_0(x) + sum_t eta * f_t(x)
+f_t(x) = b + w^T z_theta(x)            # one tree: route on x_raw, predict in the leaf
+F_T(x) = F_0(x) + sum_t eta * f_t(x)   # boosted sum
 ```
 
-## What makes it different
+Three properties fall out of this design:
 
-- Embeddings are never used for splitting (interpretable raw-feature routing,
-  no histogram blow-up, no curse of dimensionality in split search).
-- The encoder is frozen during boosting in v0, preserving the stage-wise
+- Embeddings are **never** used for splitting → interpretable raw-feature
+  routing, no split-histogram blow-up, no curse of dimensionality in the search.
+- The encoder is **frozen** during boosting (v0), preserving the stage-wise
   additive structure of gradient boosting.
-- Leaf models fall back to constants when leaves are too small, so the model
+- Leaf models **fall back to a constant** when a leaf is too small, so the model
   degrades gracefully toward a classic GBDT.
 
-## Minimal example
+See [docs/math.md](docs/math.md) for the full formulation and leaf fitting.
+
+## Installation
+
+```bash
+pip install repleafgbm                 # core (numpy, pandas, scikit-learn)
+pip install repleafgbm-native          # + optional Rust split/leaf kernels (auto-detected)
+pip install "repleafgbm[external]"     # + LightGBM external_model / router_extraction
+pip install "repleafgbm[bench]"        # + XGBoost / CatBoost for benchmarks
+pip install "repleafgbm[torch]"        # + learned torch encoders
+```
+
+`repleafgbm` ships type information (PEP 561). `repleafgbm-native` is a separate
+package of prebuilt Linux/macOS/Windows wheels; once installed the Rust backend
+is selected automatically (`split_backend="auto"`), giving ~5.8x faster
+constant-leaf training while staying parity-tested against the NumPy reference.
+
+## Quickstart
 
 ```python
 import numpy as np
@@ -83,7 +74,7 @@ model = RepLeafRegressor(
     learning_rate=0.1,
     num_leaves=8,
     leaf_model="embedded_linear",   # or "constant", "raw_linear"
-    encoder="plr",                  # or "identity"
+    encoder="plr",                  # or "identity", "periodic", "cross"
     max_leaf_emb_dim=16,
     random_state=42,
 )
@@ -103,105 +94,107 @@ model.fit(train_data, eval_set=[RepLeafDataset(df_valid, y_valid,
                                                metadata=train_data.metadata)])
 ```
 
-## Current status (v0)
+## API overview
 
-Implemented:
+The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
+`get_params` / `set_params`).
 
-- Native NumPy backend: histogram-based split search with sibling-histogram
-  subtraction, leaf-wise tree growth — plus optional Rust kernels
-  (`pip install repleafgbm-native`, or `pip install ./native` from source;
-  auto-detected; ~5.8x faster constant-leaf training, parity-tested against
-  the NumPy reference)
-- `leaf_model`: `"constant"`, `"embedded_linear"`, `"raw_linear"`
-- Encoders: `"identity"`, `"plr"` (simplified piecewise-linear + linear
-  term), `"periodic"` (PBLD-style frozen sinusoidal features), `"cross"`
-  (residual-correlated pairwise products), and learned `"torch_periodic"` /
-  `"torch_plr"` / `"torch_mlp"` (optional `[torch]` extra; pretrained on
-  the initial residual then frozen — torch is needed only at fit time).
-  `identity` is the evidence-backed default on real tabular data; the
-  others are specialists for known smooth/oscillatory or interaction
-  structure (see docs for guidance). Random projection down to
-  `max_leaf_emb_dim` as an emergency cap
-- Regression (squared error, plus `objective="huber"` / `"quantile"` /
-  `"poisson"` — parameterized instances like `Quantile(alpha=0.9)` work
-  too), binary classification (logistic), and multiclass classification
-  (softmax, one tree per class per round — automatic at 3+ classes)
-- Multi-output regression via shared-routing **vector leaves** (pass a 2-D
-  `y`; one tree per round whose leaves emit a vector — squared-error only),
-  and `label_smoothing` for classification
-- Early stopping (`early_stopping_rounds`, `best_iteration_`, prediction at
-  the best iteration) and eval metrics: rmse, mae, logloss, multi_logloss,
-  auc, accuracy, or any user-supplied callable (`repleafgbm.make_metric`)
-- Feature importance (`feature_importances_`, gain or split count)
-- `RepLeafDataset` with pandas/categorical support (native subset splits,
-  `pandas.Categorical` order fidelity, opt-in frequency encoding) and
-  embedding caching
-- Directory-based `save_model` / `load_model` with schema validation and a
-  human-readable `summary.txt` (`model.summary()`)
-- `repleafgbm.external`: LightGBM, XGBoost, and CatBoost as external base
-  models (scores + leaf indices, optional native early stopping), generic
-  OOF utility, stacking feature builders, and `RouterExtractionRegressor` /
-  `RouterExtractionClassifier` — LightGBM routing with RepLeaf leaf models
-  refit on the frozen routes, with replay-stage early stopping.
-  `pip install "repleafgbm[external]"` pulls **LightGBM** (the base used by
-  `router_extraction`); XGBoost/CatBoost support is exercised via the
-  `[bench]` extra.
-- pytest suite, runnable examples, and an `experiments/` research scaffold
+**Main classes**
 
-Not implemented (see [docs/roadmap.md](docs/roadmap.md)): encoder updates
-during boosting, GPU/distributed training.
+| Class | Use |
+|---|---|
+| `RepLeafRegressor` | Regression (squared error, plus `huber` / `quantile` / `poisson`); multi-output via vector leaves. |
+| `RepLeafClassifier` | Binary (logistic) and multiclass (softmax) — chosen automatically from the labels. Has `predict_proba`. |
+| `RepLeafDataset` | pandas / categorical inputs, eval sets, and embedding caching. |
 
-## Installation
+**Key parameters** (constructor; same for both estimators)
 
-```bash
-pip install repleafgbm                 # core (numpy, pandas, scikit-learn)
-pip install repleafgbm-native          # + optional Rust split/leaf kernels (auto-detected)
-pip install "repleafgbm[external]"     # + LightGBM external_model / router_extraction
-pip install "repleafgbm[bench]"        # + XGBoost / CatBoost for benchmarks
-pip install "repleafgbm[torch]"        # + learned torch encoders
-```
+| Parameter | Default | Meaning |
+|---|---|---|
+| `n_estimators` | `100` | Boosting rounds (trees). |
+| `learning_rate` | `0.1` | Shrinkage per round. |
+| `num_leaves` | `31` | Max leaves per tree (leaf-wise growth). |
+| `min_samples_leaf` | `20` | Minimum rows per leaf. |
+| `leaf_model` | `"embedded_linear"` | Leaf predictor (see below). |
+| `encoder` | `"identity"` | Representation `z_theta(x)` (see below). |
+| `max_leaf_emb_dim` | `64` | Cap on embedding dimension (random projection above it). |
+| `l2_leaf` | `1.0` | Ridge penalty for leaf models. |
+| `early_stopping_rounds` | `None` | Stop when an `eval_set` metric plateaus. |
+| `random_state` | `42` | Seed; same seed ⇒ same model. |
 
-`repleafgbm` ships type information (PEP 561) — type checkers see its public API
-out of the box. `repleafgbm-native` is a separate package of prebuilt
-Linux/macOS/Windows wheels; once installed the Rust backend is selected
-automatically (`split_backend="auto"`), giving ~5.8x faster constant-leaf
-training while staying parity-tested against the NumPy reference.
+**`leaf_model`**
 
-### Development
+| Value | Leaf predicts |
+|---|---|
+| `"constant"` | A constant (classic GBDT leaf). |
+| `"embedded_linear"` | Ridge linear model over `z_theta(x)` (default). |
+| `"raw_linear"` | Ridge linear model over the raw features. |
 
-```bash
-git clone <repo-url> && cd repleafgbm
-pip install -e ".[dev]"
-```
+**`encoder`**
 
-Or without installing, run everything from the repo root with
-`PYTHONPATH=src`. Build the API reference with
-`pip install -e ".[docs]" && bash scripts/build_docs.sh`.
+| Value | Representation |
+|---|---|
+| `"identity"` | Standardized raw features. Evidence-backed default on real tabular data. |
+| `"plr"` | Piecewise-linear + linear term. |
+| `"periodic"` | Frozen sinusoidal (PBLD-style) features. |
+| `"cross"` | Residual-correlated pairwise products (interactions). |
+| `"torch_periodic"` / `"torch_plr"` / `"torch_mlp"` | Learned encoders (`[torch]` extra; pretrained on the initial residual then frozen — torch is needed only at fit time). |
 
-## Running tests and examples
+API stability follows [Semantic Versioning](https://semver.org) from 1.0.0;
+exactly what is covered vs. experimental is in
+[docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
-```bash
-bash scripts/check.sh               # lint + tests + all examples
-python -m pytest tests/ -q          # PYTHONPATH=src if not installed
-python examples/regression_basic.py
-python examples/binary_classification_basic.py
-python examples/multiclass_classification_basic.py
-python examples/dataset_api_basic.py
-```
+## Features
+
+| Area | Support |
+|---|---|
+| Backends | NumPy reference (histogram split search, leaf-wise growth) + optional Rust kernels (`repleafgbm-native`, ~5.8x faster, parity-tested). |
+| Tasks | Regression, binary & multiclass classification, multi-output regression (vector leaves). |
+| Objectives | Squared error, `huber`, `quantile`, `poisson`, logistic, softmax (parameterized instances like `Quantile(alpha=0.9)` too). |
+| Leaf models | `constant`, `embedded_linear`, `raw_linear`. |
+| Encoders | `identity`, `plr`, `periodic`, `cross`, learned `torch_*`. |
+| Training | Early stopping, eval metrics (rmse, mae, logloss, multi_logloss, auc, accuracy, or a custom callable via `make_metric`), feature importances, sample weights, `class_weight`, `label_smoothing`. |
+| Data | `RepLeafDataset` with pandas/categorical (native subset splits) and embedding caching. |
+| Persistence | Directory-based `save_model` / `load_model` with schema validation and a human-readable `summary()`. |
+| External | LightGBM / XGBoost / CatBoost as base models, OOF + stacking utilities, and `RouterExtraction{Regressor,Classifier}` (`[external]` extra). |
+
+Full implemented-vs-planned status (and what is intentionally **not** done yet —
+encoder updates during boosting, GPU / distributed training) is in
+[docs/roadmap.md](docs/roadmap.md).
 
 ## Benchmarks
 
-Small synthetic benchmarks track progress across development (they are not
-performance claims):
+These small benchmarks track development progress; they are not performance
+claims. OpenML mean rank across 9 standard datasets (lower is better):
+
+| Model | Regression (4) | Classification (5) |
+|---|---|---|
+| CatBoost | 2.00 | 2.00 |
+| RepLeaf (constant) | 4.00 | 2.60 |
+| XGBoost | 2.75 | 3.40 |
+| LightGBM | 2.50 | 3.60 |
+| RepLeaf (embedded_linear) | 4.50 | 4.20 |
+| HistGradientBoosting | 5.25 | 5.20 |
+
+RepLeafGBM is competitive with the major GBM libraries on real data, where a
+constant leaf is the honest choice. The leaf embeddings pay off on **smooth /
+periodic** structure: on such synthetic signals `embedded_linear` beats both
+`constant` and LightGBM, and refitting LightGBM's own routes with
+representation-conditioned leaves (`router_extraction`) improves it by 2–12%
+RMSE. Reproduce with `python benchmarks/openml_suite.py`; full numbers in
+[experiments/results/openml_benchmark.md](experiments/results/openml_benchmark.md).
+
+## Development
 
 ```bash
-python benchmarks/benchmark_synthetic_regression.py [--quick]
-python benchmarks/benchmark_synthetic_binary.py [--quick]
+git clone https://github.com/Matapanino/repleafgbm.git && cd repleafgbm
+pip install -e ".[dev]"
+bash scripts/check.sh               # lint + tests + all examples
+python -m pytest tests/ -q          # PYTHONPATH=src if not installed
+python examples/regression_basic.py
 ```
 
-LightGBM / XGBoost / CatBoost are included automatically when installed
-(`pip install -e ".[bench]"`). The latest snapshot and analysis live in
-[docs/audit_v0.md](docs/audit_v0.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
 
 ## Documentation
 
