@@ -29,6 +29,24 @@ from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders.base import BaseEncoder
 
 
+def weight_grad_hess(
+    grad: np.ndarray, hess: np.ndarray, weight: np.ndarray | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Scale per-row gradients/Hessians by sample weights (no-op when None).
+
+    Scaling both ``g`` and ``h`` by ``w`` yields the weighted Newton step
+    ``-Σwg / (Σwh + λ)`` and the weighted split gain ``(Σwg)² / (Σwh + λ)``,
+    so every downstream histogram, split, and leaf fit becomes weighted
+    without touching the split backends. ``grad``/``hess`` may be 1-D (scalar
+    boosting) or (n_rows, K) matrices (multiclass / multi-output); the weight
+    is always per-row.
+    """
+    if weight is None:
+        return grad, hess
+    w = weight if grad.ndim == 1 else weight[:, None]
+    return grad * w, hess * w
+
+
 @dataclass
 class BoosterParams:
     """Hyperparameters consumed by the boosting loop."""
@@ -159,6 +177,7 @@ class Booster:
         if dataset.y is None:
             raise ValueError("Training dataset must contain a target (y)")
         y = dataset.y
+        w = dataset.sample_weight
         Z = dataset.get_embeddings(encoder) if leaf_model.uses_embeddings else None
 
         p = self.params
@@ -167,7 +186,7 @@ class Booster:
                 "early_stopping_rounds requires at least one eval_set to monitor"
             )
 
-        self.init_score_ = self.objective.init_score(y)
+        self.init_score_ = self.objective.init_score(y, weight=w)
         F = np.full(y.shape[0], self.init_score_, dtype=np.float64)
 
         # Each eval set keeps an incrementally updated raw-score cache, so
@@ -187,6 +206,7 @@ class Booster:
         rounds_since_best = 0
         for _ in range(n_rounds):
             grad, hess = self.objective.grad_hess(y, F)
+            grad, hess = weight_grad_hess(grad, hess, w)
             tree, leaf_rows = next_tree(grad, hess)
             leaf_values = leaf_model.fit_leaves(leaf_rows, grad, hess, Z)
             self.trees_.append(tree)

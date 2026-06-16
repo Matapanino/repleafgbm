@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 
 from repleafgbm.backends import make_split_backend
-from repleafgbm.core.booster import BoosterParams
+from repleafgbm.core.booster import BoosterParams, weight_grad_hess
 from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import MulticlassSoftmax
@@ -78,6 +78,7 @@ class MulticlassBooster:
         if dataset.y is None:
             raise ValueError("Training dataset must contain a target (y)")
         y = dataset.y.astype(np.int64)
+        w = dataset.sample_weight
         Z = dataset.get_embeddings(encoder) if leaf_model.uses_embeddings else None
 
         p = self.params
@@ -99,7 +100,7 @@ class MulticlassBooster:
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
 
         n_classes = self.n_classes
-        self.init_score_ = self.objective.init_score(y)
+        self.init_score_ = self.objective.init_score(y, weight=w)
         F = np.tile(self.init_score_, (y.shape[0], 1))
 
         # Incrementally updated raw-score caches per eval set, as in Booster.
@@ -118,6 +119,7 @@ class MulticlassBooster:
         rounds_since_best = 0
         for _ in range(p.n_estimators):
             grad, hess = self.objective.grad_hess(y, F)
+            grad, hess = weight_grad_hess(grad, hess, w)
             round_trees: list[tuple[Tree, LeafValues]] = []
             for k in range(n_classes):
                 tree, leaf_rows = grower.grow(grad[:, k], hess[:, k])

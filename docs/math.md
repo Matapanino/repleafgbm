@@ -28,6 +28,23 @@ So every leaf model — constant or linear — is fitted by **h-weighted least
 squares on the Newton targets** `t_i`. For squared error (`h_i = 1`,
 `t_i = residual_i`) this is exact, not an approximation.
 
+### Sample weights
+
+Per-row sample weights `w_i >= 0` scale each row's loss term, so the round-`t`
+objective becomes `sum_i w_i [ g_i f + (1/2) h_i f^2 ]`. Equivalently, every
+appearance of `g_i, h_i` is replaced by `w_i g_i, w_i h_i`: the Newton target
+`t_i = -g_i/h_i` is unchanged but its fitting weight becomes `w_i h_i`, the
+constant leaf is `b_l = -sum w_i g_i / (sum w_i h_i + λ)`, and the split gain
+uses the weighted sums `G = sum w_i g_i`, `H = sum w_i h_i`. The optimal init
+score `F_0` is likewise the weighted optimum (weighted mean / log-odds /
+class-prior / quantile). Because the weighting is folded into `g, h` *before*
+the histogram is built, the split backends and leaf-fitting kernels are
+untouched and NumPy/Rust parity is preserved. `min_samples_leaf` continues to
+count **raw rows** (it guards leaf sample size, not weight mass), so integer
+weights are *not* identical to row duplication in a histogram GBM (duplication
+would also shift the per-feature quantile bin edges). Uniform weights, however,
+cancel exactly when `λ = 0` (`core.booster.weight_grad_hess`, `docs` tests).
+
 ## Tree growth (routing)
 
 Splits are scored with the standard Newton gain

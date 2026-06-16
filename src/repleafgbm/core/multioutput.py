@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 
 from repleafgbm.backends import make_split_backend
-from repleafgbm.core.booster import BoosterParams
+from repleafgbm.core.booster import BoosterParams, weight_grad_hess
 from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import MultiOutputSquaredError
@@ -76,8 +76,9 @@ def fit_vector_leaves(
         Zl = Z[rows]
         g = grad[rows]  # (n_l, K)
         h = hess[rows]  # (n_l, K)
-        # Squared-error multi-output: the Hessian is identical across outputs,
-        # so one weighted Gram (from output 0's weights) serves all outputs.
+        # Squared-error multi-output: the Hessian is identical across outputs
+        # (sample weights, when used, scale every column equally), so one
+        # weighted Gram (from output 0's weights) serves all outputs.
         w = h[:, 0]
         h_sum = w.sum()
         z_mean = (w[:, None] * Zl).sum(axis=0) / h_sum
@@ -150,6 +151,7 @@ class MultiOutputBooster:
                 f"MultiOutputBooster expects a 2-D target (n_rows, n_outputs), "
                 f"got shape {y.shape}"
             )
+        w = dataset.sample_weight
         Z = dataset.get_embeddings(encoder) if leaf_model.uses_embeddings else None
 
         p = self.params
@@ -170,7 +172,7 @@ class MultiOutputBooster:
         )
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
 
-        self.init_score_ = self.objective.init_score(y)
+        self.init_score_ = self.objective.init_score(y, weight=w)
         F = np.tile(self.init_score_, (y.shape[0], 1))
 
         evals: list[tuple[str, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]] = []
@@ -189,6 +191,7 @@ class MultiOutputBooster:
         rounds_since_best = 0
         for _ in range(p.n_estimators):
             grad, hess = self.objective.grad_hess(y, F)
+            grad, hess = weight_grad_hess(grad, hess, w)
             tree, leaf_rows = grower.grow(grad, hess)
             leaf_values = fit_vector_leaves(
                 leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
