@@ -124,5 +124,7 @@ def test_end_to_end_weighted_backend_agreement():
 def test_make_split_backend_auto_prefers_rust():
     assert isinstance(make_split_backend("auto"), RustSplitBackend)
     assert isinstance(make_split_backend("numpy"), NumPySplitBackend)
+    # "cuda" is a recognized (GPU-only) backend now, so an unknown name must be
+    # something else; it still raises ValueError, not the cuda ImportError.
     with pytest.raises(ValueError, match="split_backend"):
-        make_split_backend("cuda")
+        make_split_backend("metal")
