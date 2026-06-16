@@ -119,36 +119,46 @@ def test_quantile_objective_uses_weighted_init():
 
 # --------------------------------------------------------------------------- #
 # End-to-end invariances
+#
+# A constant positive weight cancels in every leaf's numerator and denominator
+# at l2_leaf=0, so it must leave predictions unchanged. Two choices make the
+# end-to-end comparison robust (identical on the NumPy and Rust backends, and
+# across platforms) rather than flaky:
+#   * scale by a **power of two** (2.0 / 4.0) — multiplying a float64 by a power
+#     of two only shifts the exponent, so the histogram sums and split gains
+#     are bitwise-scaled and the argmax split cannot flip. (A non-power-of-2
+#     scale like 3.0 rounds the scaled gains and can flip a near-tied split,
+#     diverging by ~1e-2 on some platforms.)
+#   * keep trees shallow (num_leaves=8) so the cancellation is bitwise-exact;
+#     much deeper trees leave a deterministic ~1e-8 rounding residual (the same
+#     on both backends), which is harmless but no longer literally bitwise.
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("scale", [2.0, 7.5])
+@pytest.mark.parametrize("scale", [2.0, 4.0])
 def test_uniform_scale_invariance_regressor(scale):
     rng = np.random.default_rng(4)
     X = rng.normal(size=(300, 4))
     y = X[:, 0] + 0.5 * X[:, 1]
-    base = RepLeafRegressor(n_estimators=15, leaf_model="constant", l2_leaf=0.0)
-    a = base.fit(X, y).predict(X)
+    cfg = dict(n_estimators=15, num_leaves=8, leaf_model="constant", l2_leaf=0.0)
+    a = RepLeafRegressor(**cfg).fit(X, y).predict(X)
     b = (
-        RepLeafRegressor(n_estimators=15, leaf_model="constant", l2_leaf=0.0)
+        RepLeafRegressor(**cfg)
         .fit(X, y, sample_weight=np.full(X.shape[0], scale))
         .predict(X)
     )
-    assert np.allclose(a, b, atol=1e-9)
+    np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-9)
 
 
-def test_uniform_scale_invariance_multiclass():
+@pytest.mark.parametrize("scale", [2.0, 4.0])
+def test_uniform_scale_invariance_multiclass(scale):
     X, y = make_imbalanced(400, seed=5)
-    a = RepLeafClassifier(
-        n_estimators=12, leaf_model="constant", l2_leaf=0.0
-    ).fit(X, y).predict_proba(X)
+    cfg = dict(n_estimators=12, num_leaves=8, leaf_model="constant", l2_leaf=0.0)
+    a = RepLeafClassifier(**cfg).fit(X, y).predict_proba(X)
     b = (
-        RepLeafClassifier(n_estimators=12, leaf_model="constant", l2_leaf=0.0)
-        .fit(X, y, sample_weight=np.full(X.shape[0], 3.0))
+        RepLeafClassifier(**cfg)
+        .fit(X, y, sample_weight=np.full(X.shape[0], scale))
         .predict_proba(X)
     )
-    # Exact in real arithmetic; floating-point rounding of the scaled
-    # histogram sums compounds mildly over softmax rounds (≈1e-7 on the NumPy
-    # backend), so allow microscopic slack rather than asserting bitwise.
-    np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-9)
 
 
 def test_sample_weight_is_not_a_noop():
