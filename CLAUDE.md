@@ -54,11 +54,17 @@ embeddings.
 - `src/repleafgbm/core/` — objectives, metrics, histogram binning, splitter,
   tree grower, leaf models, booster, prediction, serialization.
 - `src/repleafgbm/backends/` — split-search kernels behind `BaseSplitBackend`:
-  `NumPySplitBackend` (reference) and `RustSplitBackend` (optional compiled
-  extension in `native/`, pyo3/maturin). `native/` also provides the fused
-  `leaf_linear_stats` helper used by `core/leaf_models.py` for narrow
-  embeddings. NumPy and Rust paths must stay parity-tested (bitwise
-  histograms, allclose leaf fits/predictions); change them together.
+  `NumPySplitBackend` (reference), `RustSplitBackend` (optional compiled
+  extension in `native/`, pyo3/maturin), and `CudaSplitBackend` (optional GPU
+  histogram via CuPy, `split_backend="cuda"`; ADR 0005, docs/cuda.md). `native/`
+  also provides the fused `leaf_linear_stats` helper used by
+  `core/leaf_models.py` for narrow embeddings. NumPy and Rust paths must stay
+  parity-tested with **bitwise** histograms (allclose leaf fits/predictions);
+  change them together. The CUDA path is parity-tested at **allclose, not
+  bitwise** (GPU atomic-add reordering) and only on a GPU via the Colab dev
+  loop (`scripts/colab_gpu_test.sh`) — CI/macOS skip it; "auto" never selects
+  it. Keep CuPy out of the native (Rust) path; like torch/lightgbm it is an
+  optional dependency.
 - `src/repleafgbm/sklearn.py`, `regressor.py`, `classifier.py` — the
   sklearn-compatible public API that glues dataset + encoder + booster.
 - `src/repleafgbm/external/` — external_model mode (LightGBM base model,

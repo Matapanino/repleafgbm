@@ -15,7 +15,7 @@ natively:
 backends/
   numpy_backend.py    # reference, always available
   rust_backend.py     # implemented (Phase 10): optional compiled extension
-  cuda_backend.py     # planned (v3)
+  cuda_backend.py     # implemented (experimental): GPU histogram via CuPy
 ```
 
 The Rust kernels live in `native/` (pyo3 + maturin; `pip install ./native`)
@@ -31,6 +31,16 @@ features x 100 trees: constant-leaf training ~3.5x over NumPy
 (LightGBM-parity wall time), embedded_linear ~2.6x, wide-PLR ~1.5x.
 Tree-growing logic (`core/tree.py`) must never depend on backend
 internals.
+
+The experimental CUDA backend (`split_backend="cuda"`, ADR 0005) is a third
+compute backend: a CuPy `RawKernel` builds histograms on an NVIDIA GPU while
+the split scan delegates to the NumPy reference. It is **explicit-only**
+("auto" never selects it) and its parity is **allclose, not bitwise** — GPU
+atomic-add summation order is not fixed, so histograms agree to float noise
+(`rtol=1e-6` end-to-end) rather than being bitwise-identical, and are not
+reproducible run-to-run. Because the dev box (macOS) and CI have no GPU, it is
+validated through the Colab dev loop (`scripts/colab_gpu_test.sh`); see
+`docs/cuda.md`.
 
 ## Axis 2: GBM backend (which boosting engine builds the routing)
 

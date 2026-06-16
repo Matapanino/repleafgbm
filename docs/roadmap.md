@@ -443,7 +443,14 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 
 ## v3 — GPU and scale
 
-- CUDA histogram building and leaf fitting
+- CUDA histogram building **(partial — Phase A + B1 shipped)**: experimental
+  `split_backend="cuda"` builds per-node histograms on the GPU via CuPy, with a
+  resident on-device cache of the binned matrix (split scan still on host;
+  allclose, not bitwise; ADR 0005, docs/cuda.md). Measured on a Tesla T4: 32x
+  histogram micro-benchmark, **1.58x end-to-end** fit. Validated via the Colab
+  dev loop. GPU leaf fitting (C1) was evaluated and **deferred** (leaf stats are
+  already Rust-accelerated; low marginal value). Still open: GPU numeric split
+  scan with resident histograms (B2).
 - GPU training (`device="cuda"`), multi-GPU (`multi_gpu=True`,
   `distributed_strategy="data_parallel"`)
 - Distributed histogram building and leaf assignment
