@@ -46,6 +46,10 @@ def as_sample_weight(
         raise ValueError(f"{name} must be finite (no NaN or inf)")
     if np.any(arr < 0):
         raise ValueError(f"{name} must be non-negative")
+    if not arr.any():
+        # All-zero weights carry no information and make the weighted init
+        # score (Σwy / Σw) ill-defined; individual zero weights are fine.
+        raise ValueError(f"{name} must not be all zero (no weight mass)")
     return arr
 
 

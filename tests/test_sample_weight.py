@@ -251,6 +251,7 @@ def test_balanced_accuracy_early_stopping_runs():
         np.ones(10),  # wrong length
         np.array([1.0, -1.0, 2.0]),  # negative
         np.array([1.0, np.nan, 2.0]),  # non-finite
+        np.zeros(3),  # all-zero: no weight mass
     ],
 )
 def test_sample_weight_validation_errors(bad):
@@ -260,6 +261,19 @@ def test_sample_weight_validation_errors(bad):
         RepLeafClassifier(n_estimators=2, leaf_model="constant").fit(
             X, y, sample_weight=bad
         )
+
+
+def test_individual_zero_weights_allowed():
+    """Zeroing some rows (but not all) is valid — it drops them from the fit."""
+    rng = np.random.default_rng(19)
+    X = rng.normal(size=(200, 3))
+    y = X[:, 0]
+    w = np.ones(200)
+    w[:50] = 0.0
+    model = RepLeafRegressor(n_estimators=8, leaf_model="constant").fit(
+        X, y, sample_weight=w
+    )
+    assert model.predict(X).shape == (200,)
 
 
 def test_sample_weight_via_dataset():
