@@ -61,13 +61,19 @@ class RepLeafRegressor(RegressorMixin, BaseRepLeafModel):
     def _pretrain_target(
         self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
     ) -> np.ndarray | None:
-        # The multi-output Newton residual is a matrix; learned-encoder
-        # pretraining targets are scalar for now, so multi-output encoders fit
-        # unsupervised (identity/plr are unaffected). A scalar multi-output
-        # pretraining target is a roadmap item (docs/roadmap.md).
-        if getattr(self, "n_outputs_", 1) > 1:
-            return None
-        return super()._pretrain_target(dataset, sample_weight=sample_weight)
+        # Multi-output: the supervised pretraining target is the (n_rows,
+        # n_outputs) negative-gradient residual at the weighted initial score
+        # (per-output means) -- ``Y - mean`` -- matching the first round of
+        # MultiOutputBooster. Learned encoders pretrain a K-output head on it
+        # (torch_encoders._pretrain); unlearned encoders ignore it. A single
+        # output keeps the scalar residual. See docs/math.md.
+        if getattr(self, "n_outputs_", 1) <= 1:
+            return super()._pretrain_target(dataset, sample_weight=sample_weight)
+        objective = MultiOutputSquaredError(self.n_outputs_)
+        init = objective.init_score(dataset.y, weight=sample_weight)  # (n_outputs,)
+        f0 = np.tile(init, (dataset.n_rows, 1))  # (n, n_outputs)
+        grad0, _ = objective.grad_hess(dataset.y, f0)
+        return -grad0  # (n, n_outputs) == Y - mean
 
     def predict(self, X: Any) -> np.ndarray:
         """Predict target values for X (array, DataFrame, or RepLeafDataset).

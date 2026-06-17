@@ -203,6 +203,42 @@ Handling this correctly requires re-evaluating (or re-fitting) earlier leaf
 weights after each encoder update, i.e. alternating optimization with
 prediction-cache invalidation. That is a roadmap item, not a v0 feature.
 
+## Supervised encoder pretraining target
+
+A *learned* encoder (the optional torch extras) is fit once, before boosting,
+on a supervised target and then frozen — the fit-then-freeze rule above. The
+target is the **negative gradient of the loss at the constant initial score
+`F_0`**, i.e. the residual the first tree would chase:
+
+```text
+regression:   t = -g = y - mean(y)            (h = 1)
+binary:       t = -g = y - sigmoid(F_0)
+multiclass:   T = -g = onehot - softmax(F_0)  in R^{n x K},  F_0,k = log(prior_k)
+multi-output: T = -g = Y - mean(Y)            in R^{n x K},  F_0,k = mean(Y[:,k])
+```
+
+A scalar target trains a `Linear(d, 1)` head on the embedding `z_theta(x)`; the
+`(n, K)` matrix trains a `Linear(d, K)` head and the MSE is averaged over rows
+and outputs, so the representation is pushed to be linearly predictive of every
+class/output residual at once (the head is thrown away after fit). Each column
+is standardized to unit variance so no class/output dominates the loss.
+
+Two design choices worth recording:
+
+- **Why `-g`, not the Newton target `-g/h`.** Pretraining learns a
+  representation aligned with the loss's steepest-descent direction; the
+  Hessian reweighting belongs to the leaf solve, not to feature learning. Using
+  `-g` keeps scalar and vector targets consistent. At `F_0` the multiclass
+  Hessian `h_k = p_k(1 - p_k)` is *column-constant* (because `softmax(F_0)` is
+  the row-independent prior), so `-g/h` equals `-g` up to a per-column scale and
+  **coincides with it after per-output standardization** — the two formulations
+  are identical here.
+- **At `F_0` the multiclass target is a centered one-hot.** Since
+  `softmax(F_0)` does not depend on the row, `T = onehot - prior`; standardized,
+  this is a scaled, centered class-membership indicator. Pretraining therefore
+  teaches the encoder a representation from which class membership is linearly
+  recoverable — exactly the signal the per-class leaves consume.
+
 ## Limitations
 
 - The Newton-target leaf fit is a second-order approximation for non-squared

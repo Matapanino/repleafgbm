@@ -36,11 +36,13 @@ class BaseEncoder(ABC):
         """Fit encoder parameters on the numerical feature matrix.
 
         ``y`` is an optional supervised pretraining target (the model wrapper
-        passes the Newton residual at the initial score). ``sample_weight`` is
-        the optional per-row weight (sample x class weights) for that target.
-        Unlearned encoders ignore both; learned encoders (torch extras) regress
-        onto ``y`` under ``sample_weight`` before freezing. Either way the
-        encoder is frozen after fit (v0 rule).
+        passes the Newton residual at the initial score): 1-D ``(n,)`` for
+        regression / binary, or a 2-D ``(n, K)`` residual matrix for multiclass
+        / multi-output. ``sample_weight`` is the optional per-row weight
+        (sample x class weights) for that target. Unlearned encoders ignore
+        both; learned encoders (torch extras) regress onto ``y`` under
+        ``sample_weight`` before freezing. Either way the encoder is frozen
+        after fit (v0 rule).
         """
 
     @abstractmethod

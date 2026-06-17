@@ -506,9 +506,9 @@ class BaseRepLeafModel(BaseEstimator):
         for binary). ``sample_weight`` makes F0 the *weighted* initial score so
         the residual matches the booster's weighted starting point (None leaves
         it unweighted, identical to before). Unlearned encoders ignore it. The
-        classifier overrides this to return None for multiclass targets (the
-        residual is a matrix there; learned-encoder pretraining stays
-        scalar-target for now)."""
+        classifier and regressor override this to return the ``(n_rows, K)``
+        residual *matrix* for multiclass / multi-output targets, which learned
+        encoders pretrain a K-output head on (docs/math.md)."""
         objective = self._build_objective()
         f0 = np.full(
             dataset.n_rows, objective.init_score(dataset.y, weight=sample_weight)

@@ -294,8 +294,10 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 - Serialization format v5 (`n_classes` + vector `init_score`,
   round-major trees) — written only by multiclass models, so
   binary/regression models keep v3/v4 readable by older builds
-- Learned-encoder supervised pretraining stays scalar-target: multiclass
-  encoders fit unsupervised (documented in classifier/_pretrain_target)
+- Learned-encoder supervised pretraining was scalar-target here (multiclass
+  encoders fit unsupervised); since generalized to an `(n, K)` matrix target
+  so multiclass encoders pretrain supervised (see the trainable-embeddings
+  open-items note and docs/math.md)
 - Tests (tests/test_multiclass.py), example
   (examples/multiclass_classification_basic.py), math.md softmax section
 
@@ -473,12 +475,13 @@ Listed here because v0 deliberately freezes the encoder:
   embeddings
 - Encoder pretraining before boosting — supervised version shipped in
   Phase 13, regularized in Phase 14b, extended to cross-feature targets in
-  Phase 16, and made `sample_weight`/`class_weight`-aware in the
-  trainable-embeddings track (all negative on real data); self-supervised
-  variants and a **scalar multiclass/multi-output pretraining target**
-  (those encoders currently fit unsupervised) are still open, though the
-  accumulated evidence suggests the router already covers typical real tabular
-  structure
+  Phase 16, made `sample_weight`/`class_weight`-aware in the
+  trainable-embeddings track, and ~~generalized to a **`(n, K)`
+  multiclass/multi-output pretraining target**~~ (those encoders no longer fit
+  unsupervised — the throwaway head emits K outputs, docs/math.md "Supervised
+  encoder pretraining target"); self-supervised variants are still open, and
+  the accumulated evidence suggests the router already covers typical real
+  tabular structure on reg/binary
 - **Alternating optimization** (tree fitting ↔ encoder updates)
 - **Stage-wise snapshot encoders** (each tree binds to the encoder version it
   was trained against)

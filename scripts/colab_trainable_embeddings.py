@@ -62,7 +62,7 @@ def ensure_external():
 def run_benchmark():
     proc = _run(
         [sys.executable, "benchmarks/trainable_embeddings.py",
-         "--seeds", "3", "--n-estimators", "200", "--epochs", "30",
+         "--seeds", "5", "--n-estimators", "200", "--epochs", "30",
          "--out-dir", OUT],
         cwd=REPO, env=ENV,
     )

@@ -38,10 +38,38 @@ def test_missing_torch_message(monkeypatch):
     assert enc.transform(X).shape == (50, 2 * 5)
 
 
-def test_multiclass_learned_encoder_fits_unsupervised(monkeypatch):
-    """Multiclass pretraining is disabled (scalar-target only), so a torch_*
-    encoder fits unsupervised — needing no torch even when chosen. If
-    pretraining were attempted, _require_torch would raise here."""
+def test_pretrain_target_shapes():
+    """_pretrain_target is the Newton residual at F0: a 1-D vector for
+    binary/single-output and an (n, K) matrix for multiclass/multi-output.
+    Pure NumPy, so this needs no torch."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 3))
+
+    clf3 = RepLeafClassifier(random_state=0)
+    ds3 = clf3._prepare_target(clf3._build_dataset(X, rng.integers(0, 3, 60)),
+                               is_train=True)
+    assert clf3._pretrain_target(ds3).shape == (60, 3)
+
+    clfb = RepLeafClassifier(random_state=0)
+    dsb = clfb._prepare_target(clfb._build_dataset(X, rng.integers(0, 2, 60)),
+                               is_train=True)
+    assert clfb._pretrain_target(dsb).shape == (60,)
+
+    Y = rng.normal(size=(60, 2))
+    regm = RepLeafRegressor(random_state=0)
+    dsm = regm._prepare_target(regm._build_dataset(X, Y), is_train=True)
+    tm = regm._pretrain_target(dsm)
+    assert tm.shape == (60, 2)
+    np.testing.assert_allclose(tm, Y - Y.mean(axis=0))  # = -g at F0 (per-output mean)
+
+    reg1 = RepLeafRegressor(random_state=0)
+    ds1 = reg1._prepare_target(reg1._build_dataset(X, Y[:, 0]), is_train=True)
+    assert reg1._pretrain_target(ds1).shape == (60,)
+
+
+def test_multiclass_learned_encoder_requires_torch(monkeypatch):
+    """Multiclass learned encoders now pretrain on the (n, K) residual matrix,
+    so fitting one needs torch (the unsupervised-only escape hatch is gone)."""
     monkeypatch.setitem(sys.modules, "torch", None)
     rng = np.random.default_rng(0)
     X = rng.normal(size=(120, 3))
@@ -50,12 +78,13 @@ def test_multiclass_learned_encoder_fits_unsupervised(monkeypatch):
         n_estimators=5, num_leaves=4, min_samples_leaf=10,
         leaf_model="embedded_linear", encoder="torch_periodic",
         encoder_params={"n_epochs": 5}, random_state=0,
-    ).fit(X, y)
-    assert clf.predict_proba(X).shape == (120, 3)
+    )
+    with pytest.raises(ImportError, match="pip install"):
+        clf.fit(X, y)
 
 
-def test_multioutput_learned_encoder_fits_unsupervised(monkeypatch):
-    """Multi-output pretraining is disabled the same way (matrix residual)."""
+def test_multioutput_learned_encoder_requires_torch(monkeypatch):
+    """Multi-output learned encoders pretrain on the matrix residual too."""
     monkeypatch.setitem(sys.modules, "torch", None)
     rng = np.random.default_rng(0)
     X = rng.normal(size=(120, 3))
@@ -64,8 +93,9 @@ def test_multioutput_learned_encoder_fits_unsupervised(monkeypatch):
         n_estimators=5, num_leaves=4, min_samples_leaf=10,
         leaf_model="embedded_linear", encoder="torch_periodic",
         encoder_params={"n_epochs": 5}, random_state=0,
-    ).fit(X, Y)
-    assert reg.predict(X).shape == (120, 2)
+    )
+    with pytest.raises(ImportError, match="pip install"):
+        reg.fit(X, Y)
 
 
 torch = pytest.importorskip("torch", reason="torch not installed")
@@ -371,3 +401,96 @@ def test_classifier_class_weight_reaches_encoder_pretraining():
     assert not np.allclose(
         plain.encoder_.proj_weight_, balanced.encoder_.proj_weight_
     )
+
+
+# --------------------------------------------------------------------- #
+# Vector (n, K) pretraining target: multiclass / multi-output
+# --------------------------------------------------------------------- #
+def test_multiclass_learned_encoder_pretrains_supervised():
+    """A 3-class target drives the encoder off its frozen init (supervised
+    pretraining on the (n, K) residual ran), unlike the old unsupervised path."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3))
+    y = np.digitize(X[:, 0] + 0.3 * rng.normal(size=300),
+                    np.quantile(X[:, 0], [1 / 3, 2 / 3]))  # 3 classes
+    clf = RepLeafClassifier(
+        n_estimators=5, num_leaves=4, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_periodic_plr",
+        encoder_params={"n_epochs": 25}, random_state=0,
+    ).fit(X, y)
+    assert clf.predict_proba(X).shape == (300, 3)
+    assert clf.encoder_.pretrain_epochs_used_ is not None
+    # Same seed/config, no target = the frozen initialization the model started from.
+    untrained = TorchPeriodicPLREncoder(random_state=0).fit(X)
+    assert not np.allclose(clf.encoder_.proj_weight_, untrained.proj_weight_)
+
+
+def test_multioutput_learned_encoder_pretrains_supervised():
+    """A 2-output target pretrains the encoder on the (n, n_outputs) residual."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3))
+    Y = np.column_stack([np.sin(2.0 * X[:, 0]), 0.5 * X[:, 1] ** 2])
+    reg = RepLeafRegressor(
+        n_estimators=5, num_leaves=4, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_periodic_plr",
+        encoder_params={"n_epochs": 25}, random_state=0,
+    ).fit(X, Y)
+    assert reg.predict(X).shape == (300, 2)
+    assert reg.encoder_.pretrain_epochs_used_ is not None
+    untrained = TorchPeriodicPLREncoder(random_state=0).fit(X)
+    assert not np.allclose(reg.encoder_.proj_weight_, untrained.proj_weight_)
+
+
+def test_multiclass_class_weight_reaches_vector_pretraining():
+    """class_weight folds into the per-row weight of the (n, K) pretraining
+    loss, so it moves the learned encoder under an imbalanced multiclass target."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3))
+    y = np.zeros(300, dtype=int)
+    y[:60] = 1
+    y[:20] = 2  # imbalanced: 260 / 40 / 20
+    common = dict(
+        n_estimators=1, num_leaves=2, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_plr",
+        encoder_params={"n_epochs": 15, "random_state": 0}, random_state=0,
+    )
+    plain = RepLeafClassifier(**common).fit(X, y)
+    balanced = RepLeafClassifier(class_weight="balanced", **common).fit(X, y)
+    assert not np.allclose(
+        plain.encoder_.proj_weight_, balanced.encoder_.proj_weight_
+    )
+
+
+def test_multiclass_vector_pretrain_roundtrip_predicts_without_torch(tmp_path, monkeypatch):
+    """Save a multiclass model with a pretrained encoder, then reload and
+    predict with torch 'missing' — the transform/predict path stays NumPy."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3))
+    y = rng.integers(0, 3, size=300)
+    model = RepLeafClassifier(
+        n_estimators=10, num_leaves=4, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_periodic_plr",
+        encoder_params={"n_epochs": 10}, random_state=42,
+    ).fit(X, y)
+    pred = model.predict_proba(X)
+    assert pred.shape == (300, 3)
+    model.save_model(tmp_path / "m")
+
+    monkeypatch.setitem(sys.modules, "torch", None)  # torch now "missing"
+    loaded = RepLeafClassifier.load_model(tmp_path / "m")
+    np.testing.assert_allclose(loaded.predict_proba(X), pred)
+
+
+def test_multiclass_vector_pretrain_determinism():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(200, 3))
+    y = rng.integers(0, 3, size=200)
+    kw = dict(
+        n_estimators=3, num_leaves=4, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_periodic",
+        encoder_params={"n_epochs": 5}, random_state=7,
+    )
+    a = RepLeafClassifier(**kw).fit(X, y)
+    b = RepLeafClassifier(**kw).fit(X, y)
+    np.testing.assert_array_equal(a.encoder_.frequencies_, b.encoder_.frequencies_)
+    np.testing.assert_array_equal(a.encoder_.phases_, b.encoder_.phases_)
