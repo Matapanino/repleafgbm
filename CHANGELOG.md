@@ -5,6 +5,35 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.2.0] - 2026-06-17
+
+Experimental CUDA split backend (`split_backend="cuda"`). Opt-in and
+backwards-compatible — the default backend (`"auto"`: Rust→NumPy) and the model
+format are unchanged, and `"auto"` never selects the GPU.
+
+### Added
+- **CUDA split backend** (`split_backend="cuda"`, optional `[cuda]` extra,
+  CuPy-based): per-node histogram construction on an NVIDIA GPU via a
+  `cupy.RawKernel` (Phase A), with the binned matrix uploaded once and cached
+  on-device (Phase B1). Raises a clear `ImportError` when CuPy or a usable GPU
+  is missing — it never silently falls back. See `docs/cuda.md` and ADR 0005.
+- **Resident histograms + adaptive GPU numeric split scan** (Phase B2):
+  `build_histograms` returns the histogram resident on the GPU (the tree
+  grower's sibling-subtraction `parent - child` runs on-device), and the numeric
+  gain sweep + argmax run on-device for large per-node histograms — small
+  histograms fall back to the host reference scan, so narrow fits do not regress
+  (`_GPU_SCAN_MIN_CELLS`). Categorical subset splits and multi-output scans stay
+  on the host. Measured on a Tesla T4: ~52x histogram micro-benchmark, ~2.1x
+  end-to-end on a wide fit (50k×200), ~1.5x on narrow (100k×30).
+
+### Notes
+- Parity for the CUDA path is **allclose, not bitwise** (GPU atomic-add /
+  reduction ordering is not fixed) and not reproducible run-to-run; use
+  `"numpy"` or `"rust"` for bitwise determinism. The NumPy⇄Rust pair is
+  unchanged (still bitwise-identical histograms).
+- GPU validation runs through the Colab dev loop (`scripts/colab_gpu_test.sh`),
+  not CI — CI and macOS skip the CUDA tests.
+
 ## [1.1.0] - 2026-06-16
 
 Imbalanced-classification support and an explicit loss/metric separation. All
