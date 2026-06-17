@@ -1,10 +1,16 @@
 # CUDA backend (experimental)
 
-RepLeafGBM can build per-node histograms on an NVIDIA GPU via CuPy, selected
-with `split_backend="cuda"`. This is the Phase A GPU path: histogram
-construction runs on the GPU; the split scan reuses the NumPy reference on the
-host. See `docs/adr/0005-cuda-backend-cupy.md` for the design and
-`docs/backend_strategy.md` for where it sits among the compute backends.
+RepLeafGBM can run its split search on an NVIDIA GPU via CuPy, selected with
+`split_backend="cuda"`. Per-node histograms are built on the GPU (Phase A), the
+binned matrix is uploaded once and kept resident (Phase B1), and the histogram
+stays resident across a tree's nodes while the **numeric split scan runs
+on-device for large histograms** (Phase B2, adaptive) — only the winning split's
+scalars cross back to the host. Small per-node histograms are scanned on the host
+instead (cheaper than launching many tiny GPU kernels), so narrow fits don't
+regress. The categorical subset scan (the branchy, parity-critical part) and the
+multi-output scan stay on the host. See `docs/adr/0005-cuda-backend-cupy.md` for
+the design and `docs/backend_strategy.md` for where it sits among the compute
+backends.
 
 ## Install
 
@@ -35,18 +41,27 @@ Use `"numpy"` (always available) or `"rust"` (compiled CPU kernels) otherwise.
 ## Performance
 
 The binned matrix is uploaded once and cached on-device (Phase B1), so per-node
-histogram building ships only the row index plus gathered grad/hess. Measured on
-a Tesla T4 (`experiments/results/2026-06-17-cuda-parity.md`):
+histogram building ships only the row index plus gathered grad/hess. With
+Phase B2 the histogram itself stays resident — `build_histograms` returns a
+device array, the grower's sibling-subtraction runs on-device, and for large
+histograms the numeric gain sweep + argmax run on the GPU — so the per-node
+GPU→host transfer shrinks from the full `(n_features, n_bins_max, 3)` histogram
+to the winning split's scalars. Measured on a Tesla T4
+(`experiments/results/2026-06-17-cuda-parity.md`):
 
-- Histogram micro-benchmark (200k×50, 65 bins): **~32x** over NumPy.
-- End-to-end `RepLeafRegressor.fit` (100k×30, 50 trees, embedded_linear):
-  **~1.6x**.
+- Histogram micro-benchmark (200k×50, 65 bins): **~52x** over NumPy.
+- End-to-end `RepLeafRegressor.fit`, 50 trees, embedded_linear:
+  - **wide (50k×200): ~2.1x** — the on-device numeric scan avoids the big
+    per-node histogram round-trip.
+  - **narrow (100k×30): ~1.5x** — the (30×257) scan is too small to beat a bulk
+    copy + vectorized host scan, so the adaptive threshold keeps it on the host
+    path (it matches B1 rather than regressing).
 
-The end-to-end gain is smaller because tree growth, the split scan, and leaf
-fitting all run on the host. GPU leaf fitting was evaluated and deferred (leaf
-stats are already accelerated by the Rust `leaf_linear_stats` kernel; ADR 0005).
-The CUDA backend helps most when the histogram dominates — many rows, wide
-feature matrices, deep/large trees.
+The end-to-end gain is bounded because tree growth, categorical/multi-output
+scans, and leaf fitting still run on the host. GPU leaf fitting was evaluated and
+deferred (leaf stats are already accelerated by the Rust `leaf_linear_stats`
+kernel; ADR 0005). The CUDA backend helps most when the histogram dominates —
+many rows, **wide feature matrices / high `max_bins`**, deep/large trees.
 
 ## Parity and determinism
 

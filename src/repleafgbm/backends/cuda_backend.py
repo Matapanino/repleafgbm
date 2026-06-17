@@ -1,19 +1,35 @@
-"""CUDA implementation of the histogram kernel (optional, CuPy-based).
+"""CUDA implementation of the split-search kernels (optional, CuPy-based).
 
-This is the experimental ``split_backend="cuda"`` path. It accelerates the one
-hot kernel — per-node histogram construction — on an NVIDIA GPU via a
-:class:`cupy.RawKernel`, and **delegates** the (small, branchy) split scan to
-the NumPy reference so the categorical-subset / stable-sort / tie-break /
-missing-left logic stays byte-for-byte identical to the reference backend.
+This is the experimental ``split_backend="cuda"`` path. Per-node histogram
+construction runs on an NVIDIA GPU via a :class:`cupy.RawKernel` (Phase A), and
+the *numeric* split scan runs on the GPU too (Phase B2): the histogram stays
+resident on the device across a tree's nodes (the grower's sibling-subtraction
+``parent - child`` is CuPy arithmetic), and for large per-node histograms the
+cumulative-sum gain sweep and argmax run on-device with only the winning split's
+scalars crossing back. The scan is **adaptive** — small histograms are copied
+back and scanned on the host, which beats launching many tiny GPU kernels (see
+``_GPU_SCAN_MIN_CELLS``), so narrow fits never regress while wide fits get the
+GPU win. Categorical subset splits keep the branchy stable-sort / both-end-prefix
+/ tie-break logic on the host (delegated to the NumPy reference's
+``_best_categorical_split``) so they stay byte-for-byte identical to the
+reference backend; only the few categorical feature slices are copied back, not
+the whole histogram.
 
-Resident-data fast path (Phase B1): the binned feature matrix is constant for
-the whole run, so it is uploaded to the GPU once and cached (keyed by object
-identity); each node then ships only its small ``rows`` index plus the gathered
-gradients/Hessians, and the kernel gathers bins on-device. This removes the
-per-node host gather of ``binned[rows]`` and its upload — the dominant transfer
-cost when the feature matrix is wide. The cache holds the binned matrix on the
-device for the backend's lifetime (freed on GC); a typical training run reuses
-it across every node of every tree.
+Resident-data fast paths:
+
+* Phase B1: the binned feature matrix is constant for the whole run, so it is
+  uploaded to the GPU once and cached (keyed by object identity); each node
+  ships only its small ``rows`` index plus the gathered gradients/Hessians, and
+  the kernel gathers bins on-device — removing the per-node host gather of
+  ``binned[rows]`` and its upload (the dominant transfer when the matrix is
+  wide). The cache lives for the backend's lifetime (freed on GC).
+* Phase B2: ``build_histograms`` *returns* the ``(n_features, n_bins_max, 3)``
+  histogram as a resident CuPy array, so it is never copied to the host during a
+  tree's growth — the per-node GPU→host round-trip is cut to the winning
+  split's scalars.
+
+Multi-output trees route through the NumPy multi-output scan on the host; the
+CUDA backend keeps the Phase-A GPU histogram there but not B2 residency.
 
 Differences from the Rust backend (see ``docs/adr/0005-cuda-backend-cupy.md``):
 
@@ -35,7 +51,7 @@ from __future__ import annotations
 import numpy as np
 
 from repleafgbm.backends.base import BaseSplitBackend, SplitCandidate
-from repleafgbm.backends.numpy_backend import NumPySplitBackend
+from repleafgbm.backends.numpy_backend import NumPySplitBackend, _leaf_score
 
 # CUDA C source for the histogram kernel. One thread per (selected-row, feature)
 # pair accumulates (grad, hess, count) into the shared (n_features, n_bins_max, 3)
@@ -75,9 +91,19 @@ void build_hist(
 
 _BLOCK = 256
 
+# Adaptive split scan: a node's numeric scan runs on the GPU only when its
+# histogram has at least this many (feature x bin) cells; smaller scans are
+# cheaper on the host (one bulk copy + vectorized NumPy) than as many tiny GPU
+# kernels with launch/sync overhead. Measured on a Tesla T4
+# (experiments/results/2026-06-17-cuda-parity.md): the on-device scan is ~2.1x
+# end-to-end on a 200-feature fit but ~neutral / slightly slower at 30 features,
+# so the crossover sits between; 2^15 keeps narrow fits on the (faster) host path
+# while capturing the wide win. Tune with a per-GPU sweep if needed.
+_GPU_SCAN_MIN_CELLS = 32_768
+
 
 class CudaSplitBackend(BaseSplitBackend):
-    """GPU histogram build (CuPy) with the NumPy split scan on the host."""
+    """GPU histogram build + GPU numeric split scan (CuPy); categoricals host."""
 
     def __init__(self) -> None:
         try:
@@ -102,9 +128,9 @@ class CudaSplitBackend(BaseSplitBackend):
             )
         self._cp = cupy
         self._kernel = cupy.RawKernel(_BUILD_HIST_SRC, "build_hist")
-        # Split scanning (numeric thresholds + categorical subsets) is reused
-        # verbatim from the reference backend; the histogram it consumes is a
-        # small host array, so there is nothing to gain from a GPU port in v0.
+        # The numeric split scan runs on-device (find_best_split below); the
+        # categorical subset scan stays on the host for byte-for-byte parity, so
+        # we keep a reference backend to reuse ``_best_categorical_split``.
         self._cpu = NumPySplitBackend()
         # Resident binned cache, keyed by (id, shape). binned is the same object
         # for every node of every tree, so it is uploaded once and reused.
@@ -137,9 +163,8 @@ class CudaSplitBackend(BaseSplitBackend):
         n_features = int(binned.shape[1])
         n_bins_max = int(n_bins_max)
         n_sel = int(rows.shape[0])
-        hist = np.zeros((n_features, n_bins_max, 3), dtype=np.float64)
         if n_sel == 0 or n_features == 0:
-            return hist
+            return cp.zeros((n_features, n_bins_max, 3), dtype=cp.float64)
 
         binned_d = self._device_binned(binned)
         # Only the node's row index + its gathered grad/hess cross to the GPU;
@@ -165,7 +190,10 @@ class CudaSplitBackend(BaseSplitBackend):
                 np.int64(n_bins_max),
             ),
         )
-        return cp.asnumpy(hist_d).reshape(n_features, n_bins_max, 3)
+        # Phase B2: return the resident device histogram. The grower keeps it on
+        # the GPU (its sibling-subtraction ``parent - child`` is CuPy
+        # arithmetic) and find_best_split scans it on-device.
+        return hist_d.reshape(n_features, n_bins_max, 3)
 
     def find_best_split(
         self,
@@ -178,15 +206,114 @@ class CudaSplitBackend(BaseSplitBackend):
         min_data_per_group: int = 100,
         max_cat_threshold: int = 32,
     ) -> SplitCandidate | None:
-        # The histogram is a small host array; reuse the reference scan so the
-        # tie-break / categorical / missing-left semantics match exactly.
-        return self._cpu.find_best_split(
-            hist,
-            n_bins_per_feature,
-            min_samples_leaf,
-            l2,
-            categorical_mask,
-            cat_smooth,
-            min_data_per_group,
-            max_cat_threshold,
+        """Adaptive numeric scan + host categorical scan.
+
+        Large per-node histograms are scanned on the GPU (mirrors
+        NumPySplitBackend; only the winning split's scalars cross back); small
+        ones are copied to the host and delegated to the reference scan, which is
+        faster than launching many tiny GPU kernels (see _GPU_SCAN_MIN_CELLS).
+
+        ``hist`` is normally the resident device array from build_histograms (the
+        grower's subtraction kept it on-device); a host array is also accepted
+        (``cp.asarray`` no-ops on device input, uploads a host one).
+        """
+        cp = self._cp
+        hist_d = cp.asarray(hist)
+        g, h, n = hist_d[:, :, 0], hist_d[:, :, 1], hist_d[:, :, 2]
+        n_features, n_bins_max = int(g.shape[0]), int(g.shape[1])
+
+        # Adaptive: small per-node histograms scan faster on the host (a single
+        # bulk copy + vectorized NumPy) than as many tiny GPU kernels; only the
+        # GPU once it is large enough to amortize launch/sync overhead. See
+        # _GPU_SCAN_MIN_CELLS. The histogram stays resident for the build /
+        # subtraction either way; this only copies the small ones back to scan.
+        if n_features * n_bins_max < _GPU_SCAN_MIN_CELLS:
+            return self._cpu.find_best_split(
+                cp.asnumpy(hist_d), n_bins_per_feature, min_samples_leaf, l2,
+                categorical_mask, cat_smooth, min_data_per_group, max_cat_threshold,
+            )
+
+        feat_idx = cp.arange(n_features)
+        nbpf_d = cp.asarray(n_bins_per_feature)
+
+        # Per-feature bins partition the same rows, so per-feature totals all
+        # equal the node totals; read them off feature 0. Kept on-device (0-d
+        # arrays) so the whole scan runs without a host round-trip until the
+        # single batched fetch below — per-node GPU→host syncs dominate this tiny
+        # scan, so we keep them to one.
+        g_total = g[0].sum()
+        h_total = h[0].sum()
+        n_total = n[0].sum()
+        parent_score = _leaf_score(g_total, h_total, l2)
+
+        # Missing values (bin index n_bins_per_feature[f]) always go left.
+        miss_g = g[feat_idx, nbpf_d][:, None]
+        miss_h = h[feat_idx, nbpf_d][:, None]
+        miss_n = n[feat_idx, nbpf_d][:, None]
+
+        # Candidate c sends non-missing bins <= c left (plus missing); invalid
+        # candidates are masked below.
+        left_g = cp.cumsum(g, axis=1) + miss_g
+        left_h = cp.cumsum(h, axis=1) + miss_h
+        left_n = cp.cumsum(n, axis=1) + miss_n
+        right_n = n_total - left_n
+
+        valid = (
+            (cp.arange(n_bins_max)[None, :] <= (nbpf_d - 2)[:, None])
+            & (left_n >= min_samples_leaf)
+            & (right_n >= min_samples_leaf)
         )
+        if categorical_mask is not None:
+            # Categorical features get the host subset scan below.
+            valid &= ~cp.asarray(categorical_mask)[:, None]
+        gain = (
+            _leaf_score(left_g, left_h, l2)
+            + _leaf_score(g_total - left_g, h_total - left_h, l2)
+            - parent_score
+        )
+        gain = cp.where(valid & cp.isfinite(gain), gain, -np.inf)
+
+        # Device argmax (lowest flat index on ties, matching np.argmax). Pack the
+        # winner's flat index + gain + child counts into one tiny array so a
+        # single ``asnumpy`` brings them all back — the only sync on the numeric
+        # path (the (F, B, 3) histogram never leaves the GPU).
+        best_flat_d = cp.argmax(gain)
+        packed = cp.asnumpy(
+            cp.stack(
+                [
+                    best_flat_d.astype(cp.float64),
+                    gain.ravel()[best_flat_d],
+                    left_n.ravel()[best_flat_d],
+                    right_n.ravel()[best_flat_d],
+                ]
+            )
+        )
+        best_flat = int(packed[0])
+        best_gain = float(packed[1])
+        f, c = divmod(best_flat, n_bins_max)
+        best: SplitCandidate | None = None
+        if best_gain > 1e-12:
+            best = SplitCandidate(
+                feature=int(f),
+                bin=int(c),
+                gain=best_gain,
+                n_left=int(packed[2]),
+                n_right=int(packed[3]),
+            )
+
+        # Categorical subset splits stay on the host for byte-for-byte parity
+        # (stable sort / both-end prefix / tie-break); only the categorical
+        # feature slices come back, not the whole histogram.
+        if categorical_mask is not None and categorical_mask.any():
+            g_tot, h_tot = float(g_total), float(h_total)
+            n_tot, parent = float(n_total), float(parent_score)
+            for f in np.flatnonzero(categorical_mask):
+                cand = self._cpu._best_categorical_split(
+                    int(f), cp.asnumpy(hist_d[f]), int(n_bins_per_feature[f]),
+                    g_tot, h_tot, n_tot, parent,
+                    min_samples_leaf, l2,
+                    cat_smooth, min_data_per_group, max_cat_threshold,
+                )
+                if cand is not None and (best is None or cand.gain > best.gain):
+                    best = cand
+        return best

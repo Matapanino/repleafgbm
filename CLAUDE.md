@@ -56,7 +56,9 @@ embeddings.
 - `src/repleafgbm/backends/` — split-search kernels behind `BaseSplitBackend`:
   `NumPySplitBackend` (reference), `RustSplitBackend` (optional compiled
   extension in `native/`, pyo3/maturin), and `CudaSplitBackend` (optional GPU
-  histogram via CuPy, `split_backend="cuda"`; ADR 0005, docs/cuda.md). `native/`
+  histogram + resident-histogram numeric split scan via CuPy,
+  `split_backend="cuda"`; categorical/multi-output scans stay on host; ADR 0005,
+  docs/cuda.md). `native/`
   also provides the fused `leaf_linear_stats` helper used by
   `core/leaf_models.py` for narrow embeddings. NumPy and Rust paths must stay
   parity-tested with **bitwise** histograms (allclose leaf fits/predictions);

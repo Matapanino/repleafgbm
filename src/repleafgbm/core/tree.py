@@ -124,7 +124,9 @@ class _GrowCandidate:
     """Heap entry: a leaf that could be split, prioritized by gain.
 
     Carries the node's histogram so children can reuse it: the smaller child
-    is accumulated directly and the larger one obtained by subtraction.
+    is accumulated directly and the larger one obtained by subtraction. The
+    histogram object is backend-defined (a NumPy array, or a device-resident
+    CuPy array for the CUDA backend) and used only via subtraction/indexing.
     """
 
     neg_gain: float

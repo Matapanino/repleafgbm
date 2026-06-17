@@ -88,21 +88,20 @@ def micro_benchmark():
     return n, F, B, t_np, t_cu
 
 
-def end_to_end_benchmark():
-    """Full RepLeafRegressor.fit, numpy vs cuda backend.
+def end_to_end_benchmark(n, d):
+    """Full RepLeafRegressor.fit, numpy vs cuda backend, for n rows x d features.
 
-    This is the number that actually matters for sizing further GPU work:
-    histogram build is on the GPU (cuda backend) but tree growth, split scan,
-    and leaf fitting (leaf_linear_stats) stay on the host. A large end-to-end
-    speedup means histogram dominated; a modest one means host work (incl. leaf
-    fitting) is now the bottleneck — i.e. whether Phase C1 is worth it.
+    histogram build is on the GPU (cuda backend) but tree growth, the categorical
+    scan, and leaf fitting (leaf_linear_stats) stay on the host. Phase B2 keeps
+    the histogram resident and runs the *numeric* split scan on-device, so its
+    value grows with the per-node histogram size — wide d / many bins is where it
+    should beat the B1 round-trip (and narrow d its worst case).
     """
     sys.path.insert(0, f"{REPO}/src")
     import numpy as np
 
     from repleafgbm import RepLeafRegressor
 
-    n, d = 100_000, 30
     rng = np.random.default_rng(0)
     X = rng.normal(size=(n, d))
     y = (
@@ -121,7 +120,7 @@ def end_to_end_benchmark():
     fit_time("cuda")  # warm up JIT + caches
     t_np = fit_time("numpy")
     t_cu = fit_time("cuda")
-    return n, d, t_np, t_cu
+    return t_np, t_cu
 
 
 def main():
@@ -129,9 +128,15 @@ def main():
     gpu = ensure_cupy()
     rc, summary = run_parity_tests()
     n, F, B, t_np, t_cu = micro_benchmark()
-    e2e_n, e2e_d, e2e_np, e2e_cu = end_to_end_benchmark()
     speedup = (t_np / t_cu) if t_cu else float("nan")
-    e2e_speedup = (e2e_np / e2e_cu) if e2e_cu else float("nan")
+
+    # Narrow (B2's worst case) and wide (B2's intended sweet spot — the per-node
+    # histogram copy B2 keeps resident is biggest here) end-to-end fits.
+    configs = [("narrow", 100_000, 30), ("wide", 50_000, 200)]
+    e2e = []
+    for label, e2e_n, e2e_d in configs:
+        np_s, cu_s = end_to_end_benchmark(e2e_n, e2e_d)
+        e2e.append((label, e2e_n, e2e_d, np_s, cu_s, (np_s / cu_s) if cu_s else float("nan")))
 
     lines = [
         "# CUDA backend parity report",
@@ -149,22 +154,27 @@ def main():
         f"- CUDA:  **{t_cu * 1e3:.2f} ms**",
         f"- Speedup: **{speedup:.2f}x**",
         "",
-        "_Phase B1: binned is uploaded once and cached on-device (keyed by "
-        "identity); each call ships only its rows + gathered grad/hess, so "
-        "repeated builds over the same matrix avoid re-transferring it._",
+        "_Phase B1/B2: binned is uploaded once and cached on-device, and the "
+        "histogram is returned resident (no per-build copy back)._",
         "",
-        "## End-to-end training (the number that sizes Phase C)",
+        "## End-to-end training (Phase B2: resident hist + GPU numeric scan)",
         "",
-        f"`RepLeafRegressor.fit` over {e2e_n:,} rows x {e2e_d} features, 50 "
-        "trees, embedded_linear (GPU histogram + host leaf fitting):",
+        "`RepLeafRegressor.fit`, 50 trees, embedded_linear (GPU histogram + GPU "
+        "numeric scan; host categorical scan + leaf fitting):",
         "",
-        f"- numpy backend: **{e2e_np:.2f} s**",
-        f"- cuda backend:  **{e2e_cu:.2f} s**",
-        f"- Speedup: **{e2e_speedup:.2f}x**",
+        "| config | rows x feat | numpy (s) | cuda (s) | speedup |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for label, e2e_n, e2e_d, np_s, cu_s, sp in e2e:
+        lines.append(
+            f"| {label} | {e2e_n:,} x {e2e_d} | {np_s:.2f} | {cu_s:.2f} | "
+            f"**{sp:.2f}x** |"
+        )
+    lines += [
         "",
-        "_A large speedup ⇒ histogram dominated, so Phase C1 (GPU leaf stats) "
-        "adds little; a modest one ⇒ host leaf fitting is now the bottleneck "
-        "and C1 is justified._",
+        "_B2's value grows with per-node histogram size: narrow d is its worst "
+        "case (tiny scan, GPU launch/sync overhead), wide d its best (the big "
+        "per-node histogram round-trip B1 paid is now avoided)._",
         "",
     ]
     with open(REPORT, "w") as fh:

@@ -1,9 +1,12 @@
-# ADR 0005: CUDA split backend via CuPy (Phase A + B1)
+# ADR 0005: CUDA split backend via CuPy (Phase A + B1 + B2)
 
-- Status: **accepted — Phase A + B1 implemented** (2026-06-17); GPU validation
-  runs through the Colab dev loop (`scripts/colab_gpu_test.sh`), not CI. Phase C1
-  (GPU leaf stats) was evaluated against an end-to-end benchmark and **deferred**
-  (see Consequences).
+- Status: **accepted — Phase A + B1 + B2 implemented** (B2: 2026-06-17); GPU
+  validation runs through the Colab dev loop (`scripts/colab_gpu_test.sh`), not
+  CI. B2 (resident histograms + **adaptive** GPU numeric scan) is parity-verified
+  on a T4 (9/9) and measured at **~2.1x end-to-end on a wide fit and ~1.5x on a
+  narrow fit** (the adaptive threshold keeps narrow on the host path so it
+  matches B1 instead of regressing — see Consequences). Phase C1 (GPU leaf stats)
+  was evaluated against an end-to-end benchmark and **deferred**.
 - Date: 2026-06-17
 - Depends on: ADR 0001, docs/backend_strategy.md (the narrow `BaseSplitBackend`
   contract + sibling-subtraction trick), the Rust backend (Phase 10) as the
@@ -40,6 +43,9 @@ tested locally or in CI.
    gradient-sorted subsets, stable sort, tie-break on lowest index,
    missing-routes-left). Delegating keeps that **byte-for-byte identical** to
    the reference and shrinks the parity surface to a single kernel.
+   *(Superseded for numeric features by Phase B2 below: the numeric
+   cumulative-sum gain sweep + argmax now run on-device; categorical subsets,
+   the branchiest part, stay on the host.)*
 
 3. **Parity: allclose, not bitwise.** GPU `atomicAdd` summation order is not
    fixed, so histogram sums differ from NumPy `bincount` in the low bits — and
@@ -84,10 +90,38 @@ tested locally or in CI.
   with its own parity surface. Per the project's "change directions only with
   evidence" rule, **C1 is deferred**; revisit only if profiling shows leaf
   fitting is a bottleneck for some workload.
-- **Phase B2 (future, if more speed is wanted):** keep histograms resident and
-  port the *numeric* split scan to GPU to cut the per-node GPU→host round-trip;
-  categoricals/tie-break stay on host for parity. Higher value than C1 per the
-  benchmark; gated by a results-analyst-backed end-to-end measurement.
+- **Phase B2 (shipped, adaptive):** resident histograms + an **adaptive**
+  numeric split scan. `build_histograms` now *returns* the
+  `(n_features, n_bins_max, 3)` histogram as a resident CuPy array instead of
+  copying it to the host, so it never leaves the GPU during a tree's growth — the
+  grower's sibling-subtraction `parent - child` is CuPy arithmetic. The numeric
+  gain sweep + argmax run **on the GPU only when the per-node histogram is large**
+  (`n_features * n_bins_max >= _GPU_SCAN_MIN_CELLS`, default 2^15); for small
+  histograms the scan is copied back and delegated to the reference, which beats
+  launching many tiny GPU kernels. When on-device, only the winning split's
+  scalars cross back per node (cut to a single batched `asnumpy`).
+
+  Why adaptive: the T4 benchmark showed the GPU scan is **~2.1x end-to-end on a
+  wide fit (50k×200)** — the big per-node histogram round-trip B1 paid is
+  avoided — but **~neutral / a regression on a narrow fit (100k×30)**, where the
+  (30×257) scan is too small to amortize GPU launch/sync overhead and B1's bulk
+  copy + vectorized host scan wins. With the threshold in place the CUDA backend
+  measures **2.09x (wide) and 1.46x (narrow, host path)** — no regression, full
+  wide win; tune the threshold with a per-GPU sweep. See
+  `experiments/results/2026-06-17-cuda-parity.md`.
+
+  This needs **no core change**: the grower already treats the histogram opaquely
+  (only subtraction + indexing + pass to `find_best_split`), so CuPy duck-types
+  through it; the one ripple is `Splitter.build_histograms`'s multi-output
+  `np.stack`, which now brings each per-output histogram to host first
+  (`_as_host`, a no-op for NumPy/Rust). Parity stays **allclose, not bitwise**:
+  the device argmax matches `np.argmax`'s lowest-index tie-break, and genuine
+  ties are measure-zero with continuous gradients, so the selected split agrees
+  with the reference (verified by `tests/test_cuda_backend.py`, both scan paths).
+  Held to host for parity: the categorical subset scan (stable sort / both-end
+  prefix), which gets only its few feature slices copied back; and the
+  multi-output scan (`find_best_split_multioutput` is a NumPy path — keeps
+  Phase-A GPU histograms but not B2 residency).
 
 ## Validation
 
