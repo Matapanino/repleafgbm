@@ -72,6 +72,31 @@ run-to-run. Cross-backend predictions still agree to float noise
 (`rtol=1e-6`), which is what the parity tests assert. If you need bitwise
 determinism, use `"numpy"` or `"rust"`.
 
+## GPU encoder pretraining (separate from `split_backend`)
+
+The CUDA split backend above accelerates the booster's histogram. A second,
+independent GPU surface is the **learned-encoder pretraining** (the optional
+torch encoders: `torch_periodic`, `torch_plr`, `torch_periodic_plr`,
+`torch_mlp`). Each takes a `device` knob (via `encoder_params`):
+
+```python
+RepLeafRegressor(
+    encoder="torch_periodic_plr",
+    encoder_params={"device": "auto"},   # "cpu" (default) | "cuda" | "auto"
+)
+```
+
+`device` only affects the one-time pretraining `fit`; `transform`,
+`get_state`/`set_state`, and serialization stay NumPy, so a saved model still
+predicts without torch. All random draws (head init, batch permutations) use a
+CPU generator and are moved onto the device afterwards, so the random stream is
+device-independent and `device="cpu"` reproduces the prior pretraining
+byte-for-byte. Like the split backend, GPU pretraining is **allclose, not
+bitwise** (GPU reductions reorder), so CPU stays the deterministic default and
+GPU is validated only on the Colab loop below. The payoff is scale-dependent:
+small default nets may not beat CPU (host↔device overhead), while large `n`,
+wide periodic embeddings, or a deeper `torch_mlp` benefit.
+
 ## GPU dev loop (no local GPU required)
 
 Because macOS dev boxes and CI have no GPU, the CUDA path is built and tested

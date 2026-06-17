@@ -175,6 +175,14 @@ across outputs, so it is one factorization with `K` right-hand sides
 extrapolation guard's `z_min/z_max` are the leaf's `Z` range, shared across
 outputs. Output transform: identity.
 
+The same vector-leaf machinery serves the other **constant-Hessian** losses
+without change: multi-output Huber (`g = clip(F - Y, -delta, delta)`,
+`F_0,k = median(Y[:,k])`) and quantile (`g = (1-alpha)` where `F >= Y` else
+`-alpha`, `F_0,k = alpha`-quantile of `Y[:,k]`) keep `h = 1`, so only the
+gradient and the per-output init score differ — the shared centered Gram and
+the split scan are reused exactly. Losses with a non-constant Hessian (e.g.
+multi-output Poisson) would break the shared factorization and are rejected.
+
 **Label smoothing (classification).** Hard targets are softened before the
 gradients: binary `y -> y(1-eps) + eps/2`, multiclass one-hot
 `-> (1-eps) onehot + eps/K`, applied to both `F_0` and `g` (so

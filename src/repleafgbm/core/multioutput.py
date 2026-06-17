@@ -10,10 +10,11 @@ the split gain is the per-output Newton gain summed over outputs
 (``core.splitter`` / ``backends.numpy_backend.find_best_split_multioutput``).
 
 The encoder stays frozen; every output reuses the same embedding matrix Z.
-Vector leaves are fitted on squared-error statistics (Hessian = 1), so the
-embedded-linear leaf's centered Gram matrix is shared across outputs and the
-per-leaf system is one factorization with ``n_outputs`` right-hand sides
-(docs/math.md).
+Vector leaves are fitted on constant-Hessian statistics (``h = 1`` for squared
+error, Huber, and quantile alike), so the embedded-linear leaf's centered Gram
+matrix is shared across outputs and the per-leaf system is one factorization
+with ``n_outputs`` right-hand sides (docs/math.md). Only the gradient and the
+init score change between objectives.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from repleafgbm.backends import make_split_backend
 from repleafgbm.core.booster import BoosterParams, weight_grad_hess
 from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
-from repleafgbm.core.objectives import MultiOutputSquaredError
+from repleafgbm.core.objectives import MultiOutputObjective
 from repleafgbm.core.prediction import predict_raw_multioutput
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
@@ -111,7 +112,7 @@ class MultiOutputBooster:
     lifted to a score matrix, but with a single tree per round.
     """
 
-    def __init__(self, params: BoosterParams, objective: MultiOutputSquaredError) -> None:
+    def __init__(self, params: BoosterParams, objective: MultiOutputObjective) -> None:
         self.params = params
         self.objective = objective
         #: Per-output init scores (column means), shape (n_outputs,).

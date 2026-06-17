@@ -74,6 +74,27 @@ def test_end_to_end_backend_agreement(regression_data):
     np.testing.assert_allclose(preds["numpy"], preds["rust"], rtol=1e-6, atol=1e-8)
 
 
+@pytest.mark.parametrize("objective", [None, "huber", "quantile"])
+def test_multioutput_backend_agreement(objective):
+    """Multi-output robust losses feed new g/h values into the same shared
+    histogram/scan kernels, so NumPy and Rust must stay in lock-step."""
+    rng = np.random.default_rng(11)
+    n = 800
+    X = rng.normal(size=(n, 6))
+    Y = np.column_stack([X[:, 0] * 2 + X[:, 1], -X[:, 2] + 0.5 * X[:, 3]])
+    Y += 0.1 * rng.normal(size=(n, 2))
+    preds = {}
+    for backend in ("numpy", "rust"):
+        model = RepLeafRegressor(
+            n_estimators=30, num_leaves=8, min_samples_leaf=10,
+            leaf_model="embedded_linear", objective=objective,
+            split_backend=backend, random_state=42,
+        )
+        model.fit(X[:600], Y[:600])
+        preds[backend] = model.predict(X[600:])
+    np.testing.assert_allclose(preds["numpy"], preds["rust"], rtol=1e-6, atol=1e-8)
+
+
 def test_end_to_end_with_categoricals_and_missing():
     rng = np.random.default_rng(3)
     n = 1200

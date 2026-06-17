@@ -117,8 +117,72 @@ def test_single_output_unchanged():
     assert model.predict(X).ndim == 1
 
 
-def test_multioutput_rejects_nondefault_objective():
+def test_multioutput_rejects_nonconstant_hessian_objective():
+    """Constant-Hessian losses (squared/huber/quantile) are allowed; poisson
+    (non-constant Hessian) is rejected for multi-output."""
     X, Y = make_multioutput(200, seed=6)
-    model = RepLeafRegressor(n_estimators=10, objective="huber", random_state=0)
-    with pytest.raises(ValueError, match="squared error only"):
-        model.fit(X, Y)
+    model = RepLeafRegressor(n_estimators=10, objective="poisson", random_state=0)
+    with pytest.raises(ValueError, match="constant-Hessian"):
+        model.fit(np.abs(X), np.abs(Y))
+
+
+@pytest.mark.parametrize("objective", ["huber", "quantile"])
+@pytest.mark.parametrize("leaf_model", ["constant", "embedded_linear"])
+def test_multioutput_robust_objectives_fit_predict(objective, leaf_model):
+    """Multi-output huber/quantile fit, predict the right shape, are
+    deterministic, and the booster carries the vector objective."""
+    X, Y = make_multioutput(400, seed=7)
+    kw = dict(
+        n_estimators=25, leaf_model=leaf_model, num_leaves=8,
+        objective=objective, random_state=0,
+    )
+    m1 = RepLeafRegressor(**kw).fit(X[:300], Y[:300])
+    p1 = m1.predict(X[300:])
+    assert p1.shape == (100, 2)
+    assert m1.booster_.objective.name == f"multioutput_{objective}"
+    # determinism: same seed => bitwise-identical predictions
+    p2 = RepLeafRegressor(**kw).fit(X[:300], Y[:300]).predict(X[300:])
+    assert np.array_equal(p1, p2)
+
+
+@pytest.mark.parametrize("objective", ["huber", "quantile"])
+def test_multioutput_robust_save_load_roundtrip(tmp_path, objective):
+    X, Y = make_multioutput(300, seed=8)
+    model = RepLeafRegressor(
+        n_estimators=20, leaf_model="embedded_linear", num_leaves=8,
+        objective=objective, random_state=0,
+    ).fit(X, Y)
+    before = model.predict(X)
+
+    model.save_model(tmp_path)
+    config = json.loads((tmp_path / "model_config.json").read_text())
+    assert config["format_version"] == 6
+    assert config["objective"] == f"multioutput_{objective}"
+
+    reloaded = RepLeafRegressor.load_model(tmp_path)
+    # Identity transform => predictions round-trip exactly.
+    assert np.array_equal(reloaded.predict(X), before)
+    assert reloaded.booster_.objective.name == f"multioutput_{objective}"
+
+
+def test_multioutput_huber_robust_to_outliers():
+    """On outlier-contaminated multi-output targets, huber tracks the clean
+    signal better than squared error (the point of the robust loss)."""
+    rng = np.random.default_rng(9)
+    n = 600
+    X = rng.normal(size=(n, 5))
+    clean = np.column_stack([X[:, 0] * 2 + X[:, 1], -X[:, 2] + 0.5 * X[:, 3]])
+    Y = clean + 0.1 * rng.normal(size=(n, 2))
+    # Heavy-tailed contamination on the training targets only.
+    contam = Y.copy()
+    mask = rng.random(n) < 0.08
+    contam[mask] += rng.normal(scale=30, size=contam[mask].shape)
+
+    Xtr, Xte = X[:450], X[450:]
+    clean_te = clean[450:]
+    kw = dict(n_estimators=60, num_leaves=8, random_state=0)
+    se = RepLeafRegressor(objective=None, **kw).fit(Xtr, contam[:450])
+    hub = RepLeafRegressor(objective="huber", **kw).fit(Xtr, contam[:450])
+    se_err = np.sqrt(np.mean((se.predict(Xte) - clean_te) ** 2))
+    hub_err = np.sqrt(np.mean((hub.predict(Xte) - clean_te) ** 2))
+    assert hub_err < se_err
