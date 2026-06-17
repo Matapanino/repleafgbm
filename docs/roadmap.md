@@ -443,14 +443,17 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 
 ## v3 — GPU and scale
 
-- CUDA histogram building **(partial — Phase A + B1 shipped)**: experimental
-  `split_backend="cuda"` builds per-node histograms on the GPU via CuPy, with a
-  resident on-device cache of the binned matrix (split scan still on host;
-  allclose, not bitwise; ADR 0005, docs/cuda.md). Measured on a Tesla T4: 32x
-  histogram micro-benchmark, **1.58x end-to-end** fit. Validated via the Colab
-  dev loop. GPU leaf fitting (C1) was evaluated and **deferred** (leaf stats are
-  already Rust-accelerated; low marginal value). Still open: GPU numeric split
-  scan with resident histograms (B2).
+- CUDA histogram + adaptive numeric split scan **(Phase A + B1 + B2 shipped)**:
+  experimental `split_backend="cuda"` builds per-node histograms on the GPU via
+  CuPy, caches the binned matrix on-device (B1), and keeps the histogram resident
+  while running the numeric gain sweep + argmax on the GPU for large histograms
+  (B2, adaptive) — only the winning split's scalars return to the host; small
+  histograms scan on the host (no narrow regression). Categorical subset splits
+  and multi-output scans stay on the host (allclose, not bitwise; ADR 0005,
+  docs/cuda.md). Measured on a Tesla T4: ~52x histogram micro-benchmark; **~2.1x
+  end-to-end on a wide fit (50k×200)**, ~1.5x on narrow (100k×30, host path).
+  Validated via the Colab dev loop. GPU leaf fitting (C1) was evaluated and **deferred**
+  (leaf stats are already Rust-accelerated; low marginal value).
 - GPU training (`device="cuda"`), multi-GPU (`multi_gpu=True`,
   `distributed_strategy="data_parallel"`)
 - Distributed histogram building and leaf assignment

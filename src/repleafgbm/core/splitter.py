@@ -17,6 +17,17 @@ from repleafgbm.backends.numpy_backend import (
 from repleafgbm.core.histogram import bin_features, compute_bin_thresholds
 
 
+def _as_host(hist):
+    """Return a NumPy view of a (possibly device-resident) histogram.
+
+    The CUDA backend returns resident CuPy device arrays; the multi-output stack
+    and scan run on the host. CuPy arrays expose ``.get()`` (a host copy);
+    NumPy/Rust arrays have no ``.get`` and pass through unchanged.
+    """
+    getter = getattr(hist, "get", None)
+    return getter() if callable(getter) else hist
+
+
 class Splitter:
     """Finds and applies axis-aligned splits on raw features.
 
@@ -96,10 +107,16 @@ class Splitter:
             return self.backend.build_histograms(
                 self.binned, rows, grad, hess, self.n_bins_max
             )
+        # Multi-output: the per-output histograms are stacked and scanned on the
+        # host (find_best_split_multioutput is a NumPy path). A device backend
+        # (CUDA) returns resident arrays, so bring each to the host before
+        # np.stack, which rejects CuPy inputs; _as_host is a no-op for NumPy/Rust.
         return np.stack(
             [
-                self.backend.build_histograms(
-                    self.binned, rows, grad[:, k], hess[:, k], self.n_bins_max
+                _as_host(
+                    self.backend.build_histograms(
+                        self.binned, rows, grad[:, k], hess[:, k], self.n_bins_max
+                    )
                 )
                 for k in range(grad.shape[1])
             ],

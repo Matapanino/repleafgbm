@@ -45,7 +45,10 @@ def node_data():
 def test_histogram_parity_allclose(node_data):
     binned, rows, grad, hess, n_bins_max, _ = node_data
     h_np = NumPySplitBackend().build_histograms(binned, rows, grad, hess, n_bins_max)
-    h_cu = CudaSplitBackend().build_histograms(binned, rows, grad, hess, n_bins_max)
+    # build_histograms returns a resident device array (Phase B2); copy to host.
+    h_cu = cp.asnumpy(
+        CudaSplitBackend().build_histograms(binned, rows, grad, hess, n_bins_max)
+    )
     # grad/hess sums: float-noise agreement (GPU atomic-add reordering).
     np.testing.assert_allclose(h_np, h_cu, rtol=1e-9, atol=1e-9)
     # Counts are exact integer sums (< 2**53), so they match bitwise.
@@ -57,16 +60,25 @@ def test_histogram_subtractable(node_data):
     cu = CudaSplitBackend()
     half = rows.size // 2
     left, right = rows[:half], rows[half:]
+    # Resident device histograms (Phase B2): subtraction stays on-device, as in
+    # the grower; copy to host only for the assertions.
     h_parent = cu.build_histograms(binned, rows, grad, hess, n_bins_max)
     h_left = cu.build_histograms(binned, left, grad, hess, n_bins_max)
     h_right = cu.build_histograms(binned, right, grad, hess, n_bins_max)
     # The tree grower derives a child as parent - sibling; that must hold to
     # float noise so the additive structure is preserved.
-    np.testing.assert_allclose(h_parent, h_left + h_right, rtol=1e-9, atol=1e-9)
-    np.testing.assert_allclose(h_parent - h_left, h_right, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(
+        cp.asnumpy(h_parent), cp.asnumpy(h_left + h_right), rtol=1e-9, atol=1e-9
+    )
+    np.testing.assert_allclose(
+        cp.asnumpy(h_parent - h_left), cp.asnumpy(h_right), rtol=1e-9, atol=1e-9
+    )
 
 
 def test_split_parity_numeric_and_categorical(node_data):
+    # Phase B2: the numeric scan + argmax run on-device (hist_cu is a resident
+    # device array); categorical subsets fall back to the host. Both must still
+    # agree with the reference on the selected split.
     binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
     np_b, cu_b = NumPySplitBackend(), CudaSplitBackend()
     hist_np = np_b.build_histograms(binned, rows, grad, hess, n_bins_max)
@@ -78,6 +90,62 @@ def test_split_parity_numeric_and_categorical(node_data):
         s_np = np_b.find_best_split(hist_np, n_bins_pf, 20, 1.0, cat_mask,
                                     min_data_per_group=10)
         s_cu = cu_b.find_best_split(hist_cu, n_bins_pf, 20, 1.0, cat_mask,
+                                    min_data_per_group=10)
+        assert (s_np is None) == (s_cu is None)
+        if s_np is not None:
+            assert (s_np.feature, s_np.bin) == (s_cu.feature, s_cu.bin)
+            assert s_np.gain == pytest.approx(s_cu.gain, rel=1e-6)
+            assert (s_np.n_left, s_np.n_right) == (s_cu.n_left, s_cu.n_right)
+            if s_np.left_categories is not None:
+                np.testing.assert_array_equal(
+                    s_np.left_categories, s_cu.left_categories
+                )
+
+
+def test_find_best_split_accepts_host_array(node_data):
+    """find_best_split also accepts a host array (cp.asarray uploads it), and on
+    the same input agrees with the reference scan."""
+    binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
+    np_b, cu_b = NumPySplitBackend(), CudaSplitBackend()
+    hist_np = np_b.build_histograms(binned, rows, grad, hess, n_bins_max)
+    cat_mask = np.zeros(8, dtype=bool)
+    s_np = np_b.find_best_split(hist_np, n_bins_pf, 20, 1.0, cat_mask)
+    s_cu = cu_b.find_best_split(hist_np, n_bins_pf, 20, 1.0, cat_mask)
+    assert (s_np is None) == (s_cu is None)
+    if s_np is not None:
+        assert (s_np.feature, s_np.bin) == (s_cu.feature, s_cu.bin)
+        assert s_np.gain == pytest.approx(s_cu.gain, rel=1e-6)
+        assert (s_np.n_left, s_np.n_right) == (s_cu.n_left, s_cu.n_right)
+
+
+def test_split_parity_gpu_scan_path():
+    """A histogram above the adaptive threshold exercises the on-device numeric
+    scan (small ones fall back to the host path tested above). It must still
+    agree with the reference on the selected split, numeric and categorical."""
+    from repleafgbm.backends.cuda_backend import _GPU_SCAN_MIN_CELLS
+
+    rng = np.random.default_rng(1)
+    F = 200
+    n_bins_max = (_GPU_SCAN_MIN_CELLS // F) + 2  # ensure F * n_bins_max >= thresh
+    assert F * n_bins_max >= _GPU_SCAN_MIN_CELLS
+    n_cats = n_bins_max - 1  # missing bin at index n_cats
+    n = 6000
+    binned = rng.integers(0, n_cats, size=(n, F)).astype(np.uint16)
+    binned[rng.random((n, F)) < 0.05] = n_cats  # missing bin
+    rows = np.arange(n, dtype=np.int64)
+    grad = rng.normal(size=n)
+    hess = np.abs(rng.normal(size=n)) + 0.1
+    n_bins_pf = np.full(F, n_cats, dtype=np.int64)
+
+    np_b, cu_b = NumPySplitBackend(), CudaSplitBackend()
+    hist_np = np_b.build_histograms(binned, rows, grad, hess, n_bins_max)
+    hist_cu = cu_b.build_histograms(binned, rows, grad, hess, n_bins_max)
+    cat_mask = np.zeros(F, dtype=bool)
+    cat_mask[:3] = True  # a few categorical features → host fallback within scan
+    for mask in (np.zeros(F, dtype=bool), cat_mask):
+        s_np = np_b.find_best_split(hist_np, n_bins_pf, 20, 1.0, mask,
+                                    min_data_per_group=10)
+        s_cu = cu_b.find_best_split(hist_cu, n_bins_pf, 20, 1.0, mask,
                                     min_data_per_group=10)
         assert (s_np is None) == (s_cu is None)
         if s_np is not None:

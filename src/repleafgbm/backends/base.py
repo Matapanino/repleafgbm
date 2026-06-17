@@ -65,6 +65,12 @@ class BaseSplitBackend(ABC):
 
         Returns the ``(n_features, n_bins_max, 3)`` layout described above.
         Histograms must be exactly subtractable: ``parent - child == sibling``.
+
+        The return may be a backend-resident device array (e.g. the CUDA backend
+        keeps the histogram on the GPU across a tree's nodes); the grower treats
+        it opaquely, requiring only elementwise subtraction and indexing, and
+        passes it back to :meth:`find_best_split`. Subtractability holds to float
+        noise on the CUDA path (allclose, not bitwise; see ADR 0005).
         """
 
     @abstractmethod
@@ -81,8 +87,10 @@ class BaseSplitBackend(ABC):
     ) -> SplitCandidate | None:
         """Scan a node histogram for the best split, or None if no valid gain.
 
-        Missing values always go to the left child (v0 convention).
-        Features flagged in ``categorical_mask`` are scanned as subset splits
-        (gradient-sorted categories) instead of ordered thresholds, governed
-        by the three LightGBM-style categorical guards.
+        ``hist`` is whatever :meth:`build_histograms` returned (a host array, or
+        a device-resident array for the CUDA backend). Missing values always go
+        to the left child (v0 convention). Features flagged in
+        ``categorical_mask`` are scanned as subset splits (gradient-sorted
+        categories) instead of ordered thresholds, governed by the three
+        LightGBM-style categorical guards.
         """
