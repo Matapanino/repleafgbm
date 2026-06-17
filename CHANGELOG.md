@@ -5,6 +5,39 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.3.0] - 2026-06-17
+
+Trainable-embeddings track: a new learned encoder and weighted encoder
+pretraining. Opt-in and backwards-compatible — the default encoder
+(`identity`), the leaf math, the model format, and NumPy/Rust/CUDA parity are
+all unchanged.
+
+### Added
+- **`torch_periodic_plr` encoder** (optional `[torch]` extra): the full rtdl
+  *PeriodicEmbeddings* (Gorishniy et al. 2022) — learned periodic features
+  followed by a per-feature linear map + ReLU, supervised-pretrained on the
+  initial Newton residual and then frozen to NumPy. torch is needed only at fit
+  time; `transform` and serialization stay NumPy. Complements `torch_plr`
+  (= rtdl *PiecewiseLinearEmbeddings*) and `torch_periodic` (= lite
+  *PeriodicEmbeddings*).
+- **Trainable-embeddings benchmark harness**:
+  `benchmarks/trainable_embeddings.py` (CPU `--quick` + full run) and a Colab
+  driver (`scripts/colab_trainable_embeddings.{py,sh}`) comparing the encoder
+  families and optional external GBMs across regression/binary/multiclass.
+
+### Changed
+- **Learned-encoder pretraining now honors `sample_weight`/`class_weight`**: the
+  pretraining target is taken at the *weighted* initial score and the
+  pretraining loss is per-row weighted, so a weighted fit with a `torch_*`
+  encoder now produces a (correctly) different frozen encoder than before.
+  Unweighted fits are **bit-for-bit unchanged**; the fixed encoders
+  (`identity`/`plr`/`periodic`/`cross`) and the model format are unaffected.
+
+### Notes
+- Learned-encoder pretraining stays **scalar-target only**, so multiclass /
+  multi-output encoders fit *unsupervised* (the Newton residual is a matrix
+  there). A vector-target pretraining path is on the roadmap (docs/roadmap.md).
+
 ## [1.2.0] - 2026-06-17
 
 Experimental CUDA split backend (`split_backend="cuda"`). Opt-in and
