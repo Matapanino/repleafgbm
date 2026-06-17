@@ -9,10 +9,11 @@ import sys
 import numpy as np
 import pytest
 
-from repleafgbm import RepLeafRegressor
+from repleafgbm import RepLeafClassifier, RepLeafRegressor
 from repleafgbm.encoders import (
     TorchMLPEncoder,
     TorchPeriodicEncoder,
+    TorchPeriodicPLREncoder,
     TorchPLREncoder,
     make_encoder,
 )
@@ -35,6 +36,36 @@ def test_missing_torch_message(monkeypatch):
     # Unsupervised fit (no pretraining) works without torch at all.
     enc = TorchPeriodicEncoder().fit(X)
     assert enc.transform(X).shape == (50, 2 * 5)
+
+
+def test_multiclass_learned_encoder_fits_unsupervised(monkeypatch):
+    """Multiclass pretraining is disabled (scalar-target only), so a torch_*
+    encoder fits unsupervised — needing no torch even when chosen. If
+    pretraining were attempted, _require_torch would raise here."""
+    monkeypatch.setitem(sys.modules, "torch", None)
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(120, 3))
+    y = rng.integers(0, 3, size=120)
+    clf = RepLeafClassifier(
+        n_estimators=5, num_leaves=4, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_periodic",
+        encoder_params={"n_epochs": 5}, random_state=0,
+    ).fit(X, y)
+    assert clf.predict_proba(X).shape == (120, 3)
+
+
+def test_multioutput_learned_encoder_fits_unsupervised(monkeypatch):
+    """Multi-output pretraining is disabled the same way (matrix residual)."""
+    monkeypatch.setitem(sys.modules, "torch", None)
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(120, 3))
+    Y = rng.normal(size=(120, 2))
+    reg = RepLeafRegressor(
+        n_estimators=5, num_leaves=4, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_periodic",
+        encoder_params={"n_epochs": 5}, random_state=0,
+    ).fit(X, Y)
+    assert reg.predict(X).shape == (120, 2)
 
 
 torch = pytest.importorskip("torch", reason="torch not installed")
@@ -213,3 +244,130 @@ def test_torch_mlp_end_to_end_and_roundtrip(tmp_path, interaction_problem):
     model.save_model(tmp_path / "m")
     loaded = RepLeafRegressor.load_model(tmp_path / "m")
     np.testing.assert_allclose(loaded.predict(X), pred)
+
+
+# --------------------------------------------------------------------- #
+# torch_periodic_plr (full rtdl PeriodicEmbeddings: periodic + Linear+ReLU)
+# --------------------------------------------------------------------- #
+def test_torch_periodic_plr_learns(periodic_problem):
+    X, y = periodic_problem
+    enc = TorchPeriodicPLREncoder(n_frequencies=4, n_outputs=4, n_epochs=40,
+                                  random_state=0)
+    enc.fit(X, y=y - y.mean())
+    untrained = TorchPeriodicPLREncoder(n_frequencies=4, n_outputs=4,
+                                        random_state=0).fit(X)
+    assert _linear_probe_mse(enc.transform(X), y) < _linear_probe_mse(
+        untrained.transform(X), y
+    )
+    assert enc.output_dim == 2 * 4  # n_features * n_outputs
+
+
+def test_torch_periodic_plr_state_roundtrip(periodic_problem):
+    X, y = periodic_problem
+    enc = TorchPeriodicPLREncoder(n_frequencies=3, n_outputs=3, n_epochs=3,
+                                  random_state=1)
+    enc.fit(X, y=y)
+    fresh = make_encoder(enc.name, **enc.get_config())
+    fresh.set_state(enc.get_state())
+    np.testing.assert_allclose(enc.transform(X), fresh.transform(X))
+
+
+def test_torch_periodic_plr_transform_is_numpy_only(periodic_problem, monkeypatch):
+    X, y = periodic_problem
+    enc = TorchPeriodicPLREncoder(n_epochs=3, random_state=0).fit(X, y=y)
+    state, config = enc.get_state(), enc.get_config()
+    assert all(isinstance(v, np.ndarray) for v in state.values())
+
+    monkeypatch.setitem(sys.modules, "torch", None)  # torch now "missing"
+    fresh = make_encoder("torch_periodic_plr", **config)
+    fresh.set_state(state)
+    np.testing.assert_allclose(fresh.transform(X), enc.transform(X))
+
+
+def test_torch_periodic_plr_unsupervised_fit_needs_no_torch(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", None)
+    X = np.random.default_rng(0).normal(size=(50, 3))
+    enc = TorchPeriodicPLREncoder(n_frequencies=2, n_outputs=4).fit(X)
+    assert enc.transform(X).shape == (50, 3 * 4)
+
+
+def test_torch_periodic_plr_end_to_end_and_roundtrip(tmp_path, periodic_problem):
+    X, y = periodic_problem
+    model = RepLeafRegressor(
+        n_estimators=20, num_leaves=8, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_periodic_plr",
+        encoder_params={"n_epochs": 10}, max_leaf_emb_dim=32, random_state=42,
+    )
+    model.fit(X, y)
+    pred = model.predict(X)
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    np.testing.assert_allclose(loaded.predict(X), pred)
+
+
+# --------------------------------------------------------------------- #
+# Weighted encoder pretraining (sample_weight / class_weight)
+# --------------------------------------------------------------------- #
+def test_weight_none_pretraining_matches_omitting_it(periodic_problem):
+    """Passing sample_weight=None must be identical to not passing it: the new
+    weighting leaves the unweighted path bit-for-bit unchanged."""
+    X, y = periodic_problem
+    a = TorchPLREncoder(n_epochs=5, random_state=3).fit(X, y=y)
+    b = TorchPLREncoder(n_epochs=5, random_state=3).fit(X, y=y, sample_weight=None)
+    np.testing.assert_array_equal(a.proj_weight_, b.proj_weight_)
+    np.testing.assert_array_equal(a.proj_bias_, b.proj_bias_)
+
+
+def test_pretrain_weighting_matches_row_duplication():
+    """The weighted MSE in ``_pretrain`` reproduces row duplication. Tested at
+    the loss level (a fixed linear ``embed_fn``) to isolate the weighting from
+    the encoders' unweighted preprocessing stats (PLE edges / standardization),
+    which legitimately depend on the row multiset. With full-batch GD the
+    weighted fit's learned matrix tracks the duplicated-rows fit far more
+    closely than the unweighted fit."""
+    from repleafgbm.encoders.torch_encoders import _pretrain
+
+    rng = np.random.default_rng(0)
+    n, d, out = 150, 3, 2
+    X = rng.normal(size=(n, d)).astype(np.float32)
+    target = (np.sin(X[:, 0]) + 0.5 * X[:, 1]).astype(np.float32)
+    counts = np.where(X[:, 0] > 0.0, 5, 1).astype(np.int64)  # strong reweighting
+
+    def fit_W(Xa, ta, weight):
+        g = torch.Generator().manual_seed(0)
+        W = torch.nn.Parameter(torch.empty(d, out))
+        with torch.no_grad():
+            torch.nn.init.normal_(W, std=0.1, generator=g)
+        W0 = W.detach().clone().numpy()
+        _pretrain(torch, [W], lambda xb: xb @ W, Xa, ta, out_dim=out,
+                  n_epochs=80, lr=0.05, batch_size=10**9, seed=0,
+                  val_fraction=0.0, patience=0, weight=weight)
+        return W.detach().numpy(), W0
+
+    Wt, W0a = fit_W(X, target, counts.astype(np.float32))
+    Wd, W0b = fit_W(np.repeat(X, counts, axis=0), np.repeat(target, counts), None)
+    Wu, _ = fit_W(X, target, None)
+
+    np.testing.assert_allclose(W0a, W0b)  # identical init regardless of weighting
+    d_dup = float(np.mean((Wt - Wd) ** 2))
+    d_unw = float(np.mean((Wt - Wu) ** 2))
+    assert d_dup < 0.2 * d_unw
+
+
+def test_classifier_class_weight_reaches_encoder_pretraining():
+    """class_weight folds into the per-row weight that drives encoder
+    pretraining, so it changes the learned (frozen) encoder parameters."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 3))
+    y = (X[:, 0] + 0.5 * rng.normal(size=300) > 0.8).astype(int)  # imbalanced
+
+    common = dict(
+        n_estimators=1, num_leaves=2, min_samples_leaf=10,
+        leaf_model="embedded_linear", encoder="torch_plr",
+        encoder_params={"n_epochs": 15, "random_state": 0}, random_state=0,
+    )
+    plain = RepLeafClassifier(**common).fit(X, y)
+    balanced = RepLeafClassifier(class_weight="balanced", **common).fit(X, y)
+    assert not np.allclose(
+        plain.encoder_.proj_weight_, balanced.encoder_.proj_weight_
+    )

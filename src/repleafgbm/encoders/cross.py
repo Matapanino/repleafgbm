@@ -43,7 +43,12 @@ class CrossInteractionEncoder(BaseEncoder):
         self.prod_mean_: np.ndarray | None = None
         self.prod_scale_: np.ndarray | None = None
 
-    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> CrossInteractionEncoder:
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> CrossInteractionEncoder:
         X_num = np.asarray(X_num, dtype=np.float64)
         self.mean_ = np.nanmean(X_num, axis=0)
         std = np.nanstd(X_num, axis=0)

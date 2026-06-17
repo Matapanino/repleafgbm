@@ -58,13 +58,16 @@ class RepLeafRegressor(RegressorMixin, BaseRepLeafModel):
             )
         return super()._make_booster(params)
 
-    def _pretrain_target(self, dataset: RepLeafDataset) -> np.ndarray | None:
+    def _pretrain_target(
+        self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
+    ) -> np.ndarray | None:
         # The multi-output Newton residual is a matrix; learned-encoder
         # pretraining targets are scalar for now, so multi-output encoders fit
-        # unsupervised (identity/plr are unaffected).
+        # unsupervised (identity/plr are unaffected). A scalar multi-output
+        # pretraining target is a roadmap item (docs/roadmap.md).
         if getattr(self, "n_outputs_", 1) > 1:
             return None
-        return super()._pretrain_target(dataset)
+        return super()._pretrain_target(dataset, sample_weight=sample_weight)
 
     def predict(self, X: Any) -> np.ndarray:
         """Predict target values for X (array, DataFrame, or RepLeafDataset).

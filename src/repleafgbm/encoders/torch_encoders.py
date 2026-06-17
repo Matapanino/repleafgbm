@@ -46,11 +46,15 @@ def _require_torch():
 def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
               out_dim: int, n_epochs: int, lr: float, batch_size: int,
               seed: int, weight_decay: float = 0.0, val_fraction: float = 0.0,
-              patience: int = 0) -> int:
+              patience: int = 0, weight: np.ndarray | None = None) -> int:
     """Shared loop: regress a linear head on the embedding onto the target.
 
     Trains ``params`` (encoder parameters) jointly with a throwaway linear
-    head by minimizing MSE (AdamW); deterministic given ``seed``. CPU only.
+    head by minimizing MSE (AdamW); deterministic given ``seed``. Device-
+    agnostic (defaults to CPU; GPU pretraining is a Colab-only concern, not a
+    library default). When ``weight`` is given the MSE is per-row weighted so
+    encoder pretraining honors ``sample_weight``/``class_weight``; ``weight``
+    of ``None`` reproduces the unweighted computation exactly.
 
     Phase 14b regularization: a ``val_fraction`` split of the pretraining
     data is held out, training stops once its loss has not improved for
@@ -62,7 +66,22 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
     gen = torch.Generator().manual_seed(seed)
     X_t = torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32))
     t_t = torch.from_numpy(np.ascontiguousarray(target, dtype=np.float32))
-    t_t = (t_t - t_t.mean()) / (t_t.std() + 1e-12)
+    if weight is None:
+        t_t = (t_t - t_t.mean()) / (t_t.std() + 1e-12)
+        w_t = None
+    else:  # weighted target standardization (population weighted mean/std)
+        w_t = torch.from_numpy(np.ascontiguousarray(weight, dtype=np.float32))
+        w_sum = w_t.sum()
+        w_mean = (w_t * t_t).sum() / w_sum
+        w_var = (w_t * (t_t - w_mean) ** 2).sum() / w_sum
+        t_t = (t_t - w_mean) / (torch.sqrt(w_var) + 1e-12)
+
+    def _mse(pred, idx):  # weighted MSE; w_t is None -> plain mean (unchanged path)
+        err2 = (pred - t_t[idx]) ** 2
+        if w_t is None:
+            return torch.mean(err2)
+        wi = w_t[idx]
+        return (wi * err2).sum() / wi.sum()
 
     n = X_t.shape[0]
     perm0 = torch.randperm(n, generator=gen)
@@ -88,7 +107,7 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
         for start in range(0, n_train, batch_size):
             idx = order[start:start + batch_size]
             pred = head(embed_fn(X_t[idx])).squeeze(-1)
-            loss = torch.mean((pred - t_t[idx]) ** 2)
+            loss = _mse(pred, idx)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -96,7 +115,7 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
         if use_es:
             with torch.no_grad():
                 val_pred = head(embed_fn(X_t[val_idx])).squeeze(-1)
-                val_loss = float(torch.mean((val_pred - t_t[val_idx]) ** 2))
+                val_loss = float(_mse(val_pred, val_idx))
             if val_loss < best_val - 1e-7:
                 best_val = val_loss
                 rounds_since_best = 0
@@ -153,7 +172,12 @@ class TorchPeriodicEncoder(PeriodicEncoder):
         #: Epochs actually run by the last fit (early stopping diagnostic).
         self.pretrain_epochs_used_: int | None = None
 
-    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> TorchPeriodicEncoder:
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> TorchPeriodicEncoder:
         super().fit(X_num)  # frozen-random initialization + standardization
         if y is None:
             return self
@@ -177,7 +201,8 @@ class TorchPeriodicEncoder(PeriodicEncoder):
             out_dim=n_features * (self.n_frequencies + int(self.add_linear)),
             n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
             seed=self.random_state or 0, weight_decay=self.weight_decay,
-            val_fraction=self.val_fraction, patience=self.patience)
+            val_fraction=self.val_fraction, patience=self.patience,
+            weight=sample_weight)
 
         self.frequencies_ = freq.detach().numpy().astype(np.float64)
         self.phases_ = phase.detach().numpy().astype(np.float64)
@@ -251,7 +276,12 @@ class TorchMLPEncoder(BaseEncoder):
         self.w2_: np.ndarray | None = None  # (hidden_dim, out_dim)
         self.b2_: np.ndarray | None = None  # (out_dim,)
 
-    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> TorchMLPEncoder:
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> TorchMLPEncoder:
         from repleafgbm.utils.random import check_random_state
 
         X_num = np.asarray(X_num, dtype=np.float64)
@@ -287,7 +317,8 @@ class TorchMLPEncoder(BaseEncoder):
             out_dim=n_features * int(self.add_linear) + self.out_dim,
             n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
             seed=self.random_state or 0, weight_decay=self.weight_decay,
-            val_fraction=self.val_fraction, patience=self.patience)
+            val_fraction=self.val_fraction, patience=self.patience,
+            weight=sample_weight)
         self.w1_, self.b1_, self.w2_, self.b2_ = (
             p.detach().numpy().astype(np.float64) for p in params
         )
@@ -391,7 +422,12 @@ class TorchPLREncoder(SimplePLREncoder):
         n_features = self.edges_.shape[0]
         return flat.reshape(X_num.shape[0], n_features, self.n_bins + 1)
 
-    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> TorchPLREncoder:
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> TorchPLREncoder:
         super().fit(X_num)  # quantile edges + standardization stats
         from repleafgbm.utils.random import check_random_state
 
@@ -408,20 +444,21 @@ class TorchPLREncoder(SimplePLREncoder):
         torch = _require_torch()
         torch.manual_seed(self.random_state or 0)
         basis = self._basis(X_num).astype(np.float32)  # (n, F, d_in)
-        weight = torch.nn.Parameter(torch.from_numpy(self.proj_weight_.astype(np.float32)))
+        proj_w = torch.nn.Parameter(torch.from_numpy(self.proj_weight_.astype(np.float32)))
         bias_p = torch.nn.Parameter(torch.from_numpy(self.proj_bias_.astype(np.float32)))
 
         def embed(bb):  # (b, F, d_in) -> (b, F * n_outputs)
-            out = torch.relu(torch.einsum("bfi,fio->bfo", bb, weight) + bias_p)
+            out = torch.relu(torch.einsum("bfi,fio->bfo", bb, proj_w) + bias_p)
             return out.reshape(bb.shape[0], -1)
 
         self.pretrain_epochs_used_ = _pretrain(
-            torch, [weight, bias_p], embed, basis, y,
+            torch, [proj_w, bias_p], embed, basis, y,
             out_dim=n_features * self.n_outputs,
             n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
             seed=self.random_state or 0, weight_decay=self.weight_decay,
-            val_fraction=self.val_fraction, patience=self.patience)
-        self.proj_weight_ = weight.detach().numpy().astype(np.float64)
+            val_fraction=self.val_fraction, patience=self.patience,
+            weight=sample_weight)
+        self.proj_weight_ = proj_w.detach().numpy().astype(np.float64)
         self.proj_bias_ = bias_p.detach().numpy().astype(np.float64)
         return self
 
@@ -448,6 +485,155 @@ class TorchPLREncoder(SimplePLREncoder):
             "val_fraction": self.val_fraction,
             "patience": self.patience,
             "random_state": self.random_state,
+        }
+
+    def get_state(self) -> dict[str, np.ndarray]:
+        self._check_fitted("proj_weight_")
+        return {
+            **super().get_state(),
+            "proj_weight": self.proj_weight_,
+            "proj_bias": self.proj_bias_,
+        }
+
+    def set_state(self, state: dict[str, np.ndarray]) -> None:
+        super().set_state(state)
+        self.proj_weight_ = np.asarray(state["proj_weight"], dtype=np.float64)
+        self.proj_bias_ = np.asarray(state["proj_bias"], dtype=np.float64)
+
+
+class TorchPeriodicPLREncoder(PeriodicEncoder):
+    """Full rtdl *PeriodicEmbeddings*: learned periodic features followed by a
+    learned per-feature Linear+ReLU projection (Gorishniy et al. 2022).
+
+    Where ``torch_periodic`` learns only frequencies/phases (the *lite*
+    PeriodicEmbeddings), this adds the projection head on top — the periodic
+    counterpart of ``torch_plr``. The periodic basis (sinusoids plus an optional
+    standardized linear slot) of :class:`PeriodicEncoder` is mapped per feature
+    to ``n_outputs`` dims by a learned linear layer + ReLU, trained jointly with
+    the frequencies/phases on the supervised pretraining target and then frozen.
+    Output dimension: ``n_features * n_outputs``. Without a target the
+    frequencies/phases and projection stay at their seeded initialization.
+
+    Like the other torch encoders this is pretrained-then-frozen: torch is
+    needed only at fit time, while ``transform``/``get_state``/``set_state`` and
+    serialization are the NumPy implementations here. Extra args over
+    PeriodicEncoder: n_outputs, n_epochs, lr, batch_size, and the Phase 14b
+    pretraining-regularization knobs weight_decay, val_fraction, patience.
+    """
+
+    name = "torch_periodic_plr"
+
+    def __init__(
+        self,
+        n_frequencies: int = 4,
+        frequency_scale: float = 1.0,
+        add_linear: bool = True,
+        n_outputs: int = 4,
+        n_epochs: int = 30,
+        lr: float = 0.01,
+        batch_size: int = 256,
+        weight_decay: float = 1e-3,
+        val_fraction: float = 0.15,
+        patience: int = 5,
+        random_state: int | None = 0,
+    ) -> None:
+        super().__init__(n_frequencies=n_frequencies, frequency_scale=frequency_scale,
+                         add_linear=add_linear, random_state=random_state)
+        if n_outputs < 1:
+            raise ValueError(f"n_outputs must be >= 1, got {n_outputs}")
+        self.n_outputs = n_outputs
+        self.n_epochs = n_epochs
+        self.lr = lr
+        self.batch_size = batch_size
+        self.weight_decay = weight_decay
+        self.val_fraction = val_fraction
+        self.patience = patience
+        #: Epochs actually run by the last fit (early stopping diagnostic).
+        self.pretrain_epochs_used_: int | None = None
+        self.proj_weight_: np.ndarray | None = None  # (F, basis_dim, n_outputs)
+        self.proj_bias_: np.ndarray | None = None  # (F, n_outputs)
+
+    @property
+    def _basis_dim(self) -> int:
+        return self.n_frequencies + int(self.add_linear)
+
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> TorchPeriodicPLREncoder:
+        super().fit(X_num)  # frozen-random freq/phase init + standardization
+        from repleafgbm.utils.random import check_random_state
+
+        n_features = self.frequencies_.shape[0]
+        basis_dim = self._basis_dim
+        rng = check_random_state(self.random_state)
+        self.proj_weight_ = rng.normal(
+            0.0, 1.0 / np.sqrt(basis_dim), size=(n_features, basis_dim, self.n_outputs)
+        )
+        self.proj_bias_ = np.zeros((n_features, self.n_outputs))
+        if y is None:
+            return self
+
+        torch = _require_torch()
+        torch.manual_seed(self.random_state or 0)
+        x_std = (np.where(np.isnan(X_num), self.mean_, X_num) - self.mean_) / self.scale_
+        freq = torch.nn.Parameter(torch.from_numpy(self.frequencies_.astype(np.float32)))
+        phase = torch.nn.Parameter(torch.from_numpy(self.phases_.astype(np.float32)))
+        proj_w = torch.nn.Parameter(torch.from_numpy(self.proj_weight_.astype(np.float32)))
+        bias_p = torch.nn.Parameter(torch.from_numpy(self.proj_bias_.astype(np.float32)))
+
+        def embed(xb):  # (b, F) -> (b, F * n_outputs), matches transform
+            sines = torch.sin(2.0 * np.pi * (xb.unsqueeze(-1) * freq + phase))
+            parts = [sines]
+            if self.add_linear:
+                parts.append(xb.unsqueeze(-1))
+            basis = torch.cat(parts, dim=-1)  # (b, F, basis_dim)
+            out = torch.relu(torch.einsum("bfi,fio->bfo", basis, proj_w) + bias_p)
+            return out.reshape(xb.shape[0], -1)
+
+        self.pretrain_epochs_used_ = _pretrain(
+            torch, [freq, phase, proj_w, bias_p], embed, x_std, y,
+            out_dim=n_features * self.n_outputs,
+            n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
+            seed=self.random_state or 0, weight_decay=self.weight_decay,
+            val_fraction=self.val_fraction, patience=self.patience,
+            weight=sample_weight)
+        self.frequencies_ = freq.detach().numpy().astype(np.float64)
+        self.phases_ = phase.detach().numpy().astype(np.float64)
+        self.proj_weight_ = proj_w.detach().numpy().astype(np.float64)
+        self.proj_bias_ = bias_p.detach().numpy().astype(np.float64)
+        return self
+
+    def _basis(self, X_num: np.ndarray) -> np.ndarray:
+        """(n, F, basis_dim) periodic basis (sinusoids + optional linear slot)."""
+        flat = super().transform(X_num)
+        n_features = self.frequencies_.shape[0]
+        return flat.reshape(X_num.shape[0], n_features, self._basis_dim)
+
+    def transform(self, X_num: np.ndarray) -> np.ndarray:
+        self._check_fitted("proj_weight_")
+        basis = self._basis(X_num)  # NumPy only
+        out = np.einsum("bfi,fio->bfo", basis, self.proj_weight_) + self.proj_bias_
+        np.maximum(out, 0.0, out=out)
+        return out.reshape(X_num.shape[0], -1)
+
+    @property
+    def output_dim(self) -> int:
+        self._check_fitted("proj_weight_")
+        return int(self.proj_weight_.shape[0] * self.n_outputs)
+
+    def get_config(self) -> dict:
+        return {
+            **super().get_config(),
+            "n_outputs": self.n_outputs,
+            "n_epochs": self.n_epochs,
+            "lr": self.lr,
+            "batch_size": self.batch_size,
+            "weight_decay": self.weight_decay,
+            "val_fraction": self.val_fraction,
+            "patience": self.patience,
         }
 
     def get_state(self) -> dict[str, np.ndarray]:

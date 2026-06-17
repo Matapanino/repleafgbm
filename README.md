@@ -138,7 +138,7 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"plr"` | Piecewise-linear + linear term. |
 | `"periodic"` | Frozen sinusoidal (PBLD-style) features. |
 | `"cross"` | Residual-correlated pairwise products (interactions). |
-| `"torch_periodic"` / `"torch_plr"` / `"torch_mlp"` | Learned encoders (`[torch]` extra; pretrained on the initial residual then frozen — torch is needed only at fit time). |
+| `"torch_periodic"` / `"torch_plr"` / `"torch_periodic_plr"` / `"torch_mlp"` | Learned encoders (`[torch]` extra; supervised-pretrained on the initial residual then frozen — torch is needed only at fit time, not at predict). |
 
 API stability follows [Semantic Versioning](https://semver.org) from 1.0.0;
 exactly what is covered vs. experimental is in

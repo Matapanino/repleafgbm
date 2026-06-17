@@ -63,7 +63,12 @@ class PeriodicEncoder(BaseEncoder):
         self.frequencies_: np.ndarray | None = None  # (n_features, n_frequencies)
         self.phases_: np.ndarray | None = None  # (n_features, n_frequencies)
 
-    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> PeriodicEncoder:
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> PeriodicEncoder:
         X_num = np.asarray(X_num, dtype=np.float64)
         n_features = X_num.shape[1]
         self.mean_ = np.nan_to_num(np.nanmean(X_num, axis=0), nan=0.0)

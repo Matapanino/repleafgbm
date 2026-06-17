@@ -101,9 +101,15 @@ Encoders (all NumPy, frozen; see `encoders/`):
   frequencies/phases plus a linear term. With frozen random frequencies it
   never beat `identity`; kept as the initialization/baseline for the learned
   version.
-- `torch_periodic` / `torch_plr` (optional `[torch]` extra) — the learned
-  versions: parameters are pretrained on the initial Newton residual and
-  then frozen, so the v0 frozen-encoder rule holds. torch is required only
+- `torch_periodic` / `torch_plr` / `torch_periodic_plr` (optional `[torch]`
+  extra) — the learned versions, mirroring rtdl-num-embeddings (Gorishniy
+  et al. 2022): `torch_plr` is the full *PiecewiseLinearEmbeddings* (a learned
+  per-feature Linear+ReLU over the PLE basis), `torch_periodic` is the *lite*
+  *PeriodicEmbeddings* (learned frequencies/phases only), and
+  `torch_periodic_plr` is the full *PeriodicEmbeddings* (periodic basis + a
+  learned per-feature Linear+ReLU). Parameters are pretrained on the initial
+  Newton residual and then frozen, so the v0 frozen-encoder rule holds — they
+  are pretrained-then-frozen, **not** joint-trainable. torch is required only
   at fit time; transform and serialization are NumPy. **Specialist tools**:
   decisively best on targets with genuine per-feature smooth/oscillatory
   structure (encoder_variants.md), but they overfit and lose to `identity`
@@ -121,6 +127,15 @@ Encoders (all NumPy, frozen; see `encoders/`):
   (encoder_interactions.md home turf) and both lose to `identity` on every
   real dataset tested — the router already captures the interactions that
   matter there. Opt-in specialists, like the per-feature learned encoders.
+
+Learned-encoder pretraining is **supervised on a scalar Newton residual** and
+honors `sample_weight`/`class_weight`: the residual is taken at the *weighted*
+initial score and the pretraining loss is per-row weighted. It is therefore
+active for regression and binary classification only — for **multiclass and
+multi-output** the residual is a per-row matrix, so those encoders fit
+**unsupervised** (a scalar multiclass/multi-output pretraining target is a
+roadmap item, docs/roadmap.md). Fixed encoders (`identity`/`plr`/`periodic`/
+`cross`) ignore weights.
 
 All linear leaves are fitted by Hessian-weighted ridge regression on Newton
 targets (docs/math.md). Overfitting guards, all implemented:

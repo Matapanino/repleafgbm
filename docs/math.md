@@ -212,7 +212,9 @@ prediction-cache invalidation. That is a roadmap item, not a v0 feature.
 - Native training routes missing values left at every split (no learned
   default direction); extracted external routes may carry per-node
   directions.
-- PLR here is a simplified, unlearned piecewise-linear basis — not the full
-  embedding of Gorishniy et al. (2022).
+- The fixed `plr` encoder here is a simplified, unlearned piecewise-linear
+  basis — not the full embedding of Gorishniy et al. (2022). The *learned*
+  `torch_plr` is that full embedding (a per-feature Linear+ReLU over the basis,
+  pretrained then frozen).
 - Random projection to `max_leaf_emb_dim` preserves structure only in
   expectation; informative dimensions may be diluted.
