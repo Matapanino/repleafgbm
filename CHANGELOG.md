@@ -5,6 +5,44 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.4.0] - 2026-06-17
+
+Vector `(n, K)` encoder pretraining target: learned encoders now pretrain
+*supervised* on multiclass and multi-output targets, closing the scalar-target
+limitation noted in 1.3.0. Opt-in and backwards-compatible — the default encoder
+(`identity`), the leaf math, the model format, and NumPy/Rust/CUDA parity are
+unchanged; scalar (regression / binary / single-output) pretraining is
+**bit-for-bit identical**.
+
+### Changed
+- **Learned-encoder pretraining generalized to an `(n, K)` target.** For 3+
+  classes and multi-output regression, `_pretrain_target` now returns the
+  negative-gradient residual *matrix* at the initial score (`onehot -
+  softmax(F0)` for multiclass, `Y - mean` for multi-output) and the throwaway
+  pretraining head emits `K` outputs (per-output standardization, loss averaged
+  over rows and outputs; docs/math.md). Previously these encoders fit
+  *unsupervised* because the residual is a matrix. torch is still needed only at
+  fit time — `transform` and serialization stay NumPy, and saved models load and
+  predict without torch.
+  - Consequence: a `torch_*` encoder chosen for a multiclass / multi-output
+    model now **requires torch at fit** (it pretrains) rather than silently
+    fitting unsupervised.
+  - Scalar targets are unchanged: `weight=None` / `K=1` reproduces the prior
+    pretraining bit-for-bit.
+
+### Added
+- **`experiments/vector_target_pretraining.py`** — before/after study isolating
+  the vector-target change on real OpenML multiclass (`wine`, `vehicle`) and a
+  synthetic multi-output target (seeds ≥ 5, mean ± std). On the
+  encoder-favorable multi-output target it is a clear win (`torch_periodic_plr`
+  RMSE 0.51 → 0.41, best overall); on the small real multiclass sets the gain is
+  within seed noise.
+- `benchmarks/trainable_embeddings.py` summary now reports **mean ± std** over
+  seeds.
+
+### Notes
+- No default changed; `repleafgbm-native` is unchanged (no Rust changes).
+
 ## [1.3.0] - 2026-06-17
 
 Trainable-embeddings track: a new learned encoder and weighted encoder
