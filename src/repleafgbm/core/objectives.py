@@ -9,6 +9,7 @@ models are fitted to the Newton targets ``-g / h`` with weights ``h``
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
@@ -232,6 +233,30 @@ class MulticlassSoftmax:
         return _softmax(raw_pred)
 
 
+@runtime_checkable
+class MultiOutputObjective(Protocol):
+    """Structural interface for multi-output (vector-valued) regression losses.
+
+    The vector-valued counterpart of :class:`BaseObjective`, consumed by
+    :class:`~repleafgbm.core.multioutput.MultiOutputBooster`. Raw scores and
+    targets are ``(n_rows, n_outputs)`` matrices; ``init_score`` returns a
+    ``(n_outputs,)`` vector. Every implementation keeps a **constant Hessian**
+    (``h = 1``) so the shared-Gram vector-leaf solve in ``core.multioutput``
+    applies unchanged (docs/math.md).
+    """
+
+    name: str
+    n_outputs: int
+
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> np.ndarray: ...
+
+    def grad_hess(
+        self, y: np.ndarray, raw_pred: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]: ...
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray: ...
+
+
 class MultiOutputSquaredError:
     """Squared error for multi-output (vector-valued) regression.
 
@@ -262,6 +287,86 @@ class MultiOutputSquaredError:
     def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Per-row, per-output gradient and Hessian, both (n_rows, n_outputs)."""
         return raw_pred - y, np.ones_like(y)
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray:
+        return raw_pred
+
+
+class MultiOutputHuber:
+    """Huber loss for multi-output (vector-valued), outlier-robust regression.
+
+    The vector-valued counterpart of :class:`Huber`: raw scores and targets are
+    (n_rows, n_outputs) matrices sharing one routing tree. Per output,
+    g = clip(F - Y, -delta, delta) and h = 1 (the LightGBM convention, as in
+    :class:`Huber`). Because the Hessian stays constant across outputs, the
+    shared-Gram vector-leaf solve in :mod:`repleafgbm.core.multioutput` applies
+    unchanged — only the gradient (clipped residuals) and the init score (the
+    per-output median) differ from squared error.
+    """
+
+    name = "multioutput_huber"
+
+    def __init__(self, n_outputs: int, delta: float = 1.0) -> None:
+        if n_outputs < 2:
+            raise ValueError(
+                f"MultiOutputHuber requires n_outputs >= 2, got {n_outputs}; "
+                "use objective='huber' for a single target"
+            )
+        if delta <= 0:
+            raise ValueError(f"huber delta must be positive, got {delta}")
+        self.n_outputs = n_outputs
+        self.delta = delta
+
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> np.ndarray:
+        """Per-output (weighted) medians, shape (n_outputs,)."""
+        return np.array(
+            [_weighted_quantile(y[:, k], 0.5, weight) for k in range(y.shape[1])],
+            dtype=np.float64,
+        )
+
+    def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-row, per-output gradient and Hessian, both (n_rows, n_outputs)."""
+        return np.clip(raw_pred - y, -self.delta, self.delta), np.ones_like(y)
+
+    def transform(self, raw_pred: np.ndarray) -> np.ndarray:
+        return raw_pred
+
+
+class MultiOutputQuantile:
+    """Pinball (quantile) loss for multi-output regression: each output is the
+    alpha-quantile of its target.
+
+    The vector-valued counterpart of :class:`Quantile`: raw scores and targets
+    are (n_rows, n_outputs) matrices sharing one routing tree. Per output,
+    g = (1 - alpha) where F >= Y and -alpha where F < Y, and h = 1 — the same
+    constant-Hessian, piecewise-linear objective as :class:`Quantile`, so the
+    shared-Gram vector-leaf solve applies unchanged.
+    """
+
+    name = "multioutput_quantile"
+
+    def __init__(self, n_outputs: int, alpha: float = 0.5) -> None:
+        if n_outputs < 2:
+            raise ValueError(
+                f"MultiOutputQuantile requires n_outputs >= 2, got {n_outputs}; "
+                "use objective='quantile' for a single target"
+            )
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"quantile alpha must be in (0, 1), got {alpha}")
+        self.n_outputs = n_outputs
+        self.alpha = alpha
+
+    def init_score(self, y: np.ndarray, weight: np.ndarray | None = None) -> np.ndarray:
+        """Per-output (weighted) alpha-quantiles, shape (n_outputs,)."""
+        return np.array(
+            [_weighted_quantile(y[:, k], self.alpha, weight) for k in range(y.shape[1])],
+            dtype=np.float64,
+        )
+
+    def grad_hess(self, y: np.ndarray, raw_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-row, per-output gradient and Hessian, both (n_rows, n_outputs)."""
+        grad = np.where(raw_pred >= y, 1.0 - self.alpha, -self.alpha)
+        return grad, np.ones_like(y)
 
     def transform(self, raw_pred: np.ndarray) -> np.ndarray:
         return raw_pred
@@ -327,3 +432,24 @@ def get_objective(name: str) -> BaseObjective:
             f"Unknown objective {name!r}. Available: {sorted(_OBJECTIVE_REGISTRY)}"
         )
     return _OBJECTIVE_REGISTRY[name]()
+
+
+#: Multi-output regression objectives, keyed by ``.name``. Each is constructed
+#: with ``n_outputs`` and default loss parameters (delta / alpha) — fidelity of
+#: those parameters is a fit-time concern only, since every multi-output loss
+#: has an identity output transform, so a *fitted* model predicts identically
+#: regardless (used by :mod:`repleafgbm.core.serialization` on load).
+_MULTIOUTPUT_OBJECTIVE_REGISTRY: dict[str, type] = {
+    MultiOutputSquaredError.name: MultiOutputSquaredError,
+    MultiOutputHuber.name: MultiOutputHuber,
+    MultiOutputQuantile.name: MultiOutputQuantile,
+}
+
+
+def get_multioutput_objective(name: str, n_outputs: int) -> MultiOutputObjective:
+    if name not in _MULTIOUTPUT_OBJECTIVE_REGISTRY:
+        raise ValueError(
+            f"Unknown multi-output objective {name!r}. "
+            f"Available: {sorted(_MULTIOUTPUT_OBJECTIVE_REGISTRY)}"
+        )
+    return _MULTIOUTPUT_OBJECTIVE_REGISTRY[name](n_outputs)

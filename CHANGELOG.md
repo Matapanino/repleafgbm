@@ -5,6 +5,45 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.5.0] - 2026-06-17
+
+Multi-output robust objectives and opt-in GPU encoder pretraining. Both are
+backward-compatible additions — the defaults (squared-error multi-output,
+CPU pretraining, `identity` encoder), the leaf math, the model format, and
+NumPy/Rust/CUDA parity are unchanged; existing models load and predict
+bit-for-bit identically.
+
+### Added
+- **Multi-output Huber and quantile losses.** `RepLeafRegressor` with a 2-D `y`
+  now accepts `objective="huber"`/`"quantile"` (or instances like
+  `Quantile(alpha=0.9)`) in addition to squared error, closing the Phase 22
+  "squared-error only" limitation. Because these losses keep a constant Hessian
+  (`h = 1`), the shared-Gram vector-leaf solve and the multi-output split scan
+  are reused unchanged — only the gradient (clipped / pinball residual) and the
+  per-output init score (median / alpha-quantile) differ (docs/math.md).
+  `objective="poisson"` stays rejected for multi-output (non-constant Hessian).
+  New `MultiOutputHuber` / `MultiOutputQuantile` objectives; serialization
+  (format v6, unchanged) reconstructs the loss by name on load.
+- **Opt-in GPU pretraining for learned encoders.** The torch encoders
+  (`torch_periodic`, `torch_plr`, `torch_periodic_plr`, `torch_mlp`) take a
+  `device` knob (`"cpu"` default, `"cuda"`, `"auto"`) via `encoder_params`.
+  Only the one-time pretraining `fit` uses the device; `transform`/serialization
+  stay NumPy (no torch at predict). All random draws use a CPU generator, so the
+  stream is device-independent and `device="cpu"` reproduces prior pretraining
+  **byte-for-byte**; GPU is allclose-only (CPU stays the deterministic default),
+  validated on the Colab loop (docs/cuda.md).
+- **`experiments/multioutput_real_and_robust.py`** — real multi-output
+  validation (OpenML energy-efficiency) plus a robustness study. Under 8%
+  heavy-tailed contamination of the training targets, huber (real RMSE 2.22,
+  r² 0.94) and quantile (3.87) decisively beat squared error (12.49, r² −0.77);
+  RepLeaf multi-output beats a per-output LightGBM reference (1.32 vs 1.71) and
+  the `(n, K)` vector-pretraining before/after gap is seed noise on real data.
+
+### Changed
+- Multi-output robust-loss support documented in the `RepLeafRegressor`
+  docstring, `docs/roadmap.md` (Phase 31), and `docs/math.md` (the
+  constant-Hessian family); NumPy↔Rust parity extended to the new objectives.
+
 ## [1.4.0] - 2026-06-17
 
 Vector `(n, K)` encoder pretraining target: learned encoders now pretrain

@@ -342,12 +342,46 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
   Serialization format v6 (`n_outputs` + vector init_score, 2-D bias / 3-D
   weights). Tests (tests/test_multioutput.py), example
   (examples/multioutput_regression_basic.py), math.md vector-leaf section
-- Scope (documented limitations): multi-output is **squared-error only**
-  (Huber/quantile multi-output is a future extension), categorical features
-  route via **ordered thresholds** on the ordinal code rather than
-  gradient-sorted subset splits (single-output keeps subset splits), and the
-  Rust backend builds the per-output histograms but the multi-output split
-  scan stays NumPy (Rust kernel is a possible v2 follow-up)
+- Scope (documented limitations): multi-output was **squared-error only** at
+  Phase 22 (Huber/quantile multi-output now shipped, see Phase 31 below),
+  categorical features route via **ordered thresholds** on the ordinal code
+  rather than gradient-sorted subset splits (single-output keeps subset
+  splits), and the Rust backend builds the per-output histograms but the
+  multi-output split scan stays NumPy (Rust kernel is a possible v2 follow-up)
+
+## Phase 31 — multi-output robust losses + opt-in GPU encoder pretraining ✅ (2026-06-17)
+
+- **Multi-output Huber/quantile** (`core/objectives.py`:
+  `MultiOutputHuber`, `MultiOutputQuantile`): the constant-Hessian (`h = 1`)
+  family extends cleanly to vector leaves — only the gradient (clipped /
+  pinball residual) and the init score (per-output median / alpha-quantile)
+  differ from squared error, so `fit_vector_leaves`' shared-Gram solve and the
+  multi-output split scan are reused **unchanged** (docs/math.md).
+  `RepLeafRegressor` now maps `objective="huber"`/`"quantile"` (or instances
+  like `Quantile(alpha=0.9)`) onto these for 2-D `y`; poisson stays rejected
+  (its Hessian is not constant across outputs). Serialization (format v6,
+  unchanged) reconstructs the loss by name on load; every multi-output loss has
+  an identity transform, so a fitted model predicts identically regardless.
+  Tests: fit/predict, determinism, save/load, NumPy↔Rust parity, and an
+  outlier-robustness check (tests/test_multioutput.py, test_rust_backend.py).
+  Validated (5 seeds) in
+  experiments/results/2026-06-17-multioutput-real-and-robust.md: under 8%
+  heavy-tailed contamination of the training targets, huber (real RMSE 2.22,
+  r² 0.94) and quantile (3.87) decisively beat squared error (12.49, r² −0.77),
+  with the same picture on a synthetic clean-signal target. The study also
+  closes the v1.4.0 loose end that the `(n, K)` vector target was synthetic-only:
+  on real multi-output (energy-efficiency) RepLeaf beats a per-output LightGBM
+  reference (RMSE 1.32 vs 1.71) and the before/after vector-pretraining gap is
+  seed noise — identity stays the best default, as on the single-output real data.
+- **Opt-in GPU pretraining for learned encoders** (`encoders/torch_encoders.py`):
+  a `device` knob (`"cpu"` default, `"cuda"`, `"auto"`) selects where the torch
+  pretraining matmuls run; all random draws stay on a CPU generator so the
+  stream is device-independent and `device="cpu"` reproduces prior pretraining
+  byte-for-byte. `transform`/serialization remain NumPy-frozen (no torch at
+  predict). GPU is **allclose, not bitwise** (GPU reductions reorder), so CPU
+  stays the deterministic default and GPU correctness is validated only on the
+  Colab T4 loop (docs/cuda.md). Closes the "only `split_backend="cuda"` uses the
+  GPU" gap; payoff is scale-dependent (large n / wide periodic embeddings).
 
 ## Phase 23 — label smoothing ✅ (2026-06-15)
 
@@ -423,7 +457,7 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 - ~~Multiclass classification (softmax)~~ done in Phase 17 (one tree per
   class per round)
 - ~~Vector leaves (multi-output regression)~~ done in Phase 22 (shared-routing
-  vector leaves; squared-error only)
+  vector leaves; squared error), extended to Huber/quantile in Phase 31
 - ~~Improved objectives (Huber, quantile, Poisson)~~ done in Phase 18;
   ~~label smoothing~~ done in Phase 23
 

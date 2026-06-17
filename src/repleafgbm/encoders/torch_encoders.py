@@ -45,18 +45,37 @@ def _require_torch():
     return torch
 
 
+def _resolve_device(torch, device: str):
+    """Resolve a ``device`` string to a ``torch.device``.
+
+    ``"cpu"`` (the default) and ``"cuda"`` are passed through; ``"auto"`` picks
+    CUDA when available, else CPU. GPU pretraining is opt-in and only validated
+    on the Colab T4 loop (scripts/colab_gpu_test.sh); like ``split_backend=
+    "cuda"`` it is **allclose, not bitwise** reproducible (GPU reductions
+    reorder), so CPU stays the deterministic default (docs/cuda.md).
+    """
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
+
+
 def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
               out_dim: int, n_epochs: int, lr: float, batch_size: int,
               seed: int, weight_decay: float = 0.0, val_fraction: float = 0.0,
-              patience: int = 0, weight: np.ndarray | None = None) -> int:
+              patience: int = 0, weight: np.ndarray | None = None,
+              device: str = "cpu") -> int:
     """Shared loop: regress a linear head on the embedding onto the target.
 
     Trains ``params`` (encoder parameters) jointly with a throwaway linear
-    head by minimizing MSE (AdamW); deterministic given ``seed``. Device-
-    agnostic (defaults to CPU; GPU pretraining is a Colab-only concern, not a
-    library default). When ``weight`` is given the MSE is per-row weighted so
-    encoder pretraining honors ``sample_weight``/``class_weight``; ``weight``
-    of ``None`` reproduces the unweighted computation exactly.
+    head by minimizing MSE (AdamW). All random draws (head init, batch
+    permutations) use a CPU :class:`torch.Generator` seeded by ``seed`` and are
+    only moved onto ``device`` afterwards, so the *random stream* is
+    device-independent and ``device="cpu"`` reproduces the prior pretraining
+    byte-for-byte. ``device`` selects where the matmuls run (``"cpu"`` default,
+    ``"cuda"``, or ``"auto"``); GPU is allclose-only (see
+    :func:`_resolve_device`). When ``weight`` is given the MSE is per-row
+    weighted so encoder pretraining honors ``sample_weight``/``class_weight``;
+    ``weight`` of ``None`` reproduces the unweighted computation exactly.
 
     ``target`` is either a 1-D ``(n,)`` Newton residual (regression / binary)
     or a 2-D ``(n, K)`` residual matrix (multiclass / multi-output). The 2-D
@@ -72,9 +91,16 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
     experiments/results/real_data_validation.md (Phase 14). Returns the
     number of epochs actually run.
     """
-    gen = torch.Generator().manual_seed(seed)
-    X_t = torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32))
-    t_t = torch.from_numpy(np.ascontiguousarray(target, dtype=np.float32))
+    gen = torch.Generator().manual_seed(seed)  # CPU generator (device-independent)
+    dev = _resolve_device(torch, device)
+    # Train the caller's encoder parameters on the chosen device (the embed_fn
+    # closures hold these same objects, and the caller freezes them afterwards).
+    for p in params:
+        p.data = p.data.to(dev)
+    # ``.to(dev)`` is a no-op for CPU tensors (returns self), so the device="cpu"
+    # path stays byte-identical to the pre-device implementation.
+    X_t = torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32)).to(dev)
+    t_t = torch.from_numpy(np.ascontiguousarray(target, dtype=np.float32)).to(dev)
     # A 2-D ``(n, K)`` target is the multiclass/multi-output Newton residual:
     # the throwaway head emits K outputs, standardization is per-output, and the
     # loss averages over rows and outputs. A 1-D target keeps the scalar path
@@ -89,7 +115,7 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
             t_t = (t_t - t_t.mean()) / (t_t.std() + 1e-12)
         w_t = None
     else:  # weighted target standardization (population weighted mean/std)
-        w_t = torch.from_numpy(np.ascontiguousarray(weight, dtype=np.float32))
+        w_t = torch.from_numpy(np.ascontiguousarray(weight, dtype=np.float32)).to(dev)
         w_sum = w_t.sum()
         if vector:
             wc = w_t.unsqueeze(-1)
@@ -111,7 +137,7 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
         return (wi * err2).sum() / wi.sum()
 
     n = X_t.shape[0]
-    perm0 = torch.randperm(n, generator=gen)
+    perm0 = torch.randperm(n, generator=gen).to(dev)
     n_val = int(n * val_fraction) if patience > 0 else 0
     use_es = n_val >= 16
     val_idx = perm0[:n_val] if use_es else None
@@ -121,6 +147,7 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
     with torch.no_grad():
         torch.nn.init.normal_(head.weight, std=0.01, generator=gen)
         torch.nn.init.zeros_(head.bias)
+    head = head.to(dev)  # init on CPU with ``gen``, then move (keeps RNG stream)
     opt = torch.optim.AdamW(list(params) + list(head.parameters()), lr=lr,
                             weight_decay=weight_decay)
 
@@ -130,7 +157,7 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
     epochs_used = 0
     n_train = train_idx.shape[0]
     for _ in range(n_epochs):
-        order = train_idx[torch.randperm(n_train, generator=gen)]
+        order = train_idx[torch.randperm(n_train, generator=gen).to(dev)]
         for start in range(0, n_train, batch_size):
             idx = order[start:start + batch_size]
             pred = head(embed_fn(X_t[idx]))
@@ -191,9 +218,11 @@ class TorchPeriodicEncoder(PeriodicEncoder):
         val_fraction: float = 0.15,
         patience: int = 5,
         random_state: int | None = 0,
+        device: str = "cpu",
     ) -> None:
         super().__init__(n_frequencies=n_frequencies, frequency_scale=frequency_scale,
                          add_linear=add_linear, random_state=random_state)
+        self.device = device
         self.n_epochs = n_epochs
         self.lr = lr
         self.batch_size = batch_size
@@ -233,10 +262,10 @@ class TorchPeriodicEncoder(PeriodicEncoder):
             n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
             seed=self.random_state or 0, weight_decay=self.weight_decay,
             val_fraction=self.val_fraction, patience=self.patience,
-            weight=sample_weight)
+            weight=sample_weight, device=self.device)
 
-        self.frequencies_ = freq.detach().numpy().astype(np.float64)
-        self.phases_ = phase.detach().numpy().astype(np.float64)
+        self.frequencies_ = freq.detach().cpu().numpy().astype(np.float64)
+        self.phases_ = phase.detach().cpu().numpy().astype(np.float64)
         return self
 
     def get_config(self) -> dict:
@@ -248,6 +277,7 @@ class TorchPeriodicEncoder(PeriodicEncoder):
             "weight_decay": self.weight_decay,
             "val_fraction": self.val_fraction,
             "patience": self.patience,
+            "device": self.device,
         }
 
 
@@ -283,11 +313,13 @@ class TorchMLPEncoder(BaseEncoder):
         val_fraction: float = 0.15,
         patience: int = 5,
         random_state: int | None = 0,
+        device: str = "cpu",
     ) -> None:
         if hidden_dim < 1 or out_dim < 1:
             raise ValueError(
                 f"hidden_dim and out_dim must be >= 1, got {hidden_dim}, {out_dim}"
             )
+        self.device = device
         self.hidden_dim = hidden_dim
         self.out_dim = out_dim
         self.add_linear = add_linear
@@ -349,9 +381,9 @@ class TorchMLPEncoder(BaseEncoder):
             n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
             seed=self.random_state or 0, weight_decay=self.weight_decay,
             val_fraction=self.val_fraction, patience=self.patience,
-            weight=sample_weight)
+            weight=sample_weight, device=self.device)
         self.w1_, self.b1_, self.w2_, self.b2_ = (
-            p.detach().numpy().astype(np.float64) for p in params
+            p.detach().cpu().numpy().astype(np.float64) for p in params
         )
         return self
 
@@ -384,6 +416,7 @@ class TorchMLPEncoder(BaseEncoder):
             "val_fraction": self.val_fraction,
             "patience": self.patience,
             "random_state": self.random_state,
+            "device": self.device,
         }
 
     def get_state(self) -> dict[str, np.ndarray]:
@@ -430,10 +463,12 @@ class TorchPLREncoder(SimplePLREncoder):
         val_fraction: float = 0.15,
         patience: int = 5,
         random_state: int | None = 0,
+        device: str = "cpu",
     ) -> None:
         super().__init__(n_bins=n_bins, add_linear=True)
         if n_outputs < 1:
             raise ValueError(f"n_outputs must be >= 1, got {n_outputs}")
+        self.device = device
         self.n_outputs = n_outputs
         self.n_epochs = n_epochs
         self.lr = lr
@@ -488,9 +523,9 @@ class TorchPLREncoder(SimplePLREncoder):
             n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
             seed=self.random_state or 0, weight_decay=self.weight_decay,
             val_fraction=self.val_fraction, patience=self.patience,
-            weight=sample_weight)
-        self.proj_weight_ = proj_w.detach().numpy().astype(np.float64)
-        self.proj_bias_ = bias_p.detach().numpy().astype(np.float64)
+            weight=sample_weight, device=self.device)
+        self.proj_weight_ = proj_w.detach().cpu().numpy().astype(np.float64)
+        self.proj_bias_ = bias_p.detach().cpu().numpy().astype(np.float64)
         return self
 
     def transform(self, X_num: np.ndarray) -> np.ndarray:
@@ -516,6 +551,7 @@ class TorchPLREncoder(SimplePLREncoder):
             "val_fraction": self.val_fraction,
             "patience": self.patience,
             "random_state": self.random_state,
+            "device": self.device,
         }
 
     def get_state(self) -> dict[str, np.ndarray]:
@@ -567,11 +603,13 @@ class TorchPeriodicPLREncoder(PeriodicEncoder):
         val_fraction: float = 0.15,
         patience: int = 5,
         random_state: int | None = 0,
+        device: str = "cpu",
     ) -> None:
         super().__init__(n_frequencies=n_frequencies, frequency_scale=frequency_scale,
                          add_linear=add_linear, random_state=random_state)
         if n_outputs < 1:
             raise ValueError(f"n_outputs must be >= 1, got {n_outputs}")
+        self.device = device
         self.n_outputs = n_outputs
         self.n_epochs = n_epochs
         self.lr = lr
@@ -630,11 +668,11 @@ class TorchPeriodicPLREncoder(PeriodicEncoder):
             n_epochs=self.n_epochs, lr=self.lr, batch_size=self.batch_size,
             seed=self.random_state or 0, weight_decay=self.weight_decay,
             val_fraction=self.val_fraction, patience=self.patience,
-            weight=sample_weight)
-        self.frequencies_ = freq.detach().numpy().astype(np.float64)
-        self.phases_ = phase.detach().numpy().astype(np.float64)
-        self.proj_weight_ = proj_w.detach().numpy().astype(np.float64)
-        self.proj_bias_ = bias_p.detach().numpy().astype(np.float64)
+            weight=sample_weight, device=self.device)
+        self.frequencies_ = freq.detach().cpu().numpy().astype(np.float64)
+        self.phases_ = phase.detach().cpu().numpy().astype(np.float64)
+        self.proj_weight_ = proj_w.detach().cpu().numpy().astype(np.float64)
+        self.proj_bias_ = bias_p.detach().cpu().numpy().astype(np.float64)
         return self
 
     def _basis(self, X_num: np.ndarray) -> np.ndarray:
@@ -665,6 +703,7 @@ class TorchPeriodicPLREncoder(PeriodicEncoder):
             "weight_decay": self.weight_decay,
             "val_fraction": self.val_fraction,
             "patience": self.patience,
+            "device": self.device,
         }
 
     def get_state(self) -> dict[str, np.ndarray]:

@@ -30,7 +30,7 @@ from repleafgbm.core.multiclass import MulticlassBooster
 from repleafgbm.core.multioutput import MultiOutputBooster
 from repleafgbm.core.objectives import (
     MulticlassSoftmax,
-    MultiOutputSquaredError,
+    get_multioutput_objective,
     get_objective,
 )
 from repleafgbm.core.tree import Tree
@@ -181,7 +181,14 @@ def load_model_dir(path: str | Path) -> dict:
         max_bins=config.get("max_bins", defaults.max_bins),
     )
     if "n_outputs" in ensemble:  # multi-output ensemble (format v6)
-        mo_objective = MultiOutputSquaredError(int(ensemble["n_outputs"]))
+        # The saved objective name selects the loss (squared_error / huber /
+        # quantile); loss parameters are not persisted, but every multi-output
+        # loss has an identity transform, so a fitted model predicts
+        # identically regardless. Pre-huber/quantile models stored
+        # "multioutput_squared_error" and still resolve here.
+        mo_objective = get_multioutput_objective(
+            model_config["objective"], int(ensemble["n_outputs"])
+        )
         booster: Booster | MulticlassBooster | MultiOutputBooster = MultiOutputBooster(
             params, mo_objective
         )

@@ -144,6 +144,28 @@ def test_determinism(periodic_problem):
     np.testing.assert_array_equal(e1.phases_, e2.phases_)
 
 
+@pytest.mark.parametrize(
+    "cls",
+    [TorchPeriodicEncoder, TorchPLREncoder, TorchPeriodicPLREncoder, TorchMLPEncoder],
+)
+def test_device_cpu_default_and_auto_fallback(periodic_problem, cls):
+    """Pretraining device is opt-in: it defaults to CPU, explicit ``"cpu"``
+    reproduces the default pretraining byte-for-byte, ``"auto"`` falls back to
+    CPU when no GPU is present, and ``device`` round-trips in the config. GPU
+    (allclose-only) correctness is validated separately on the Colab loop."""
+    X, y = periodic_problem
+    default = cls(n_epochs=5, random_state=3).fit(X, y=y)
+    cpu = cls(n_epochs=5, random_state=3, device="cpu").fit(X, y=y)
+    # All random draws are on a CPU generator, so explicit cpu == the default.
+    np.testing.assert_array_equal(default.transform(X), cpu.transform(X))
+    assert cpu.get_config()["device"] == "cpu"
+
+    auto = cls(n_epochs=5, random_state=3, device="auto").fit(X, y=y)
+    assert auto.get_config()["device"] == "auto"
+    if not torch.cuda.is_available():  # CI/macOS: auto resolves to cpu
+        np.testing.assert_array_equal(default.transform(X), auto.transform(X))
+
+
 def test_transform_is_numpy_only(periodic_problem, monkeypatch):
     """After fit, transform/state must not touch torch (saved models predict
     without it)."""
