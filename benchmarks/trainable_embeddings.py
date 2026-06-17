@@ -177,7 +177,9 @@ def run(args) -> list[dict]:
     return rows
 
 
-def _mean_by_model(rows: list[dict], task: str) -> list[dict]:
+def _agg_by_model(rows: list[dict], task: str) -> list[dict]:
+    """Per-model aggregate for a task: each metric becomes a ``{mean, std, n}``
+    dict so the summary can report seed spread, not just the mean."""
     by: dict[str, list[dict]] = {}
     for r in rows:
         if r["task"] == task:
@@ -186,11 +188,12 @@ def _mean_by_model(rows: list[dict], task: str) -> list[dict]:
     for model, recs in by.items():
         keys = {k for rec in recs for k, v in rec.items()
                 if isinstance(v, float) or k in ("output_dim", "pretrain_epochs")}
-        agg = {"model": model}
+        agg: dict = {"model": model}
         for k in sorted(keys):
             vals = [rec[k] for rec in recs if k in rec]
             if vals:
-                agg[k] = float(np.mean(vals))
+                agg[k] = {"mean": float(np.mean(vals)),
+                          "std": float(np.std(vals)), "n": len(vals)}
         out.append(agg)
     return out
 
@@ -211,19 +214,20 @@ def write_summary(rows: list[dict], out_dir: Path, report_path: Path, args) -> N
         "",
     ]
     for task in ("regression", "binary", "multiclass"):
-        agg = _mean_by_model(rows, task)
+        agg = _agg_by_model(rows, task)
         if not agg:
             continue
         metric_cols = [k for k in sorted(agg[0]) if k != "model"]
         # stable, readable column order
         metric_cols = sorted(metric_cols, key=lambda c: (c == "fit_seconds", c))
-        lines += [f"## {task} (mean over {args.seeds} seed(s))", "",
+        lines += [f"## {task} (mean ± std over {args.seeds} seed(s))", "",
                   "| model | " + " | ".join(metric_cols) + " |",
                   "| --- | " + " | ".join("---" for _ in metric_cols) + " |"]
         for row in agg:
             cells = []
             for c in metric_cols:
-                cells.append(f"{row[c]:.4f}" if c in row else "")
+                cells.append(f"{row[c]['mean']:.4f} ± {row[c]['std']:.4f}"
+                             if c in row else "")
             lines.append(f"| {row['model']} | " + " | ".join(cells) + " |")
         lines.append("")
     text = "\n".join(lines)

@@ -15,9 +15,11 @@ Design contract:
   inherited NumPy implementations — saved models load and predict without
   torch installed.
 * Pretraining is supervised: the model wrapper passes the Newton residual at
-  the initial score as ``y`` (fit -> freeze before boosting, so the v0
+  the initial score as ``y`` -- 1-D for regression/binary, or an ``(n, K)``
+  matrix for multiclass/multi-output (the throwaway head then has K outputs)
+  -- and the encoder is fit -> frozen before boosting, so the v0
   frozen-encoder rule and the stage-wise analysis in docs/math.md hold
-  unchanged).
+  unchanged.
 * The native path never imports this module's heavy dependency: torch is
   imported lazily inside ``fit`` with an actionable error message.
 """
@@ -56,6 +58,13 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
     encoder pretraining honors ``sample_weight``/``class_weight``; ``weight``
     of ``None`` reproduces the unweighted computation exactly.
 
+    ``target`` is either a 1-D ``(n,)`` Newton residual (regression / binary)
+    or a 2-D ``(n, K)`` residual matrix (multiclass / multi-output). The 2-D
+    case sizes the throwaway head to K outputs, standardizes per output, and
+    averages the loss over rows and outputs; the 1-D case is the original
+    scalar path, byte-for-byte unchanged (so K=1 / ``weight=None`` reproduces
+    the prior pretraining exactly).
+
     Phase 14b regularization: a ``val_fraction`` split of the pretraining
     data is held out, training stops once its loss has not improved for
     ``patience`` epochs, and the best-epoch encoder parameters are restored
@@ -66,21 +75,39 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
     gen = torch.Generator().manual_seed(seed)
     X_t = torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32))
     t_t = torch.from_numpy(np.ascontiguousarray(target, dtype=np.float32))
+    # A 2-D ``(n, K)`` target is the multiclass/multi-output Newton residual:
+    # the throwaway head emits K outputs, standardization is per-output, and the
+    # loss averages over rows and outputs. A 1-D target keeps the scalar path
+    # byte-identical (out_features == 1, the statements below are unchanged), so
+    # K=1 / weight=None reproduces the regression/binary pretraining exactly.
+    vector = t_t.ndim == 2
+    out_features = t_t.shape[1] if vector else 1
     if weight is None:
-        t_t = (t_t - t_t.mean()) / (t_t.std() + 1e-12)
+        if vector:
+            t_t = (t_t - t_t.mean(0)) / (t_t.std(0) + 1e-12)
+        else:
+            t_t = (t_t - t_t.mean()) / (t_t.std() + 1e-12)
         w_t = None
     else:  # weighted target standardization (population weighted mean/std)
         w_t = torch.from_numpy(np.ascontiguousarray(weight, dtype=np.float32))
         w_sum = w_t.sum()
-        w_mean = (w_t * t_t).sum() / w_sum
-        w_var = (w_t * (t_t - w_mean) ** 2).sum() / w_sum
-        t_t = (t_t - w_mean) / (torch.sqrt(w_var) + 1e-12)
+        if vector:
+            wc = w_t.unsqueeze(-1)
+            w_mean = (wc * t_t).sum(0) / w_sum
+            w_var = (wc * (t_t - w_mean) ** 2).sum(0) / w_sum
+            t_t = (t_t - w_mean) / (torch.sqrt(w_var) + 1e-12)
+        else:
+            w_mean = (w_t * t_t).sum() / w_sum
+            w_var = (w_t * (t_t - w_mean) ** 2).sum() / w_sum
+            t_t = (t_t - w_mean) / (torch.sqrt(w_var) + 1e-12)
 
     def _mse(pred, idx):  # weighted MSE; w_t is None -> plain mean (unchanged path)
         err2 = (pred - t_t[idx]) ** 2
         if w_t is None:
-            return torch.mean(err2)
+            return torch.mean(err2)  # mean over rows (and outputs when vector)
         wi = w_t[idx]
+        if vector:  # average over the K outputs to match the unweighted mean
+            return (wi.unsqueeze(-1) * err2).sum() / (wi.sum() * err2.shape[1])
         return (wi * err2).sum() / wi.sum()
 
     n = X_t.shape[0]
@@ -90,7 +117,7 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
     val_idx = perm0[:n_val] if use_es else None
     train_idx = perm0[n_val:] if use_es else perm0
 
-    head = torch.nn.Linear(out_dim, 1)
+    head = torch.nn.Linear(out_dim, out_features)
     with torch.no_grad():
         torch.nn.init.normal_(head.weight, std=0.01, generator=gen)
         torch.nn.init.zeros_(head.bias)
@@ -106,7 +133,9 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
         order = train_idx[torch.randperm(n_train, generator=gen)]
         for start in range(0, n_train, batch_size):
             idx = order[start:start + batch_size]
-            pred = head(embed_fn(X_t[idx])).squeeze(-1)
+            pred = head(embed_fn(X_t[idx]))
+            if not vector:
+                pred = pred.squeeze(-1)
             loss = _mse(pred, idx)
             opt.zero_grad()
             loss.backward()
@@ -114,7 +143,9 @@ def _pretrain(torch, params: list, embed_fn, X: np.ndarray, target: np.ndarray,
         epochs_used += 1
         if use_es:
             with torch.no_grad():
-                val_pred = head(embed_fn(X_t[val_idx])).squeeze(-1)
+                val_pred = head(embed_fn(X_t[val_idx]))
+                if not vector:
+                    val_pred = val_pred.squeeze(-1)
                 val_loss = float(_mse(val_pred, val_idx))
             if val_loss < best_val - 1e-7:
                 best_val = val_loss

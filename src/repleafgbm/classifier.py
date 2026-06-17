@@ -156,13 +156,21 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
     def _pretrain_target(
         self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
     ) -> np.ndarray | None:
-        # The multiclass Newton residual is an (n_rows, n_classes) matrix;
-        # learned-encoder pretraining targets are scalar for now, so multiclass
-        # encoders fit unsupervised (identity/plr are unaffected). A scalar
-        # multiclass pretraining target is a roadmap item (docs/roadmap.md).
-        if self.n_classes_ > 2:
-            return None
-        return super()._pretrain_target(dataset, sample_weight=sample_weight)
+        # Multiclass: the supervised pretraining target is the (n_rows,
+        # n_classes) negative-gradient residual at the weighted initial score
+        # (log class priors) -- ``onehot - softmax(F0)`` -- matching the first
+        # round of MulticlassBooster. Learned encoders pretrain a K-output head
+        # on it (torch_encoders._pretrain); unlearned encoders ignore it. Binary
+        # keeps the scalar residual. See docs/math.md.
+        if self.n_classes_ <= 2:
+            return super()._pretrain_target(dataset, sample_weight=sample_weight)
+        objective = MulticlassSoftmax(
+            self.n_classes_, label_smoothing=self._label_smoothing
+        )
+        init = objective.init_score(dataset.y, weight=sample_weight)  # (K,)
+        f0 = np.tile(init, (dataset.n_rows, 1))  # (n, K)
+        grad0, _ = objective.grad_hess(dataset.y, f0)
+        return -grad0  # (n, K)
 
     def predict_proba(self, X: Any) -> np.ndarray:
         """Class probabilities of shape (n_rows, n_classes), columns ordered
