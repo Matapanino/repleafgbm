@@ -1,8 +1,18 @@
 """Encoders: numerical feature -> representation z_theta(x).
 
-v0 ships NumPy-based frozen encoders only. Future encoders (periodic
-embeddings, RealMLP-style blocks, PyTorch modules) must implement
-:class:`~repleafgbm.encoders.base.BaseEncoder` and register here.
+Two families implement :class:`~repleafgbm.encoders.base.BaseEncoder`:
+
+* **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross`` —
+  fitted once (statistics / seeded parameters / pair selection) and frozen.
+* **Pretrained-then-frozen** (optional ``[torch]`` extra): ``torch_periodic``,
+  ``torch_plr``, ``torch_periodic_plr``, ``torch_mlp`` — parameters are
+  supervised-pretrained on the initial Newton residual and then frozen into
+  NumPy arrays. They are **not** joint-trainable during boosting; torch is
+  needed only at fit time, while ``transform`` and serialization stay NumPy.
+
+The encoder is frozen for all of boosting (see docs/math.md); joint/alternating
+encoder training is a roadmap item, not implemented here. New encoders register
+in ``_ENCODER_REGISTRY`` below.
 """
 
 from __future__ import annotations
@@ -18,6 +28,7 @@ from repleafgbm.encoders.projection import RandomProjectionEncoder
 from repleafgbm.encoders.torch_encoders import (
     TorchMLPEncoder,
     TorchPeriodicEncoder,
+    TorchPeriodicPLREncoder,
     TorchPLREncoder,
 )
 
@@ -29,6 +40,7 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     # Learned encoders: torch needed only at fit time (see torch_encoders).
     "torch_periodic": TorchPeriodicEncoder,
     "torch_plr": TorchPLREncoder,
+    "torch_periodic_plr": TorchPeriodicPLREncoder,
     "torch_mlp": TorchMLPEncoder,
 }
 
@@ -72,6 +84,7 @@ __all__ = [
     "CrossInteractionEncoder",
     "TorchPeriodicEncoder",
     "TorchPLREncoder",
+    "TorchPeriodicPLREncoder",
     "TorchMLPEncoder",
     "RandomProjectionEncoder",
     "make_encoder",

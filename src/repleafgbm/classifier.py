@@ -153,13 +153,16 @@ class RepLeafClassifier(ClassifierMixin, BaseRepLeafModel):
             return get_metric("multi_logloss")
         return super()._resolve_eval_metric()
 
-    def _pretrain_target(self, dataset: RepLeafDataset) -> np.ndarray | None:
+    def _pretrain_target(
+        self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
+    ) -> np.ndarray | None:
         # The multiclass Newton residual is an (n_rows, n_classes) matrix;
-        # learned-encoder pretraining targets are scalar for now, so
-        # multiclass encoders fit unsupervised (identity/plr are unaffected).
+        # learned-encoder pretraining targets are scalar for now, so multiclass
+        # encoders fit unsupervised (identity/plr are unaffected). A scalar
+        # multiclass pretraining target is a roadmap item (docs/roadmap.md).
         if self.n_classes_ > 2:
             return None
-        return super()._pretrain_target(dataset)
+        return super()._pretrain_target(dataset, sample_weight=sample_weight)
 
     def predict_proba(self, X: Any) -> np.ndarray:
         """Class probabilities of shape (n_rows, n_classes), columns ordered

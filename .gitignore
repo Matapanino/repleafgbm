@@ -21,3 +21,6 @@ tmp_model/
 native/target/
 catboost_info/
 site/
+# Generated benchmark run outputs (metrics.jsonl / summary.md / env.json).
+# The committed human report lives in experiments/results/ instead.
+artifacts/

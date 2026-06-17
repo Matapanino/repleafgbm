@@ -3,8 +3,8 @@
 Encoders turn the numerical feature block into a representation matrix
 ``Z = z_theta(X_num)`` that leaf models consume. v0 encoders are NumPy-based,
 deterministic, and frozen after ``fit`` (no parameter updates during
-boosting; see docs/design.md for why). PyTorch encoders are planned as an
-optional dependency and must implement the same interface.
+boosting; see docs/design.md for why). The optional ``[torch]`` learned
+encoders pretrain then freeze into this same NumPy interface.
 """
 
 from __future__ import annotations
@@ -27,13 +27,20 @@ class BaseEncoder(ABC):
     name: str = "base"
 
     @abstractmethod
-    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> BaseEncoder:
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> BaseEncoder:
         """Fit encoder parameters on the numerical feature matrix.
 
         ``y`` is an optional supervised pretraining target (the model wrapper
-        passes the Newton residual at the initial score). Unlearned encoders
-        ignore it; learned encoders (torch extras) regress onto it before
-        freezing. Either way the encoder is frozen after fit (v0 rule).
+        passes the Newton residual at the initial score). ``sample_weight`` is
+        the optional per-row weight (sample x class weights) for that target.
+        Unlearned encoders ignore both; learned encoders (torch extras) regress
+        onto ``y`` under ``sample_weight`` before freezing. Either way the
+        encoder is frozen after fit (v0 rule).
         """
 
     @abstractmethod

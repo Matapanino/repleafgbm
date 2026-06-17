@@ -472,8 +472,16 @@ class BaseRepLeafModel(BaseEstimator):
                 f"leaf_model={self.leaf_model!r} requires at least one numerical "
                 "feature; use leaf_model='constant' for all-categorical data"
             )
-        # The encoder is fitted once here and frozen for all of boosting.
-        encoder.fit(X_num, y=self._pretrain_target(dataset))
+        # The encoder is fitted once here and frozen for all of boosting. The
+        # effective per-row weight (sample x class weights) flows into the
+        # supervised pretraining target and loss so learned encoders honor it;
+        # fixed encoders ignore it.
+        weight = dataset.sample_weight
+        encoder.fit(
+            X_num,
+            y=self._pretrain_target(dataset, sample_weight=weight),
+            sample_weight=weight,
+        )
         if encoder.output_dim > self.max_leaf_emb_dim:
             warnings.warn(
                 f"Encoder output dimension ({encoder.output_dim}) exceeds "
@@ -490,14 +498,21 @@ class BaseRepLeafModel(BaseEstimator):
             ).fit(X_num)
         return encoder
 
-    def _pretrain_target(self, dataset: RepLeafDataset) -> np.ndarray | None:
+    def _pretrain_target(
+        self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
+    ) -> np.ndarray | None:
         """Supervised pretraining target for learned encoders: the Newton
         residual at the initial score (y - mean for regression, y - sigmoid(F0)
-        for binary). Unlearned encoders ignore it. The classifier overrides
-        this to return None for multiclass targets (the residual is a matrix
-        there; learned-encoder pretraining stays scalar-target for now)."""
+        for binary). ``sample_weight`` makes F0 the *weighted* initial score so
+        the residual matches the booster's weighted starting point (None leaves
+        it unweighted, identical to before). Unlearned encoders ignore it. The
+        classifier overrides this to return None for multiclass targets (the
+        residual is a matrix there; learned-encoder pretraining stays
+        scalar-target for now)."""
         objective = self._build_objective()
-        f0 = np.full(dataset.n_rows, objective.init_score(dataset.y))
+        f0 = np.full(
+            dataset.n_rows, objective.init_score(dataset.y, weight=sample_weight)
+        )
         grad0, _ = objective.grad_hess(dataset.y, f0)
         return -grad0
 

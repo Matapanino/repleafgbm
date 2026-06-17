@@ -25,7 +25,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# PyTorch-based encoders are planned but not required in v0.
+# Fit-time-only dependency for the pretrained-then-frozen learned encoders
+# (torch_periodic / torch_plr / torch_periodic_plr / torch_mlp). Saved models
+# predict and (de)serialize without torch — only pretraining needs it.
 torch = ["torch>=2.0"]
 # repleafgbm.external (external_model mode) integrations.
 external = ["lightgbm>=4.0"]

@@ -31,8 +31,13 @@ class RandomProjectionEncoder(BaseEncoder):
         self.random_state = random_state
         self.projection_: np.ndarray | None = None
 
-    def fit(self, X_num: np.ndarray, y: np.ndarray | None = None) -> RandomProjectionEncoder:
-        self.base.fit(X_num, y)
+    def fit(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> RandomProjectionEncoder:
+        self.base.fit(X_num, y, sample_weight)
         base_dim = self.base.output_dim
         if self.out_dim >= base_dim:
             raise ValueError(
