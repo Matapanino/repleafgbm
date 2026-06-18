@@ -117,7 +117,8 @@ def logloss(y, p):
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
 
 
-def run_dataset(name: str, max_rows: int, seeds: list[int]) -> tuple[dict, str, int, int]:
+def run_dataset(name: str, max_rows: int, seeds: list[int],
+                robust: bool = False) -> tuple[dict, str, int, int]:
     X_all, y_all, task = load_dataset(name)
     X_all, cats = clean_features(X_all)
     score = rmse if task == "regression" else logloss
@@ -200,7 +201,7 @@ def run_dataset(name: str, max_rows: int, seeds: list[int]) -> tuple[dict, str, 
              dict(leaf_model="embedded_linear", encoder="plr",
                   max_leaf_emb_dim=256)),
         ]
-        try:  # learned encoders (Phase 14) when the torch extra is present
+        try:  # learned encoders (Phase 14+) when the torch extra is present
             import torch  # noqa: F401
 
             repleaf_configs += [
@@ -210,9 +211,25 @@ def run_dataset(name: str, max_rows: int, seeds: list[int]) -> tuple[dict, str, 
                 ("RepLeaf embedded torch_plr (es)",
                  dict(leaf_model="embedded_linear", encoder="torch_plr",
                       max_leaf_emb_dim=256)),
+                # v1.3.0: full rtdl PeriodicEmbeddings + interaction-aware MLP.
+                ("RepLeaf embedded torch_periodic_plr (es)",
+                 dict(leaf_model="embedded_linear", encoder="torch_periodic_plr",
+                      max_leaf_emb_dim=256)),
+                ("RepLeaf embedded torch_mlp (es)",
+                 dict(leaf_model="embedded_linear", encoder="torch_mlp",
+                      max_leaf_emb_dim=256)),
             ]
         except ImportError:
             pass
+        # Robust regression objectives (constant leaf) — opt-in; most useful when
+        # the target has outliers, recorded here as a reference on real data.
+        if robust and task == "regression":
+            repleaf_configs += [
+                ("RepLeaf constant huber (es)",
+                 dict(leaf_model="constant", objective="huber")),
+                ("RepLeaf constant quantile(0.5) (es)",
+                 dict(leaf_model="constant", objective="quantile")),
+            ]
         for label, kwargs in repleaf_configs:
             model = native_cls(
                 n_estimators=400, learning_rate=0.1, num_leaves=31,
@@ -245,6 +262,9 @@ def main() -> None:
     parser.add_argument("--datasets", nargs="*", default=[
         "california", "house_sales", "diamonds", "adult",
     ])
+    parser.add_argument("--robust", action="store_true",
+                        help="also fit constant-leaf huber/quantile objectives on "
+                             "the regression datasets (reference numbers)")
     args = parser.parse_args()
     seeds = list(range(args.seeds))
     warnings.filterwarnings("ignore", category=FutureWarning)
@@ -268,7 +288,8 @@ def main() -> None:
 
     for name in args.datasets:
         print(f"=== dataset: {name} ===", flush=True)
-        rows, task, n_used, n_cats = run_dataset(name, args.max_rows, seeds)
+        rows, task, n_used, n_cats = run_dataset(name, args.max_rows, seeds,
+                                                  robust=args.robust)
         ordered = sorted(rows.values(), key=lambda r: np.mean(r.test))
         metric_name = "rmse" if task == "regression" else "logloss"
         for r in ordered:

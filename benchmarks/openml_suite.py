@@ -240,7 +240,36 @@ def _split_indices(idx, y_sub, task, rng):
             np.array(te, dtype=int))
 
 
-def run_dataset(name, data_id, task, max_rows, seeds, strict=False):
+def _repleaf_configs(learned_encoders: bool) -> list[tuple[str, dict]]:
+    """RepLeafGBM leaderboard arms. The two stock arms are always present; the
+    learned-encoder arms (supervised-pretrained, then frozen to NumPy) are opt-in
+    via ``--learned-encoders`` and need the ``[torch]`` extra — skipped silently
+    if torch is absent, matching ``benchmark_real_data.py``."""
+    configs = [
+        ("RepLeaf constant", dict(leaf_model="constant")),
+        ("RepLeaf embedded_linear", dict(leaf_model="embedded_linear",
+                                         encoder="identity")),
+    ]
+    if learned_encoders:
+        try:
+            import torch  # noqa: F401
+
+            configs += [
+                ("RepLeaf embedded torch_periodic_plr",
+                 dict(leaf_model="embedded_linear", encoder="torch_periodic_plr",
+                      max_leaf_emb_dim=256)),
+                ("RepLeaf embedded torch_mlp",
+                 dict(leaf_model="embedded_linear", encoder="torch_mlp",
+                      max_leaf_emb_dim=256)),
+            ]
+        except ImportError:
+            print("  [skip] learned encoders: torch not installed "
+                  "(`pip install \"repleafgbm[torch]\"`)")
+    return configs
+
+
+def run_dataset(name, data_id, task, max_rows, seeds, strict=False,
+                learned_encoders=False):
     X_all, y_all, task = load_dataset(name, data_id, task)
     X_all, cats = clean_features(X_all)
     classes = np.unique(y_all) if task != "regression" else None
@@ -279,11 +308,7 @@ def run_dataset(name, data_id, task, max_rows, seeds, strict=False):
 
         # --- RepLeafGBM variants (fit on the dataset objects) --------------
         native_cls = RepLeafRegressor if task == "regression" else RepLeafClassifier
-        for label, kwargs in (
-            ("RepLeaf constant", dict(leaf_model="constant")),
-            ("RepLeaf embedded_linear", dict(leaf_model="embedded_linear",
-                                             encoder="identity")),
-        ):
+        for label, kwargs in _repleaf_configs(learned_encoders):
             try:
                 model = native_cls(
                     n_estimators=400, learning_rate=0.1, num_leaves=31,
@@ -348,7 +373,7 @@ def _version_manifest(selected, seeds, args) -> list[str]:
             return "(not installed)"
 
     pkgs = ["numpy", "pandas", "scipy", "scikit-learn", "repleafgbm",
-            "lightgbm", "xgboost", "catboost"]
+            "torch", "lightgbm", "xgboost", "catboost"]
     lines = [
         "## Reproducibility manifest",
         "",
@@ -379,6 +404,11 @@ def main() -> None:
         help="release mode: fail (don't skip) if a required external GBM "
              f"{list(REQUIRED_GBMS)} is missing or any model errors",
     )
+    parser.add_argument(
+        "--learned-encoders", action="store_true",
+        help="also benchmark the learned encoders torch_periodic_plr / torch_mlp "
+             "(needs the [torch] extra; slower — supervised pretraining per fit)",
+    )
     args = parser.parse_args()
     seeds = list(range(args.seeds))
     warnings.filterwarnings("ignore", category=FutureWarning)
@@ -402,7 +432,8 @@ def main() -> None:
         "Lower primary is better.",
         "",
         f"Settings: max_rows={args.max_rows}, seeds={seeds}, "
-        f"early_stopping={ES_ROUNDS} rounds.",
+        f"early_stopping={ES_ROUNDS} rounds, "
+        f"learned_encoders={bool(args.learned_encoders)}.",
         "",
         *_version_manifest(selected, seeds, args),
     ]
@@ -414,7 +445,8 @@ def main() -> None:
         print(f"=== {name} ({task}) ===", flush=True)
         try:
             rows, task, n_used, n_cats = run_dataset(
-                name, data_id, task, args.max_rows, seeds, strict=args.strict)
+                name, data_id, task, args.max_rows, seeds, strict=args.strict,
+                learned_encoders=args.learned_encoders)
         except Exception as exc:
             if args.strict:
                 raise

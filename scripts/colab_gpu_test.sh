@@ -38,6 +38,7 @@ fi
 
 DATE="$(date +%F)"
 REPORT_OUT="experiments/results/${DATE}-cuda-parity.md"
+SUITE_OUT="experiments/results/${DATE}-gpu-backend-suite.md"
 BENCH_OUT="artifacts/gpu_bench/${DATE}-${GPU}/cases.jsonl"
 TARBALL="$(mktemp -t rlgbm-XXXXXX).tar.gz"
 cleanup_local() { rm -f "$TARBALL"; }
@@ -59,11 +60,19 @@ echo ">> uploading working tree"
 colab upload -s "$SESSION" "$TARBALL" /content/rlgbm.tar.gz
 
 echo ">> running CUDA parity tests + benchmark on the GPU"
-colab exec -s "$SESSION" -f scripts/colab_remote_test.py
+# --timeout is an *idle* reply timeout (default 30s); the gpu_profile matrix has
+# single fits (e.g. multiclass numpy) that run silently for ~45s, so a small
+# timeout aborts the exec after the remote already finished. Give it headroom.
+colab exec -s "$SESSION" --timeout 1800 -f scripts/colab_remote_test.py
 
 echo ">> downloading report -> $REPORT_OUT"
 mkdir -p experiments/results
 colab download -s "$SESSION" /content/cuda_parity_report.md "$REPORT_OUT"
+
+echo ">> downloading backend-suite report -> $SUITE_OUT"
+# Best-effort: only the newer driver writes the backend-comparison suite.
+colab download -s "$SESSION" /content/gpu_backend_suite.md "$SUITE_OUT" || \
+    echo "   (no backend-suite report produced; skipping)"
 
 echo ">> downloading gpu_profile transfer counters -> $BENCH_OUT"
 mkdir -p "$(dirname "$BENCH_OUT")"

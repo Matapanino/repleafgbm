@@ -13,6 +13,8 @@ import argparse
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -61,6 +63,30 @@ def print_table(results: list[BenchResult]) -> None:
         print(row)
 
 
+def write_markdown_report(name: str, title: str, preamble: list[str],
+                          results: list[BenchResult]) -> Path:
+    """Persist a benchmark table as ``experiments/results/<date>-<name>.md``.
+
+    The synthetic benchmarks used to print to stdout only; this gives them a
+    dated, committable report like the heavier suites, reusing the ``metrics``
+    dict on :class:`BenchResult` for the columns.
+    """
+    metric_names = list(results[0].metrics)
+    header = "| model | fit[s] | pred[s] | " + " | ".join(metric_names) + " |"
+    sep = "|---|---|---|" + "---|" * len(metric_names)
+    lines = [f"# {title}", "", *preamble, "", header, sep]
+    for r in results:
+        cells = " | ".join(f"{r.metrics[m]:.4f}" for m in metric_names)
+        lines.append(
+            f"| {r.name} | {r.fit_seconds:.2f} | {r.predict_seconds:.3f} | {cells} |"
+        )
+    out_path = (Path(__file__).resolve().parents[1] / "experiments" / "results"
+                / f"{date.today().isoformat()}-{name}.md")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n")
+    return out_path
+
+
 def make_parser(description: str) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=description)
     p.add_argument("--n-train", type=int, default=10_000)
@@ -68,6 +94,11 @@ def make_parser(description: str) -> argparse.ArgumentParser:
     p.add_argument("--n-features", type=int, default=20)
     p.add_argument("--n-estimators", type=int, default=100)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--contamination", type=float, default=0.0,
+        help="fraction of TRAIN targets to replace with heavy-tailed outliers "
+             "(regression only; shows where robust objectives help)",
+    )
     p.add_argument(
         "--quick", action="store_true", help="small/fast settings for smoke runs"
     )
@@ -96,6 +127,41 @@ def synthetic_tabular(n_rows: int, n_features: int, rng: np.random.Generator):
         + 1.5 * X[:, 5] * (X[:, 0] > 0.5)      # regime-dependent slope
     )
     return X, signal
+
+
+def multioutput_signal(
+    n_rows: int, n_features: int, n_outputs: int, rng: np.random.Generator
+):
+    """``n_outputs`` correlated targets sharing one ``X`` (shared tree routing).
+
+    Each output mixes a shared router discontinuity with an output-specific
+    smooth term, so multi-output leaves (one routing, vector leaf) have a real
+    advantage over independent per-output fits. Returns ``(X, signal)`` with
+    ``signal`` of shape ``(n_rows, n_outputs)`` and no noise added.
+    """
+    X, base = synthetic_tabular(n_rows, n_features, rng)
+    router = 3.0 * (X[:, 3] > 0.5)
+    signal = np.column_stack([
+        base + 2.0 * np.sin((k + 2) * X[:, 0]) + 1.5 * X[:, 1] + router
+        for k in range(n_outputs)
+    ])
+    return X, signal
+
+
+def contaminate(y: np.ndarray, frac: float, scale: float, rng: np.random.Generator):
+    """Replace a ``frac`` of rows with heavy-tailed outliers (training only).
+
+    ``scale`` multiplies each column's own std so contamination is comparable
+    across outputs. ``y`` may be 1-D or 2-D ``(n, K)``; a copy is returned.
+    """
+    if frac <= 0.0:
+        return y.copy()
+    out = np.array(y, dtype=np.float64, copy=True)
+    y2 = out if out.ndim == 2 else out[:, None]
+    mask = rng.random(y2.shape[0]) < frac
+    sd = y2.std(axis=0, keepdims=True)
+    y2[mask] += rng.normal(0.0, 1.0, (int(mask.sum()), y2.shape[1])) * scale * sd
+    return out
 
 
 def external_gbm_models(task: str, n_estimators: int, seed: int) -> list[tuple[str, Any]]:

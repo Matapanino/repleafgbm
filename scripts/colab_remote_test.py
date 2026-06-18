@@ -8,9 +8,11 @@ GPU kernel. It expects the working tree to have been uploaded to
   2. ensures CuPy is importable (Colab GPU runtimes ship it),
   3. runs the CUDA parity subset (``tests/test_cuda_backend.py``) single-threaded,
   4. micro-benchmarks GPU vs NumPy histogram build,
-  5. runs a small ``benchmarks.gpu_profile`` smoke (numpy + cuda) that records
-     per-fit transfer volume to ``/content/gpu_bench/cases.jsonl``,
-  6. writes a markdown report to ``/content/cuda_parity_report.md``.
+  5. runs the ``benchmarks.gpu_profile`` matrix (numpy vs cuda across
+     regression/binary/multiclass at narrow/wide shapes), recording per-fit
+     transfer volume to ``/content/gpu_bench/cases.jsonl``,
+  6. writes a parity report to ``/content/cuda_parity_report.md`` and a
+     standalone backend-comparison suite to ``/content/gpu_backend_suite.md``.
 
 It deliberately runs only the CUDA test module so torch / lightgbm are never
 imported (avoids the libomp deadlock) and the loop stays fast.
@@ -25,6 +27,7 @@ import time
 REPO = "/content/repleafgbm"
 TARBALL = "/content/rlgbm.tar.gz"
 REPORT = "/content/cuda_parity_report.md"
+BACKEND_SUITE = "/content/gpu_backend_suite.md"
 GPU_BENCH = "/content/gpu_bench/cases.jsonl"
 ENV = {**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": f"{REPO}/src"}
 
@@ -127,29 +130,83 @@ def end_to_end_benchmark(n, d):
 
 
 def gpu_profile_smoke():
-    """Run a few ``benchmarks.gpu_profile`` cases (numpy + cuda) and return the
-    parsed JSONL rows. The cuda rows carry the per-fit transfer counters that
-    motivate the next optimization (device-resident grad/hess)."""
+    """Run the ``benchmarks.gpu_profile`` matrix (numpy vs cuda across tasks and
+    narrow/wide shapes) and return the parsed JSONL rows. Each task contributes a
+    numpy/cuda pair at a narrow (30f, B2's worst case) and a wide (200f, B2's
+    sweet spot) shape, so the backend-comparison summary can show the cuda
+    speedup where it matters. The cuda rows also carry the per-fit transfer
+    counters that motivate the next optimization (device-resident grad/hess)."""
     import json
 
-    cases = [
-        # (task, n_train, n_features, leaf_model, backend) — narrow numpy/cuda
-        # pair plus a wide cuda case that exercises the on-device numeric scan.
-        ("regression", 50_000, 30, "constant", "numpy"),
-        ("regression", 50_000, 30, "constant", "cuda"),
-        ("regression", 30_000, 200, "embedded_linear", "cuda"),
+    # (task, n_train, n_features, leaf_model, extra_args)
+    shapes = [
+        ("regression", 50_000, 30, "constant", []),
+        ("regression", 30_000, 200, "embedded_linear", []),
+        ("binary", 50_000, 30, "constant", []),
+        ("binary", 30_000, 200, "embedded_linear", []),
+        ("multiclass", 30_000, 200, "constant", ["--n-classes", "5"]),
     ]
-    for task, n_train, n_features, leaf, backend in cases:
-        _run(
-            [sys.executable, "-m", "benchmarks.gpu_profile",
-             "--task", task, "--backend", backend, "--leaf-model", leaf,
-             "--n-train", str(n_train), "--n-test", "10000",
-             "--n-features", str(n_features), "--n-estimators", "30",
-             "--out", GPU_BENCH],
-            cwd=REPO, env=ENV, check=True,
-        )
+    for task, n_train, n_features, leaf, extra in shapes:
+        for backend in ("numpy", "cuda"):
+            _run(
+                [sys.executable, "-m", "benchmarks.gpu_profile",
+                 "--task", task, "--backend", backend, "--leaf-model", leaf,
+                 "--n-train", str(n_train), "--n-test", "10000",
+                 "--n-features", str(n_features), "--n-estimators", "30",
+                 "--out", GPU_BENCH, *extra],
+                cwd=REPO, env=ENV, check=True,
+            )
     with open(GPU_BENCH) as fh:
         return [json.loads(line) for line in fh if line.strip()]
+
+
+def backend_comparison(bench_rows):
+    """Pair numpy/cuda rows by case (case_id minus the backend suffix) and return
+    ``(key, n_features, task, np_fit, cu_fit, np_pred, cu_pred)`` tuples sorted by
+    feature width — the heart of the backend-suite report."""
+    by_key = {}
+    for r in bench_rows:
+        key = r["case_id"].rsplit("_", 1)[0]  # strip "_<backend>"
+        by_key.setdefault(key, {})[r["backend"]] = r
+    out = []
+    for key, pair in by_key.items():
+        if "numpy" not in pair or "cuda" not in pair:
+            continue
+        npr, cur = pair["numpy"], pair["cuda"]
+        out.append((key, npr["n_features"], npr["task"],
+                    npr["fit_seconds"], cur["fit_seconds"],
+                    npr["predict_seconds"], cur["predict_seconds"]))
+    return sorted(out, key=lambda t: (t[2], t[1]))
+
+
+def write_backend_suite(bench_rows, gpu):
+    """Standalone backend-comparison report (numpy vs cuda fit/predict speedups
+    across the task x shape matrix), written to ``BACKEND_SUITE``."""
+    rows = backend_comparison(bench_rows)
+    lines = [
+        "# GPU backend suite — numpy vs cuda",
+        "",
+        f"- GPU: **{gpu}**",
+        "",
+        "`benchmarks.gpu_profile`, 30 trees, each task at a narrow (30f) and wide "
+        "(200f) shape. Speedup = numpy / cuda (higher is better for cuda). The "
+        "cuda histogram + on-device numeric scan (Phase B2) pays off on the wide "
+        "shapes where the per-node histogram is large.",
+        "",
+        "| case | task | features | numpy fit (s) | cuda fit (s) | fit speedup | "
+        "numpy pred (s) | cuda pred (s) |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for key, nf, task, np_f, cu_f, np_p, cu_p in rows:
+        sp = (np_f / cu_f) if cu_f else float("nan")
+        lines.append(
+            f"| {key} | {task} | {nf} | {np_f:.2f} | {cu_f:.2f} | **{sp:.2f}x** | "
+            f"{np_p:.3f} | {cu_p:.3f} |"
+        )
+    lines.append("")
+    with open(BACKEND_SUITE, "w") as fh:
+        fh.write("\n".join(lines))
+    return lines
 
 
 def main():
@@ -237,6 +294,11 @@ def main():
         fh.write("\n".join(lines))
     print("\n".join(lines), flush=True)
     print(f"\nwrote {REPORT}", flush=True)
+
+    # Standalone backend-comparison suite (numpy vs cuda across the matrix).
+    suite_lines = write_backend_suite(bench_rows, gpu)
+    print("\n".join(suite_lines), flush=True)
+    print(f"\nwrote {BACKEND_SUITE}", flush=True)
     if rc != 0:
         sys.exit(rc)
 

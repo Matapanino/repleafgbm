@@ -20,10 +20,13 @@ bash scripts/colab_gpu_test.sh --gpu A100
 ```
 
 The current script runs `tests/test_cuda_backend.py`, a histogram
-micro-benchmark, and two end-to-end fit cases. Reports are downloaded to:
+micro-benchmark, two end-to-end fit cases, and the `benchmarks.gpu_profile`
+matrix (numpy vs cuda across regression/binary/multiclass at narrow/wide
+shapes). Two reports are downloaded:
 
 ```text
-experiments/results/<date>-cuda-parity.md
+experiments/results/<date>-cuda-parity.md        # parity + micro-bench + transfer counters
+experiments/results/<date>-gpu-backend-suite.md  # numpy vs cuda fit/predict speedups
 ```
 
 ## Benchmark Matrix To Implement
@@ -45,12 +48,12 @@ experiments/results/<date>-cuda-parity.md
 
 ### Dataset Sizes
 
-| size | train rows | test rows | feature counts |
-|---|---:|---:|---|
-| small | 20,000 | 10,000 | 20, 30 |
-| medium | 100,000 | 50,000 | 50, 100 |
-| large | 500,000 | 100,000 | 200 |
-| stress | 1,000,000 | 100,000 | 200, 1000 |
+| size | train rows | test rows | feature counts | implemented in `gpu_profile._SIZES` |
+|---|---:|---:|---|---|
+| small | 20,000 | 10,000 | 30 | ✅ |
+| medium | 100,000 | 50,000 | 100 | ✅ |
+| large | 500,000 | 100,000 | 200 | ✅ |
+| stress | 1,000,000 | 200,000 | 200 | ✅ |
 
 Use T4 for correctness and medium benchmarks. Use L4/A100 for large/stress
 cases when available.
@@ -147,16 +150,21 @@ python -m benchmarks.gpu_profile --task binary --size medium --backend cuda --ma
 python -m benchmarks.gpu_profile --task multiclass --n-classes 5 --size medium --backend cuda --out artifacts/gpu_bench/dev/cases.jsonl
 ```
 
-`--size {small,medium,large}` overrides `--n-train/--n-test/--n-features`; other
-knobs: `--leaf-model`, `--encoder`, `--num-leaves`, `--max-leaf-emb-dim`,
+`--size {small,medium,large,stress}` overrides `--n-train/--n-test/--n-features`;
+other knobs: `--leaf-model`, `--encoder` (any encoder name, incl. learned
+`torch_periodic_plr`), `--device {cpu,cuda,auto}` for learned-encoder pretraining
+(v1.5.0; torch encoders only), `--num-leaves`, `--max-leaf-emb-dim`,
 `--n-estimators`, `--quick`, and `--parity` (also fits a numpy twin and records
 `parity_max_abs_diff`). `numpy`/`rust` backends run on CPU; `cuda` needs a GPU.
 
-On the GPU, the Colab loop runs a small `gpu_profile` smoke automatically and
-pulls the JSONL back:
+On the GPU, the Colab loop runs the `gpu_profile` matrix automatically, writes a
+backend-comparison suite, and pulls everything back:
 
 ```bash
-bash scripts/colab_gpu_test.sh --gpu T4   # -> artifacts/gpu_bench/<date>-T4/cases.jsonl
+bash scripts/colab_gpu_test.sh --gpu T4
+#  -> experiments/results/<date>-cuda-parity.md
+#  -> experiments/results/<date>-gpu-backend-suite.md
+#  -> artifacts/gpu_bench/<date>-T4/cases.jsonl
 ```
 
 ## Profiling TODO

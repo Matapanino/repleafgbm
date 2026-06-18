@@ -54,11 +54,12 @@ if str(ROOT / "src") not in sys.path:
 
 from benchmarks.common import apply_quick, make_parser, synthetic_tabular  # noqa: E402
 
-# Size presets: (n_train, n_test, n_features). Mirrors benchmarks/README_gpu.md.
+# Size presets: (n_train, n_test, n_features). Mirrors docs/gpu_roadmap.md.
 _SIZES: dict[str, tuple[int, int, int]] = {
     "small": (20_000, 10_000, 30),
     "medium": (100_000, 50_000, 100),
     "large": (500_000, 100_000, 200),
+    "stress": (1_000_000, 200_000, 200),
 }
 
 
@@ -107,6 +108,11 @@ def build_estimator(task: str, args: argparse.Namespace, backend: str) -> Any:
         split_backend=backend,
         random_state=args.seed,
     )
+    # Opt-in GPU encoder pretraining (v1.5.0): only the learned torch encoders
+    # accept a ``device``; fixed encoders (identity/plr/...) would reject it.
+    device = getattr(args, "device", None)
+    if device and str(args.encoder).startswith("torch"):
+        common["encoder_params"] = {"device": device}
     if task == "regression":
         return RepLeafRegressor(**common)
     return RepLeafClassifier(**common)
@@ -272,6 +278,7 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
         "num_leaves": args.num_leaves,
         "leaf_model": args.leaf_model,
         "encoder": args.encoder,
+        "device": getattr(args, "device", None),
         "n_estimators": args.n_estimators,
         "fit_seconds": fit_seconds,
         "predict_seconds": predict_seconds,
@@ -339,7 +346,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-classes", type=int, default=3, help="multiclass only")
     p.add_argument("--leaf-model", default="embedded_linear",
                    choices=["constant", "embedded_linear", "raw_linear"])
-    p.add_argument("--encoder", default="identity")
+    p.add_argument("--encoder", default="identity",
+                   help="encoder name (identity/plr/periodic/torch_periodic_plr/...)")
+    p.add_argument("--device", default=None, choices=["cpu", "cuda", "auto"],
+                   help="device for learned-encoder pretraining (torch encoders "
+                        "only; v1.5.0). transform/serialization stay NumPy")
     p.add_argument("--max-bins", type=int, default=256)
     p.add_argument("--num-leaves", type=int, default=31)
     p.add_argument("--max-leaf-emb-dim", type=int, default=64)
