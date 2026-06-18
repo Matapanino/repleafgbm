@@ -65,10 +65,22 @@ class CrossInteractionEncoder(BaseEncoder):
         x_std = self._standardize(X_num)
         products = x_std[:, i_idx] * x_std[:, j_idx]  # (n, n_all_pairs)
         if y is not None and i_idx.size > self.n_pairs:
-            yc = np.asarray(y, dtype=np.float64) - np.mean(y)
+            Y = np.asarray(y, dtype=np.float64)
             pc = products - products.mean(axis=0)
-            denom = np.sqrt(np.sum(pc**2, axis=0) * np.sum(yc**2)) + 1e-12
-            score = np.abs(pc.T @ yc) / denom
+            if Y.ndim == 1:
+                yc = Y - np.mean(Y)
+                denom = np.sqrt(np.sum(pc**2, axis=0) * np.sum(yc**2)) + 1e-12
+                score = np.abs(pc.T @ yc) / denom
+            else:
+                # v1.4.0 vector pretraining target (n, K) for multiclass /
+                # multi-output: score each pair by its summed absolute Pearson
+                # correlation across the K columns (centered per output). For
+                # K == 1 this reduces to the scalar score above.
+                yc = Y - Y.mean(axis=0)
+                pc_norm = np.sqrt(np.sum(pc**2, axis=0))  # (n_pairs,)
+                y_norm = np.sqrt(np.sum(yc**2, axis=0))  # (K,)
+                denom = pc_norm[:, None] * y_norm[None, :] + 1e-12
+                score = np.sum(np.abs(pc.T @ yc) / denom, axis=1)
             # Stable order among ties so the same seed gives the same model.
             top = np.argsort(-score, kind="stable")[: self.n_pairs]
         else:

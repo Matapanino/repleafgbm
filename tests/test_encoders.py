@@ -182,6 +182,34 @@ def test_cross_selects_true_interaction_pair():
     assert abs(np.corrcoef(prod_col, y)[0, 1]) > 0.9
 
 
+def test_cross_handles_2d_vector_target():
+    """v1.4.0 multiclass/multi-output pretraining passes a ``(n, K)`` target; the
+    cross encoder must score pairs across the K columns instead of crashing
+    (regression test for the broadcast bug)."""
+    from repleafgbm.encoders import CrossInteractionEncoder
+
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(1500, 6))
+    base = 3.0 * X[:, 1] * X[:, 4]  # both outputs load on the (1, 4) product
+    Y = np.column_stack([base + rng.normal(0.0, 0.1, 1500),
+                         0.5 * base + rng.normal(0.0, 0.1, 1500)])
+    enc = CrossInteractionEncoder(n_pairs=2).fit(X, y=Y)
+    assert [1, 4] in enc.pairs_.tolist()
+
+
+def test_cross_2d_single_column_matches_scalar():
+    """A ``(n, 1)`` target selects the same pairs as the 1-D target (the K == 1
+    reduction), so the 2-D fix leaves scalar behavior intact."""
+    from repleafgbm.encoders import CrossInteractionEncoder
+
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(800, 6))
+    y = 2.0 * X[:, 0] * X[:, 3] - X[:, 2] * X[:, 5] + rng.normal(0.0, 0.1, 800)
+    scalar = CrossInteractionEncoder(n_pairs=3).fit(X, y=y)
+    vector = CrossInteractionEncoder(n_pairs=3).fit(X, y=y[:, None])
+    np.testing.assert_array_equal(scalar.pairs_, vector.pairs_)
+
+
 def test_cross_without_target_and_nan(X_num):
     from repleafgbm.encoders import CrossInteractionEncoder
 
