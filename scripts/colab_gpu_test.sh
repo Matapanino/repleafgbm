@@ -38,6 +38,7 @@ fi
 
 DATE="$(date +%F)"
 REPORT_OUT="experiments/results/${DATE}-cuda-parity.md"
+BENCH_OUT="artifacts/gpu_bench/${DATE}-${GPU}/cases.jsonl"
 TARBALL="$(mktemp -t rlgbm-XXXXXX).tar.gz"
 cleanup_local() { rm -f "$TARBALL"; }
 trap cleanup_local EXIT
@@ -63,6 +64,12 @@ colab exec -s "$SESSION" -f scripts/colab_remote_test.py
 echo ">> downloading report -> $REPORT_OUT"
 mkdir -p experiments/results
 colab download -s "$SESSION" /content/cuda_parity_report.md "$REPORT_OUT"
+
+echo ">> downloading gpu_profile transfer counters -> $BENCH_OUT"
+mkdir -p "$(dirname "$BENCH_OUT")"
+# Best-effort: the JSONL only exists if the gpu_profile smoke ran (newer driver).
+colab download -s "$SESSION" /content/gpu_bench/cases.jsonl "$BENCH_OUT" || \
+    echo "   (no gpu_bench JSONL produced; skipping)"
 
 echo ">> done. report at $REPORT_OUT"
 if [[ "$KEEP" -eq 1 ]]; then

@@ -22,6 +22,7 @@ from __future__ import annotations
 import numpy as np
 
 from repleafgbm.backends import make_split_backend
+from repleafgbm.backends.base import BaseSplitBackend
 from repleafgbm.core.booster import BoosterParams, weight_grad_hess
 from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
@@ -123,6 +124,14 @@ class MultiOutputBooster:
         #: Best number of trees found by early stopping (None when unused).
         self.best_iteration_: int | None = None
         self.best_score_: float | None = None
+        #: Split backend from the last ``fit`` (runtime-only introspection
+        #: handle, never serialized); see :class:`Booster.split_backend_`.
+        self.split_backend_: BaseSplitBackend | None = None
+
+    def __getstate__(self) -> dict:
+        # Drop the runtime split-backend handle so the model stays picklable;
+        # see :meth:`Booster.__getstate__`.
+        return {**self.__dict__, "split_backend_": None}
 
     @property
     def n_outputs(self) -> int:
@@ -171,6 +180,7 @@ class MultiOutputBooster:
             min_data_per_group=p.min_data_per_group,
             max_cat_threshold=p.max_cat_threshold,
         )
+        self.split_backend_ = splitter.backend
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
 
         self.init_score_ = self.objective.init_score(y, weight=w)

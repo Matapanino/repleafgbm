@@ -136,6 +136,47 @@ class CudaSplitBackend(BaseSplitBackend):
         # for every node of every tree, so it is uploaded once and reused.
         self._binned_key: tuple[int, tuple[int, ...]] | None = None
         self._binned_d = None
+        # Private transfer/work counters (profiling only; not part of the public
+        # API or the BaseSplitBackend contract). They are plain integer adds at
+        # each H2D/D2H boundary — negligible next to a kernel launch — and let
+        # the GPU benchmark harness account for per-fit transfer volume without
+        # changing any kernel or behavior. Snapshot with get_transfer_stats()
+        # after a fit; reset_transfer_stats() zeroes them for a fresh window.
+        self._stats: dict[str, int] = self._zero_stats()
+
+    @staticmethod
+    def _zero_stats() -> dict[str, int]:
+        return {
+            "binned_h2d_bytes": 0,
+            "rows_h2d_bytes": 0,
+            "gradhess_h2d_bytes": 0,
+            "hist_d2h_bytes": 0,
+            "winner_d2h_bytes": 0,
+            "cat_slice_d2h_bytes": 0,
+            "binned_uploads": 0,
+            "n_hist_builds": 0,
+            "n_small_scans": 0,
+            "n_gpu_scans": 0,
+            "n_cat_slices": 0,
+        }
+
+    def _bump(self, key: str, n: int) -> None:
+        self._stats[key] += int(n)
+
+    def get_transfer_stats(self) -> dict[str, int]:
+        """Snapshot of the private H2D/D2H byte + work counters (a copy).
+
+        Profiling aid only — not part of the split-backend contract. Keys cover
+        binned/rows/grad-hess uploads, small-scan and categorical-slice
+        copy-backs, the winning-split scalar copy-back, and per-phase call
+        counts. Counters accumulate over the backend's lifetime, so a backend
+        constructed fresh for one fit reports that fit's totals.
+        """
+        return dict(self._stats)
+
+    def reset_transfer_stats(self) -> None:
+        """Zero the private transfer/work counters."""
+        self._stats = self._zero_stats()
 
     def _device_binned(self, binned: np.ndarray):
         """Return binned as a resident C-contiguous uint16 device array.
@@ -149,6 +190,10 @@ class CudaSplitBackend(BaseSplitBackend):
                 np.ascontiguousarray(binned, dtype=np.uint16)
             )
             self._binned_key = key
+            # Cache miss only: the whole matrix crosses once per (object, shape).
+            # Cache hits add nothing — that is the point of the Phase B1 cache.
+            self._bump("binned_h2d_bytes", 2 * int(np.prod(binned.shape)))
+            self._bump("binned_uploads", 1)
         return self._binned_d
 
     def build_histograms(
@@ -172,6 +217,11 @@ class CudaSplitBackend(BaseSplitBackend):
         rows_d = cp.asarray(np.ascontiguousarray(rows, dtype=np.int64))
         g_d = cp.asarray(np.ascontiguousarray(grad[rows], dtype=np.float64))
         h_d = cp.asarray(np.ascontiguousarray(hess[rows], dtype=np.float64))
+        # The dominant per-node transfer the next optimization targets: the
+        # node's int64 rows plus host-gathered grad/hess (8 + 16 bytes per row).
+        self._bump("rows_h2d_bytes", 8 * n_sel)
+        self._bump("gradhess_h2d_bytes", 16 * n_sel)
+        self._bump("n_hist_builds", 1)
         hist_d = cp.zeros(n_features * n_bins_max * 3, dtype=cp.float64)
 
         total = n_sel * n_features
@@ -228,10 +278,14 @@ class CudaSplitBackend(BaseSplitBackend):
         # _GPU_SCAN_MIN_CELLS. The histogram stays resident for the build /
         # subtraction either way; this only copies the small ones back to scan.
         if n_features * n_bins_max < _GPU_SCAN_MIN_CELLS:
+            # Small histogram: one bulk copy back, host scan (see threshold note).
+            self._bump("hist_d2h_bytes", 24 * n_features * n_bins_max)
+            self._bump("n_small_scans", 1)
             return self._cpu.find_best_split(
                 cp.asnumpy(hist_d), n_bins_per_feature, min_samples_leaf, l2,
                 categorical_mask, cat_smooth, min_data_per_group, max_cat_threshold,
             )
+        self._bump("n_gpu_scans", 1)
 
         feat_idx = cp.arange(n_features)
         nbpf_d = cp.asarray(n_bins_per_feature)
@@ -288,6 +342,10 @@ class CudaSplitBackend(BaseSplitBackend):
                 ]
             )
         )
+        # Only the winning split's 4 float64 scalars cross back on this path —
+        # the (F, B, 3) histogram stayed resident. This is the wide-fit win the
+        # counters quantify against the small-scan copy-back above.
+        self._bump("winner_d2h_bytes", 32)
         best_flat = int(packed[0])
         best_gain = float(packed[1])
         f, c = divmod(best_flat, n_bins_max)
@@ -308,6 +366,10 @@ class CudaSplitBackend(BaseSplitBackend):
             g_tot, h_tot = float(g_total), float(h_total)
             n_tot, parent = float(n_total), float(parent_score)
             for f in np.flatnonzero(categorical_mask):
+                # One feature's (n_bins_max, 3) slice crosses back per categorical
+                # feature scanned (not the whole histogram).
+                self._bump("cat_slice_d2h_bytes", 24 * n_bins_max)
+                self._bump("n_cat_slices", 1)
                 cand = self._cpu._best_categorical_split(
                     int(f), cp.asnumpy(hist_d[f]), int(n_bins_per_feature[f]),
                     g_tot, h_tot, n_tot, parent,
