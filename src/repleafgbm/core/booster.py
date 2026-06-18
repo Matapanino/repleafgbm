@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from repleafgbm.backends import make_split_backend
+from repleafgbm.backends.base import BaseSplitBackend
 from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import BaseObjective
@@ -89,6 +90,12 @@ class Booster:
         #: prediction uses the first ``best_iteration_`` trees by default.
         self.best_iteration_: int | None = None
         self.best_score_: float | None = None
+        #: The split backend constructed for the last native ``fit`` (None until
+        #: fitted, and for the frozen-route replay path which never splits). A
+        #: runtime-only introspection handle — never serialized — so profiling
+        #: tools can read backend-private stats (e.g. the CUDA backend's
+        #: transfer counters) after an end-to-end fit.
+        self.split_backend_: BaseSplitBackend | None = None
 
     # ------------------------------------------------------------------ #
     # Training
@@ -114,6 +121,7 @@ class Booster:
             min_data_per_group=p.min_data_per_group,
             max_cat_threshold=p.max_cat_threshold,
         )
+        self.split_backend_ = splitter.backend
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
         return self._run_boosting(
             dataset, encoder, leaf_model,

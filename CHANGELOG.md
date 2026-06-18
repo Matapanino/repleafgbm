@@ -5,6 +5,48 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.6.0] - 2026-06-18
+
+GPU/native acceleration **measurement** release: a benchmark/profiling harness
+and CUDA transfer counters that quantify where the GPU path spends its
+host↔device traffic, so later kernel work is evidence-driven. Pure additions —
+no kernel, default, leaf math, model format (still v6), or NumPy/Rust/CUDA
+parity change; existing models load and predict bit-for-bit identically.
+
+### Added
+- **`benchmarks/gpu_profile.py`** — single-case benchmark runner that appends a
+  JSONL row (timings, quality, peak host RSS via stdlib `resource`, peak GPU
+  pool bytes, per-fit `transfer_bytes`, environment) and regenerates a
+  `summary.md`. Reuses the synthetic signal / argparse helpers in
+  `benchmarks/common.py`; `numpy`/`rust` backends run on CPU, `cuda` on a GPU.
+  `--size {small,medium,large}`, `--task {regression,binary,multiclass}`, and a
+  `--parity` twin check. `phase_seconds` is reserved but emitted empty
+  (per-phase core timers deferred to keep the boosting loop untouched).
+- **CUDA backend transfer counters.** `CudaSplitBackend` now tracks per-fit H2D
+  upload bytes (binned, rows, grad/hess), small-scan histogram copy-back,
+  categorical-slice copy-back, and the winning-split scalar copy-back, exposed
+  via `get_transfer_stats()` / `reset_transfer_stats()`. Counters are private
+  integer adds at the existing transfer points — no kernel or `BaseSplitBackend`
+  contract change, and the numpy/rust paths are untouched.
+- **`Booster.split_backend_`** (also on `MulticlassBooster` /
+  `MultiOutputBooster`) — a runtime-only introspection handle to the split
+  backend a fit used, so profilers can read the CUDA counters after an
+  end-to-end fit. Never serialized; `None` on reloaded models and the
+  frozen-route replay path.
+- **GPU acceleration audit + roadmap** (`docs/gpu_audit.md`,
+  `docs/gpu_roadmap.md`, `benchmarks/README_gpu.md`) and a Colab loop extension:
+  `scripts/colab_remote_test.py` runs a `gpu_profile` smoke and appends a
+  transfer-counter table to the parity report; `scripts/colab_gpu_test.sh` pulls
+  the JSONL back.
+
+### Validated
+- Tesla T4 (`experiments/results/2026-06-18-cuda-parity.md`): parity suite green
+  (15 tests inc. the new counters); histogram micro-bench 49× vs NumPy;
+  end-to-end 1.39× (narrow 100k×30) / 2.22× (wide 50k×200). The counters confirm
+  the audit's headline finding — the per-node grad/hess host gather is the
+  dominant remaining H2D upload (≈37–61 MB/fit, ≫ the once-cached binned matrix),
+  the target of the next optimization (device-resident grad/hess).
+
 ## [1.5.0] - 2026-06-17
 
 Multi-output robust objectives and opt-in GPU encoder pretraining. Both are

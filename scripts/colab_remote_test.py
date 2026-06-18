@@ -8,7 +8,9 @@ GPU kernel. It expects the working tree to have been uploaded to
   2. ensures CuPy is importable (Colab GPU runtimes ship it),
   3. runs the CUDA parity subset (``tests/test_cuda_backend.py``) single-threaded,
   4. micro-benchmarks GPU vs NumPy histogram build,
-  5. writes a markdown report to ``/content/cuda_parity_report.md``.
+  5. runs a small ``benchmarks.gpu_profile`` smoke (numpy + cuda) that records
+     per-fit transfer volume to ``/content/gpu_bench/cases.jsonl``,
+  6. writes a markdown report to ``/content/cuda_parity_report.md``.
 
 It deliberately runs only the CUDA test module so torch / lightgbm are never
 imported (avoids the libomp deadlock) and the loop stays fast.
@@ -23,6 +25,7 @@ import time
 REPO = "/content/repleafgbm"
 TARBALL = "/content/rlgbm.tar.gz"
 REPORT = "/content/cuda_parity_report.md"
+GPU_BENCH = "/content/gpu_bench/cases.jsonl"
 ENV = {**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": f"{REPO}/src"}
 
 
@@ -123,12 +126,39 @@ def end_to_end_benchmark(n, d):
     return t_np, t_cu
 
 
+def gpu_profile_smoke():
+    """Run a few ``benchmarks.gpu_profile`` cases (numpy + cuda) and return the
+    parsed JSONL rows. The cuda rows carry the per-fit transfer counters that
+    motivate the next optimization (device-resident grad/hess)."""
+    import json
+
+    cases = [
+        # (task, n_train, n_features, leaf_model, backend) — narrow numpy/cuda
+        # pair plus a wide cuda case that exercises the on-device numeric scan.
+        ("regression", 50_000, 30, "constant", "numpy"),
+        ("regression", 50_000, 30, "constant", "cuda"),
+        ("regression", 30_000, 200, "embedded_linear", "cuda"),
+    ]
+    for task, n_train, n_features, leaf, backend in cases:
+        _run(
+            [sys.executable, "-m", "benchmarks.gpu_profile",
+             "--task", task, "--backend", backend, "--leaf-model", leaf,
+             "--n-train", str(n_train), "--n-test", "10000",
+             "--n-features", str(n_features), "--n-estimators", "30",
+             "--out", GPU_BENCH],
+            cwd=REPO, env=ENV, check=True,
+        )
+    with open(GPU_BENCH) as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
 def main():
     extract_repo()
     gpu = ensure_cupy()
     rc, summary = run_parity_tests()
     n, F, B, t_np, t_cu = micro_benchmark()
     speedup = (t_np / t_cu) if t_cu else float("nan")
+    bench_rows = gpu_profile_smoke()
 
     # Narrow (B2's worst case) and wide (B2's intended sweet spot — the per-node
     # histogram copy B2 keeps resident is biggest here) end-to-end fits.
@@ -175,6 +205,32 @@ def main():
         "_B2's value grows with per-node histogram size: narrow d is its worst "
         "case (tiny scan, GPU launch/sync overhead), wide d its best (the big "
         "per-node histogram round-trip B1 paid is now avoided)._",
+        "",
+        "## Per-fit transfer counters (`benchmarks.gpu_profile`)",
+        "",
+        "End-to-end `gpu_profile` smoke; transfer columns are the CUDA backend's "
+        "private H2D/D2H byte counters for one fit (numpy reports none). The "
+        "grad/hess H2D column is the per-node host gather the next optimization "
+        "targets — full rows saved to `gpu_bench/cases.jsonl`.",
+        "",
+        "| case_id | backend | fit (s) | binned H2D | grad/hess H2D | "
+        "winner D2H | hist D2H |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in bench_rows:
+        tb = r.get("transfer_bytes") or {}
+        lines.append(
+            f"| {r['case_id']} | {r['backend']} | {r['fit_seconds']:.2f} | "
+            f"{tb.get('binned_h2d_bytes', 0):,} | "
+            f"{tb.get('gradhess_h2d_bytes', 0):,} | "
+            f"{tb.get('winner_d2h_bytes', 0):,} | "
+            f"{tb.get('hist_d2h_bytes', 0):,} |"
+        )
+    lines += [
+        "",
+        "_Expect `binned_uploads == 1` per fit (Phase B1 cache) and a non-zero "
+        "grad/hess H2D total — that gather is what a device-resident grad/hess "
+        "buffer would remove (docs/gpu_roadmap.md, Phase 1)._",
         "",
     ]
     with open(REPORT, "w") as fh:

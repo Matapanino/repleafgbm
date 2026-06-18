@@ -222,3 +222,120 @@ def test_make_split_backend_cuda_returns_cuda():
     assert isinstance(make_split_backend("cuda"), CudaSplitBackend)
     # "auto" must never pick the GPU backend implicitly.
     assert not isinstance(make_split_backend("auto"), CudaSplitBackend)
+
+
+# --------------------------------------------------------------------------- #
+# Private transfer counters (profiling aid consumed by benchmarks/gpu_profile.py)
+# --------------------------------------------------------------------------- #
+def test_transfer_counters_build_histograms(node_data):
+    """A single build accounts for the binned upload (once) plus the per-node
+    rows + gathered grad/hess uploads (the transfer the next optimization cuts)."""
+    binned, rows, grad, hess, n_bins_max, _ = node_data
+    cu = CudaSplitBackend()
+    cu.build_histograms(binned, rows, grad, hess, n_bins_max)
+    s = cu.get_transfer_stats()
+    n_sel = rows.size
+    assert s["rows_h2d_bytes"] == 8 * n_sel
+    assert s["gradhess_h2d_bytes"] == 16 * n_sel
+    assert s["binned_h2d_bytes"] == 2 * binned.size
+    assert s["binned_uploads"] == 1
+    assert s["n_hist_builds"] == 1
+
+
+def test_transfer_counters_binned_cached_across_builds(node_data):
+    """The resident binned matrix uploads once (Phase B1); only the small
+    per-node rows/grad/hess uploads recur across builds on the same matrix."""
+    binned, rows, grad, hess, n_bins_max, _ = node_data
+    cu = CudaSplitBackend()
+    cu.build_histograms(binned, rows[:1000], grad, hess, n_bins_max)
+    cu.build_histograms(binned, rows[1000:], grad, hess, n_bins_max)
+    s = cu.get_transfer_stats()
+    assert s["binned_uploads"] == 1  # cache hit on the second build
+    assert s["binned_h2d_bytes"] == 2 * binned.size
+    assert s["n_hist_builds"] == 2
+    assert s["rows_h2d_bytes"] == 8 * rows.size  # 1000 + 2000 rows total
+
+
+def test_reset_transfer_stats(node_data):
+    binned, rows, grad, hess, n_bins_max, _ = node_data
+    cu = CudaSplitBackend()
+    cu.build_histograms(binned, rows, grad, hess, n_bins_max)
+    assert any(v > 0 for v in cu.get_transfer_stats().values())
+    cu.reset_transfer_stats()
+    assert all(v == 0 for v in cu.get_transfer_stats().values())
+
+
+def test_transfer_counters_small_scan_copies_full_histogram(node_data):
+    """Small histograms copy the whole (F, B, 3) array back for the host scan;
+    no winning-scalar pack on this path."""
+    binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
+    cu = CudaSplitBackend()
+    hist = cu.build_histograms(binned, rows, grad, hess, n_bins_max)
+    n_features = binned.shape[1]
+    assert n_features * n_bins_max < 32_768  # below the adaptive threshold
+    cu.reset_transfer_stats()
+    cu.find_best_split(hist, n_bins_pf, 20, 1.0, np.zeros(n_features, dtype=bool))
+    s = cu.get_transfer_stats()
+    assert s["n_small_scans"] == 1
+    assert s["hist_d2h_bytes"] == 24 * n_features * n_bins_max
+    assert s["n_gpu_scans"] == 0
+    assert s["winner_d2h_bytes"] == 0
+    assert s["cat_slice_d2h_bytes"] == 0
+
+
+def test_transfer_counters_large_scan_packs_winner_and_cat_slices():
+    """Large histograms keep the array resident: only the 4-scalar winner pack
+    (32 bytes) crosses back, plus one slice per categorical feature scanned."""
+    from repleafgbm.backends.cuda_backend import _GPU_SCAN_MIN_CELLS
+
+    rng = np.random.default_rng(2)
+    F = 200
+    n_bins_max = (_GPU_SCAN_MIN_CELLS // F) + 2
+    assert F * n_bins_max >= _GPU_SCAN_MIN_CELLS
+    n_cats = n_bins_max - 1
+    n = 4000
+    binned = rng.integers(0, n_cats, size=(n, F)).astype(np.uint16)
+    rows = np.arange(n, dtype=np.int64)
+    grad = rng.normal(size=n)
+    hess = np.abs(rng.normal(size=n)) + 0.1
+    n_bins_pf = np.full(F, n_cats, dtype=np.int64)
+
+    cu = CudaSplitBackend()
+    hist = cu.build_histograms(binned, rows, grad, hess, n_bins_max)
+
+    # Numeric-only: winner pack crosses back, full histogram stays resident.
+    cu.reset_transfer_stats()
+    cu.find_best_split(hist, n_bins_pf, 20, 1.0, np.zeros(F, dtype=bool))
+    s = cu.get_transfer_stats()
+    assert s["n_gpu_scans"] == 1
+    assert s["winner_d2h_bytes"] == 32
+    assert s["hist_d2h_bytes"] == 0
+    assert s["n_small_scans"] == 0
+    assert s["cat_slice_d2h_bytes"] == 0
+
+    # With categoricals: one (n_bins_max, 3) slice per categorical feature.
+    cat_mask = np.zeros(F, dtype=bool)
+    cat_mask[:3] = True
+    cu.reset_transfer_stats()
+    cu.find_best_split(hist, n_bins_pf, 20, 1.0, cat_mask, min_data_per_group=10)
+    s = cu.get_transfer_stats()
+    assert s["n_cat_slices"] == 3
+    assert s["cat_slice_d2h_bytes"] == 24 * n_bins_max * 3
+
+
+def test_booster_exposes_split_backend_handle(regression_data):
+    """The fitted booster retains its split backend so profilers can read the
+    CUDA transfer counters after an end-to-end fit (benchmarks/gpu_profile.py)."""
+    Xtr, ytr, _, _ = regression_data
+    model = RepLeafRegressor(
+        n_estimators=10, num_leaves=8, min_samples_leaf=10,
+        leaf_model="constant", split_backend="cuda", random_state=42,
+    ).fit(Xtr, ytr)
+    backend = model.booster_.split_backend_
+    assert isinstance(backend, CudaSplitBackend)
+    stats = backend.get_transfer_stats()
+    # A real fit performs many node builds, so the per-node gather is non-zero
+    # and the binned matrix uploaded exactly once.
+    assert stats["n_hist_builds"] > 0
+    assert stats["gradhess_h2d_bytes"] > 0
+    assert stats["binned_uploads"] == 1
