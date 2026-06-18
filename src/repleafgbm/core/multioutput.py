@@ -128,6 +128,11 @@ class MultiOutputBooster:
         #: handle, never serialized); see :class:`Booster.split_backend_`.
         self.split_backend_: BaseSplitBackend | None = None
 
+    def __getstate__(self) -> dict:
+        # Drop the runtime split-backend handle so the model stays picklable;
+        # see :meth:`Booster.__getstate__`.
+        return {**self.__dict__, "split_backend_": None}
+
     @property
     def n_outputs(self) -> int:
         return self.objective.n_outputs

@@ -97,6 +97,14 @@ class Booster:
         #: transfer counters) after an end-to-end fit.
         self.split_backend_: BaseSplitBackend | None = None
 
+    def __getstate__(self) -> dict:
+        # ``split_backend_`` is a runtime-only handle that can wrap an
+        # unpicklable native module (Rust) or CuPy device state; drop it so the
+        # fitted model stays picklable (sklearn check_estimator / joblib.dump).
+        # Persisted models use the JSON directory format, not pickle, so this
+        # affects only pickling; the handle restores to None on unpickle.
+        return {**self.__dict__, "split_backend_": None}
+
     # ------------------------------------------------------------------ #
     # Training
     # ------------------------------------------------------------------ #

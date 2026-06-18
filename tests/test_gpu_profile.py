@@ -77,6 +77,29 @@ def test_multiclass_case_quality_keys(tmp_path):
     assert {"multi_logloss", "accuracy"} <= set(row["quality"])
 
 
+def test_fitted_estimator_pickles_and_drops_backend_handle():
+    """The runtime ``split_backend_`` handle must not break pickling: the rust /
+    cuda backends wrap an unpicklable native module / CuPy state, so the booster
+    drops the handle on pickle (sklearn check_estimator, joblib.dump)."""
+    import pickle
+
+    import numpy as np
+
+    from repleafgbm.regressor import RepLeafRegressor
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(200, 5))
+    y = X[:, 0] + 0.1 * rng.normal(size=200)
+    model = RepLeafRegressor(
+        n_estimators=5, num_leaves=8, leaf_model="constant", split_backend="auto",
+    ).fit(X, y)
+    assert model.booster_.split_backend_ is not None  # live handle in-process
+
+    restored = pickle.loads(pickle.dumps(model))
+    assert restored.booster_.split_backend_ is None  # dropped on pickle
+    np.testing.assert_allclose(restored.predict(X), model.predict(X))
+
+
 def test_appends_rows(tmp_path):
     out = tmp_path / "cases.jsonl"
     for task in ("regression", "binary"):
