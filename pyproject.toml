@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "repleafgbm"
-version = "1.6.0"
+version = "1.7.0"
 description = "Representation-enhanced Leaf Gradient Boosting Machine: raw-feature tree routing with representation-conditioned leaf models."
 readme = "README.md"
 requires-python = ">=3.10"

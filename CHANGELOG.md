@@ -5,7 +5,7 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
-## [Unreleased]
+## [1.7.0] - 2026-06-19
 
 ### Added
 - **Internal per-phase profiler** (`repleafgbm.core.profiling`) — fills the
