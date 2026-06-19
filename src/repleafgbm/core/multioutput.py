@@ -28,6 +28,7 @@ from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import MultiOutputObjective
 from repleafgbm.core.prediction import predict_raw_multioutput
+from repleafgbm.core.profiling import PhaseProfiler, timed
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
 from repleafgbm.data import RepLeafDataset
@@ -151,6 +152,7 @@ class MultiOutputBooster:
         leaf_model: BaseLeafModel,
         eval_sets: list[tuple[str, RepLeafDataset]] | None = None,
         eval_metric: BaseMetric | None = None,
+        profiler: PhaseProfiler | None = None,
     ) -> MultiOutputBooster:
         """Grow ``n_estimators`` shared-routing vector-leaf trees."""
         if dataset.y is None:
@@ -162,7 +164,11 @@ class MultiOutputBooster:
                 f"got shape {y.shape}"
             )
         w = dataset.sample_weight
-        Z = dataset.get_embeddings(encoder) if leaf_model.uses_embeddings else None
+        if leaf_model.uses_embeddings:
+            with timed(profiler, "encoder"):
+                Z = dataset.get_embeddings(encoder)
+        else:
+            Z = None
 
         p = self.params
         if p.early_stopping_rounds is not None and not eval_sets:
@@ -179,6 +185,7 @@ class MultiOutputBooster:
             cat_smooth=p.cat_smooth,
             min_data_per_group=p.min_data_per_group,
             max_cat_threshold=p.max_cat_threshold,
+            profiler=profiler,
         )
         self.split_backend_ = splitter.backend
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
@@ -204,24 +211,27 @@ class MultiOutputBooster:
             grad, hess = self.objective.grad_hess(y, F)
             grad, hess = weight_grad_hess(grad, hess, w)
             tree, leaf_rows = grower.grow(grad, hess)
-            leaf_values = fit_vector_leaves(
-                leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
-            )
+            with timed(profiler, "leaf_fit"):
+                leaf_values = fit_vector_leaves(
+                    leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
+                )
             self.trees_.append(tree)
             self.leaf_values_.append(leaf_values)
 
-            for i, rows in enumerate(leaf_rows):
-                leaf_idx[rows] = i
-            # clip=False is exact on training rows (see Booster).
-            F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
+            with timed(profiler, "eval"):
+                for i, rows in enumerate(leaf_rows):
+                    leaf_idx[rows] = i
+                # clip=False is exact on training rows (see Booster).
+                F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
 
             if evals and eval_metric is not None:
-                for name, Xe, ye, Ze, Fe in evals:
-                    Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
-                    pred = self.objective.transform(Fe)
-                    self.evals_result_[name][eval_metric.name].append(
-                        eval_metric(ye, pred)
-                    )
+                with timed(profiler, "eval"):
+                    for name, Xe, ye, Ze, Fe in evals:
+                        Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
+                        pred = self.objective.transform(Fe)
+                        self.evals_result_[name][eval_metric.name].append(
+                            eval_metric(ye, pred)
+                        )
                 if p.early_stopping_rounds is not None:
                     score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
                     improved = best_score is None or (

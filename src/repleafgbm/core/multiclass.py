@@ -26,6 +26,7 @@ from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import MulticlassSoftmax
 from repleafgbm.core.prediction import predict_raw_multiclass
+from repleafgbm.core.profiling import PhaseProfiler, timed
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
 from repleafgbm.data import RepLeafDataset
@@ -82,13 +83,18 @@ class MulticlassBooster:
         leaf_model: BaseLeafModel,
         eval_sets: list[tuple[str, RepLeafDataset]] | None = None,
         eval_metric: BaseMetric | None = None,
+        profiler: PhaseProfiler | None = None,
     ) -> MulticlassBooster:
         """Grow ``n_estimators`` rounds of ``n_classes`` trees each."""
         if dataset.y is None:
             raise ValueError("Training dataset must contain a target (y)")
         y = dataset.y.astype(np.int64)
         w = dataset.sample_weight
-        Z = dataset.get_embeddings(encoder) if leaf_model.uses_embeddings else None
+        if leaf_model.uses_embeddings:
+            with timed(profiler, "encoder"):
+                Z = dataset.get_embeddings(encoder)
+        else:
+            Z = None
 
         p = self.params
         if p.early_stopping_rounds is not None and not eval_sets:
@@ -105,6 +111,7 @@ class MulticlassBooster:
             cat_smooth=p.cat_smooth,
             min_data_per_group=p.min_data_per_group,
             max_cat_threshold=p.max_cat_threshold,
+            profiler=profiler,
         )
         self.split_backend_ = splitter.backend
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
@@ -133,28 +140,33 @@ class MulticlassBooster:
             round_trees: list[tuple[Tree, LeafValues]] = []
             for k in range(n_classes):
                 tree, leaf_rows = grower.grow(grad[:, k], hess[:, k])
-                leaf_values = leaf_model.fit_leaves(
-                    leaf_rows, grad[:, k], hess[:, k], Z
-                )
+                with timed(profiler, "leaf_fit"):
+                    leaf_values = leaf_model.fit_leaves(
+                        leaf_rows, grad[:, k], hess[:, k], Z
+                    )
                 self.trees_.append(tree)
                 self.leaf_values_.append(leaf_values)
                 round_trees.append((tree, leaf_values))
 
-                for i, rows in enumerate(leaf_rows):
-                    leaf_idx[rows] = i
-                # clip=False is exact on training rows (see Booster).
-                F[:, k] += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
+                with timed(profiler, "eval"):
+                    for i, rows in enumerate(leaf_rows):
+                        leaf_idx[rows] = i
+                    # clip=False is exact on training rows (see Booster).
+                    F[:, k] += p.learning_rate * leaf_values.predict(
+                        leaf_idx, Z, clip=False
+                    )
 
             if evals and eval_metric is not None:
-                for name, Xe, ye, Ze, Fe in evals:
-                    for k, (tree, leaf_values) in enumerate(round_trees):
-                        Fe[:, k] += p.learning_rate * leaf_values.predict(
-                            tree.apply(Xe), Ze
+                with timed(profiler, "eval"):
+                    for name, Xe, ye, Ze, Fe in evals:
+                        for k, (tree, leaf_values) in enumerate(round_trees):
+                            Fe[:, k] += p.learning_rate * leaf_values.predict(
+                                tree.apply(Xe), Ze
+                            )
+                        pred = self.objective.transform(Fe)
+                        self.evals_result_[name][eval_metric.name].append(
+                            eval_metric(ye, pred)
                         )
-                    pred = self.objective.transform(Fe)
-                    self.evals_result_[name][eval_metric.name].append(
-                        eval_metric(ye, pred)
-                    )
                 if p.early_stopping_rounds is not None:
                     score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
                     improved = best_score is None or (

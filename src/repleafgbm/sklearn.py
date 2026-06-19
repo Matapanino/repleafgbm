@@ -23,6 +23,7 @@ from repleafgbm.core.booster import Booster, BoosterParams
 from repleafgbm.core.leaf_models import make_leaf_model
 from repleafgbm.core.metrics import BaseMetric, get_metric, make_metric
 from repleafgbm.core.objectives import BaseObjective, get_objective
+from repleafgbm.core.profiling import profiler_from_env, timed
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders import RandomProjectionEncoder, make_encoder
@@ -241,10 +242,15 @@ class BaseRepLeafModel(BaseEstimator):
                 "supported in v0; see docs/roadmap.md"
             )
 
-        dataset = self._build_dataset(X, y)
-        dataset = self._prepare_target(dataset, is_train=True)
-        weight = self._resolve_sample_weight(dataset, sample_weight)
-        dataset.sample_weight = self._enforce_weight_capability(weight)
+        # Internal phase profiler (None unless REPLEAFGBM_PROFILE is set); threaded
+        # through preprocessing, the encoder, and the booster, then exposed as the
+        # fitted ``phase_seconds_`` attribute. Off by default — see core.profiling.
+        profiler = profiler_from_env()
+        with timed(profiler, "preprocessing"):
+            dataset = self._build_dataset(X, y)
+            dataset = self._prepare_target(dataset, is_train=True)
+            weight = self._resolve_sample_weight(dataset, sample_weight)
+            dataset.sample_weight = self._enforce_weight_capability(weight)
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
@@ -252,9 +258,12 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_model = make_leaf_model(
             self.leaf_model, l2=self.l2_leaf, min_samples_linear=2 * self.min_samples_leaf
         )
-        self.encoder_ = (
-            self._build_and_fit_encoder(dataset) if leaf_model.uses_embeddings else None
-        )
+        with timed(profiler, "encoder"):
+            self.encoder_ = (
+                self._build_and_fit_encoder(dataset)
+                if leaf_model.uses_embeddings
+                else None
+            )
 
         eval_sets = self._prepare_eval_sets(eval_set)
 
@@ -283,8 +292,13 @@ class BaseRepLeafModel(BaseEstimator):
             leaf_model,
             eval_sets=eval_sets or None,
             eval_metric=self._resolve_eval_metric(),
+            profiler=profiler,
         )
         self.evals_result_ = self.booster_.evals_result_
+        if profiler is not None:
+            #: Per-phase fit wall-clock seconds (only when profiling is enabled);
+            #: ``_predict_raw`` adds a "predict" entry. Internal/benchmark aid.
+            self.phase_seconds_ = profiler.as_dict()
         return self
 
     def get_feature_importance(self, importance_type: str = "gain") -> np.ndarray:
@@ -550,7 +564,14 @@ class BaseRepLeafModel(BaseEstimator):
             dataset = RepLeafDataset(X, metadata=self.metadata_)
         X_raw = dataset.get_raw_features()
         Z = dataset.get_embeddings(self.encoder_) if self.encoder_ is not None else None
-        return self.booster_.predict_raw(X_raw, Z)
+        profiler = profiler_from_env()
+        if profiler is None:
+            return self.booster_.predict_raw(X_raw, Z)
+        with profiler.phase("predict"):
+            out = self.booster_.predict_raw(X_raw, Z)
+        # Merge into any fit-time phases so a profiled fit+predict reports both.
+        self.phase_seconds_ = {**getattr(self, "phase_seconds_", {}), **profiler.as_dict()}
+        return out
 
     def _check_metadata_compatible(self, dataset: RepLeafDataset, context: str) -> None:
         """Reject datasets whose preprocessing differs from training.

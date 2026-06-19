@@ -5,6 +5,21 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.7.0] - 2026-06-19
+
+### Added
+- **Internal per-phase profiler** (`repleafgbm.core.profiling`) — fills the
+  `benchmarks/gpu_profile.py` `phase_seconds` field (`docs/gpu_roadmap.md` Phase
+  0). Off by default and **not** part of the public API: set the
+  `REPLEAFGBM_PROFILE` environment variable to build a `PhaseProfiler` for one
+  fit/predict, threaded through the splitter and booster, and read the breakdown
+  (preprocessing, encoder, binning, histogram, split scan, partition, leaf fit,
+  eval, predict) off the fitted estimator's `phase_seconds_` attribute. When
+  unset, every record site is a single `is None` branch — no clock reads — so the
+  default training/prediction path, model format (still v6), and NumPy/Rust/CUDA
+  parity are unchanged. `gpu_profile.py` enables it around its timed fit/predict
+  and writes the breakdown into the JSONL row (and the `summary.md` table).
+
 ## [1.6.0] - 2026-06-18
 
 GPU/native acceleration **measurement** release: a benchmark/profiling harness

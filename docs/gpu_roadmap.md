@@ -19,8 +19,8 @@ justifies it.
 
 ## Phase 0: Baseline And Measurement
 
-Status: largely landed — the measurement harness and CUDA transfer counters are
-in; per-phase internal timers remain deferred.
+Status: landed — the measurement harness, CUDA transfer counters, and per-phase
+internal timers are all in.
 
 Tasks:
 
@@ -29,10 +29,14 @@ Tasks:
 - [x] Extend the Colab CUDA loop to run selected benchmark cases in addition to
   parity tests (`scripts/colab_remote_test.py` runs a `gpu_profile` smoke;
   `scripts/colab_gpu_test.sh` pulls back the JSONL).
-- [ ] Add optional internal timers for preprocessing, binning, histogram build,
-  split scan, partition, leaf fitting, eval, and predict. **Deferred** to keep
-  the boosting loop untouched; the JSONL `phase_seconds` field is reserved but
-  emitted empty for now.
+- [x] Add optional internal timers for preprocessing, encoder, binning,
+  histogram build, split scan, partition, leaf fitting, eval, and predict
+  (`repleafgbm.core.profiling`). Off by default; enabled per fit/predict via the
+  `REPLEAFGBM_PROFILE` env var, which builds an internal `PhaseProfiler` threaded
+  through the splitter/booster and exposed as the fitted `phase_seconds_`
+  attribute. When disabled every record site is a single `is None` branch, so the
+  default path is unchanged. `benchmarks/gpu_profile.py` sets the env var around
+  the timed fit/predict and fills the JSONL `phase_seconds` field from it.
 - [x] Add CUDA transfer counters for binned upload, rows upload, grad/hess
   upload, histogram copy-back, categorical slice copy-back, and winner copy-back
   (`CudaSplitBackend.get_transfer_stats()`; surfaced as the JSONL
@@ -52,31 +56,35 @@ Acceptance criteria:
 
 ## Phase 1: Low-risk Performance Patches
 
-### 1. Cache Full Grad/Hess Buffers On CUDA
+> **Measurement update (2026-06-19, Tesla T4).** The first patch below (CUDA
+> grad/hess device cache) was prototyped and **shelved as a null result**, and the
+> profiler redirected the GPU priority. On the CUDA path the **split scan**
+> dominates fit time — 48–54% on regression/binary, **85% on multiclass-c5** —
+> while the histogram phase the grad/hess cache feeds is only 5–23%, and the
+> grad/hess H2D it removes is <0.2% of fit wall-clock. The next GPU optimization
+> should target the split scan, not transfers (each candidate needs its own
+> design + measurement): cut the per-node GPU→host winner sync in
+> `find_best_split`, batch the multiclass per-class scans (see Phase 3.2), and
+> revisit the narrow-fit host-scan crossover (`_GPU_SCAN_MIN_CELLS`). Evidence:
+> `experiments/results/2026-06-19-cuda-gradhess-cache-verdict.md` (before/after:
+> `artifacts/gpu_bench/2026-06-18-T4` vs `2026-06-19-T4`).
+
+### 1. Cache Full Grad/Hess Buffers On CUDA — shelved (null result)
 
 Target:
 
 - `src/repleafgbm/backends/cuda_backend.py`
 
-Plan:
-
-- Cache full contiguous `grad` and `hess` arrays on device, keyed by array
-  identity plus shape/strides or by explicit cache version.
-- Change the RawKernel to read `grad[row]` and `hess[row]` rather than
-  pre-gathered `g_sel` and `h_sel`.
-- Keep the current host path for arrays that cannot be cached safely.
-
-Expected effect:
-
-- Reduces per-node H2D transfer by about `16 * n_selected_rows` bytes.
-- Removes CPU fancy-index gathers of `grad[rows]` and `hess[rows]`.
-
-Tests:
-
-- Existing CUDA parity tests.
-- Weighted regression/classification.
-- Multiclass class-column views.
-- Repeated rounds to catch stale cache reuse.
+Status: **investigated and shelved.** A device-resident grad/hess cache
+(promote-on-second-sighting, with an on-device gather kernel reading `grad[row]`/
+`hess[row]`) was prototyped and validated on a Tesla T4: parity stayed perfect
+(20/20 CUDA tests; quality bit-identical before/after) and grad/hess H2D bytes
+fell 1.1–1.3x as intended. But fit wall-clock was **unchanged** (0.89–1.09x,
+single-run noise): the grad/hess upload is the dominant remaining H2D *by bytes*
+yet only 0.04–0.2% of fit wall-clock (2–12 ms of 1.9–21 s fits), and leaf-wise
+growth + sibling subtraction already hold per-node gathers to ~2.5x n_rows/tree,
+so there was little to remove. The prototype was reverted as perf-neutral
+complexity; the GPU lever is the split scan (see the measurement update above).
 
 ### 2. Constant Leaf Vectorization
 
@@ -283,14 +291,18 @@ Tasks:
 
 ## Near-term PR Sequence
 
-1. Benchmark/profiler harness and docs sync.
-2. CUDA grad/hess device cache.
-3. Constant leaf vectorization.
-4. Rust partition kernel.
-5. Rust batched predictor.
-6. Multi-output backend scan.
-7. Multiclass batched histogram.
-8. float32/batched embedding work.
+1. Benchmark/profiler harness and docs sync. — done (Phase 0).
+2. ~~CUDA grad/hess device cache~~ — investigated and shelved as a null result
+   (2026-06-19); the profiler shows the split scan, not transfers, is the GPU
+   bottleneck. See the Phase 1 measurement update and the verdict report.
+3. CUDA split-scan optimization (design + measure first; the real GPU lever —
+   48–85% of fit, peaking on multiclass).
+4. Constant leaf vectorization.
+5. Rust partition kernel.
+6. Rust batched predictor.
+7. Multi-output backend scan.
+8. Multiclass batched histogram.
+9. float32/batched embedding work.
 
 ## Explicit Non-goals For The Next Few PRs
 
