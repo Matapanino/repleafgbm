@@ -38,6 +38,28 @@ def test_histogram_parity_exact(node_data):
     np.testing.assert_array_equal(h_np, h_rs)
 
 
+def test_histogram_parity_parallel_branch():
+    """Large node exercises the rayon feature-parallel histogram path (not the
+    small-node serial branch). Feature-parallel accumulation keeps each
+    (feature, bin) cell in row order, so it must stay bitwise-identical to the
+    NumPy reference regardless of thread count."""
+    rng = np.random.default_rng(1)
+    # 40k-row pool, 30k rows sampled: rows.len() * n_features = 30_000 * 12 =
+    # 360_000 exceeds PARALLEL_MIN_CELLS (1 << 17 = 131_072) in native/src/lib.rs,
+    # so the rayon parallel branch is taken. CI runs this multi-threaded, so the
+    # bitwise assert also guards against a future row-parallel kernel that would
+    # reorder the per-cell float sums.
+    n, n_features, n_bins_max = 40_000, 12, 65
+    binned = rng.integers(0, 64, size=(n, n_features)).astype(np.uint16)
+    binned[rng.random((n, n_features)) < 0.05] = 64  # missing bin
+    rows = np.sort(rng.choice(n, size=30_000, replace=False)).astype(np.int64)
+    grad = rng.normal(size=n)
+    hess = np.abs(rng.normal(size=n)) + 0.1
+    h_np = NumPySplitBackend().build_histograms(binned, rows, grad, hess, n_bins_max)
+    h_rs = RustSplitBackend().build_histograms(binned, rows, grad, hess, n_bins_max)
+    np.testing.assert_array_equal(h_np, h_rs)
+
+
 def test_split_parity_numeric_and_categorical(node_data):
     binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
     np_b, rs_b = NumPySplitBackend(), RustSplitBackend()
