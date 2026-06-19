@@ -24,6 +24,7 @@ from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import BaseObjective
 from repleafgbm.core.prediction import predict_raw
+from repleafgbm.core.profiling import PhaseProfiler, timed
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
 from repleafgbm.data import RepLeafDataset
@@ -115,6 +116,7 @@ class Booster:
         leaf_model: BaseLeafModel,
         eval_sets: list[tuple[str, RepLeafDataset]] | None = None,
         eval_metric: BaseMetric | None = None,
+        profiler: PhaseProfiler | None = None,
     ) -> Booster:
         """Grow trees natively; see :meth:`_run_boosting` for the loop."""
         p = self.params
@@ -128,6 +130,7 @@ class Booster:
             cat_smooth=p.cat_smooth,
             min_data_per_group=p.min_data_per_group,
             max_cat_threshold=p.max_cat_threshold,
+            profiler=profiler,
         )
         self.split_backend_ = splitter.backend
         grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
@@ -137,6 +140,7 @@ class Booster:
             n_rounds=p.n_estimators,
             eval_sets=eval_sets,
             eval_metric=eval_metric,
+            profiler=profiler,
         )
 
     def fit_with_routes(
@@ -147,6 +151,7 @@ class Booster:
         trees: list[Tree],
         eval_sets: list[tuple[str, RepLeafDataset]] | None = None,
         eval_metric: BaseMetric | None = None,
+        profiler: PhaseProfiler | None = None,
     ) -> Booster:
         """Sequential replay over frozen routing trees (router_extraction).
 
@@ -173,6 +178,7 @@ class Booster:
             n_rounds=len(trees),
             eval_sets=eval_sets,
             eval_metric=eval_metric,
+            profiler=profiler,
         )
 
     def _run_boosting(
@@ -184,6 +190,7 @@ class Booster:
         n_rounds: int,
         eval_sets: list[tuple[str, RepLeafDataset]] | None,
         eval_metric: BaseMetric | None,
+        profiler: PhaseProfiler | None = None,
     ) -> Booster:
         """The boosting loop, generic over where trees come from.
 
@@ -194,7 +201,11 @@ class Booster:
             raise ValueError("Training dataset must contain a target (y)")
         y = dataset.y
         w = dataset.sample_weight
-        Z = dataset.get_embeddings(encoder) if leaf_model.uses_embeddings else None
+        if leaf_model.uses_embeddings:
+            with timed(profiler, "encoder"):
+                Z = dataset.get_embeddings(encoder)
+        else:
+            Z = None
 
         p = self.params
         if p.early_stopping_rounds is not None and not eval_sets:
@@ -224,25 +235,28 @@ class Booster:
             grad, hess = self.objective.grad_hess(y, F)
             grad, hess = weight_grad_hess(grad, hess, w)
             tree, leaf_rows = next_tree(grad, hess)
-            leaf_values = leaf_model.fit_leaves(leaf_rows, grad, hess, Z)
+            with timed(profiler, "leaf_fit"):
+                leaf_values = leaf_model.fit_leaves(leaf_rows, grad, hess, Z)
             self.trees_.append(tree)
             self.leaf_values_.append(leaf_values)
 
-            # Update the training-score cache with the new tree only; the
-            # row partition is already known, no re-routing needed.
-            for i, rows in enumerate(leaf_rows):
-                leaf_idx[rows] = i
-            # clip=False is exact here: training rows are inside their own
-            # leaf's z-range by construction, so the guard is the identity.
-            F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
+            with timed(profiler, "eval"):
+                # Update the training-score cache with the new tree only; the
+                # row partition is already known, no re-routing needed.
+                for i, rows in enumerate(leaf_rows):
+                    leaf_idx[rows] = i
+                # clip=False is exact here: training rows are inside their own
+                # leaf's z-range by construction, so the guard is the identity.
+                F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
 
             if evals and eval_metric is not None:
-                for name, Xe, ye, Ze, Fe in evals:
-                    Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
-                    pred = self.objective.transform(Fe)
-                    self.evals_result_[name][eval_metric.name].append(
-                        eval_metric(ye, pred)
-                    )
+                with timed(profiler, "eval"):
+                    for name, Xe, ye, Ze, Fe in evals:
+                        Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
+                        pred = self.objective.transform(Fe)
+                        self.evals_result_[name][eval_metric.name].append(
+                            eval_metric(ye, pred)
+                        )
                 if p.early_stopping_rounds is not None:
                     # Monitor the first eval set, honoring the metric direction.
                     score = self.evals_result_[evals[0][0]][eval_metric.name][-1]

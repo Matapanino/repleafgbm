@@ -15,6 +15,7 @@ from repleafgbm.backends.numpy_backend import (
     find_best_split_multioutput,
 )
 from repleafgbm.core.histogram import bin_features, compute_bin_thresholds
+from repleafgbm.core.profiling import PhaseProfiler, timed
 
 
 def _as_host(hist):
@@ -57,6 +58,7 @@ class Splitter:
         cat_smooth: float = 10.0,
         min_data_per_group: int = 100,
         max_cat_threshold: int = 32,
+        profiler: PhaseProfiler | None = None,
     ) -> None:
         self.min_samples_leaf = min_samples_leaf
         self.l2 = l2
@@ -64,6 +66,8 @@ class Splitter:
         self.min_data_per_group = min_data_per_group
         self.max_cat_threshold = max_cat_threshold
         self.backend = backend or NumPySplitBackend()
+        #: Optional per-phase profiler (None disables timing; see core.profiling).
+        self._profiler = profiler
         n_features = X_raw.shape[1]
         self.is_categorical = np.zeros(n_features, dtype=bool)
         for f in categorical_indices or []:
@@ -72,24 +76,25 @@ class Splitter:
             if valid.size and int(valid.max()) + 1 <= max_bins:
                 self.is_categorical[f] = True
 
-        # Numerical features: quantile thresholds. Categorical features:
-        # the ordinal code *is* the bin (empty threshold list).
-        numeric_X = X_raw.copy()
-        numeric_X[:, self.is_categorical] = np.nan  # skip quantile work
-        self.thresholds = compute_bin_thresholds(numeric_X, max_bins=max_bins)
-        self.binned = bin_features(numeric_X, self.thresholds)
-        self.n_bins_per_feature = np.array(
-            [len(t) + 1 for t in self.thresholds], dtype=np.int64
-        )
-        for f in np.flatnonzero(self.is_categorical):
-            col = X_raw[:, f]
-            n_cats = int(np.nanmax(col)) + 1
-            codes = np.where(np.isnan(col), n_cats, col).astype(np.uint16)
-            self.binned[:, f] = codes  # missing -> bin n_cats
-            self.n_bins_per_feature[f] = n_cats
-            self.thresholds[f] = np.empty(0, dtype=np.float64)
-        # Shared histogram width: widest feature's bins + its missing bin.
-        self.n_bins_max = int(self.n_bins_per_feature.max()) + 1
+        with timed(self._profiler, "binning"):
+            # Numerical features: quantile thresholds. Categorical features:
+            # the ordinal code *is* the bin (empty threshold list).
+            numeric_X = X_raw.copy()
+            numeric_X[:, self.is_categorical] = np.nan  # skip quantile work
+            self.thresholds = compute_bin_thresholds(numeric_X, max_bins=max_bins)
+            self.binned = bin_features(numeric_X, self.thresholds)
+            self.n_bins_per_feature = np.array(
+                [len(t) + 1 for t in self.thresholds], dtype=np.int64
+            )
+            for f in np.flatnonzero(self.is_categorical):
+                col = X_raw[:, f]
+                n_cats = int(np.nanmax(col)) + 1
+                codes = np.where(np.isnan(col), n_cats, col).astype(np.uint16)
+                self.binned[:, f] = codes  # missing -> bin n_cats
+                self.n_bins_per_feature[f] = n_cats
+                self.thresholds[f] = np.empty(0, dtype=np.float64)
+            # Shared histogram width: widest feature's bins + its missing bin.
+            self.n_bins_max = int(self.n_bins_per_feature.max()) + 1
 
     def build_histograms(
         self, rows: np.ndarray, grad: np.ndarray, hess: np.ndarray
@@ -103,41 +108,44 @@ class Splitter:
         valid (it is linear in the stacked array), and the same compiled or
         NumPy ``build_histograms`` kernel is reused per output.
         """
-        if grad.ndim == 1:
-            return self.backend.build_histograms(
-                self.binned, rows, grad, hess, self.n_bins_max
-            )
-        # Multi-output: the per-output histograms are stacked and scanned on the
-        # host (find_best_split_multioutput is a NumPy path). A device backend
-        # (CUDA) returns resident arrays, so bring each to the host before
-        # np.stack, which rejects CuPy inputs; _as_host is a no-op for NumPy/Rust.
-        return np.stack(
-            [
-                _as_host(
-                    self.backend.build_histograms(
-                        self.binned, rows, grad[:, k], hess[:, k], self.n_bins_max
-                    )
+        with timed(self._profiler, "histogram"):
+            if grad.ndim == 1:
+                return self.backend.build_histograms(
+                    self.binned, rows, grad, hess, self.n_bins_max
                 )
-                for k in range(grad.shape[1])
-            ],
-            axis=-1,
-        )
+            # Multi-output: the per-output histograms are stacked and scanned on
+            # the host (find_best_split_multioutput is a NumPy path). A device
+            # backend (CUDA) returns resident arrays, so bring each to the host
+            # before np.stack, which rejects CuPy inputs; _as_host is a no-op for
+            # NumPy/Rust.
+            return np.stack(
+                [
+                    _as_host(
+                        self.backend.build_histograms(
+                            self.binned, rows, grad[:, k], hess[:, k], self.n_bins_max
+                        )
+                    )
+                    for k in range(grad.shape[1])
+                ],
+                axis=-1,
+            )
 
     def find_best_split(self, hist: np.ndarray) -> SplitCandidate | None:
-        if hist.ndim == 4:  # multi-output: shared-routing numerical scan
-            return find_best_split_multioutput(
-                hist, self.n_bins_per_feature, self.min_samples_leaf, self.l2
+        with timed(self._profiler, "split_scan"):
+            if hist.ndim == 4:  # multi-output: shared-routing numerical scan
+                return find_best_split_multioutput(
+                    hist, self.n_bins_per_feature, self.min_samples_leaf, self.l2
+                )
+            return self.backend.find_best_split(
+                hist,
+                self.n_bins_per_feature,
+                self.min_samples_leaf,
+                self.l2,
+                categorical_mask=self.is_categorical,
+                cat_smooth=self.cat_smooth,
+                min_data_per_group=self.min_data_per_group,
+                max_cat_threshold=self.max_cat_threshold,
             )
-        return self.backend.find_best_split(
-            hist,
-            self.n_bins_per_feature,
-            self.min_samples_leaf,
-            self.l2,
-            categorical_mask=self.is_categorical,
-            cat_smooth=self.cat_smooth,
-            min_data_per_group=self.min_data_per_group,
-            max_cat_threshold=self.max_cat_threshold,
-        )
 
     def threshold_value(self, split: SplitCandidate) -> float:
         """Real-valued threshold for a winning bin split (x <= t goes left).
@@ -154,11 +162,12 @@ class Splitter:
 
     def partition(self, rows: np.ndarray, split: SplitCandidate) -> tuple[np.ndarray, np.ndarray]:
         """Partition rows into (left, right); missing values go left."""
-        b = self.binned[rows, split.feature]
-        missing_bin = int(self.n_bins_per_feature[split.feature])
-        if split.left_categories is not None:
-            # Categorical bins are the ordinal codes themselves.
-            go_left = np.isin(b, split.left_categories) | (b == missing_bin)
-        else:
-            go_left = (b <= split.bin) | (b == missing_bin)
-        return rows[go_left], rows[~go_left]
+        with timed(self._profiler, "partition"):
+            b = self.binned[rows, split.feature]
+            missing_bin = int(self.n_bins_per_feature[split.feature])
+            if split.left_categories is not None:
+                # Categorical bins are the ordinal codes themselves.
+                go_left = np.isin(b, split.left_categories) | (b == missing_bin)
+            else:
+                go_left = (b <= split.bin) | (b == missing_bin)
+            return rows[go_left], rows[~go_left]

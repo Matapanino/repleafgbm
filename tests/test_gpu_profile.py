@@ -50,8 +50,15 @@ def test_regression_case_writes_valid_jsonl(tmp_path):
     assert {"rmse", "mae", "r2"} <= set(row["quality"])
     assert all(isinstance(v, float) for v in row["quality"].values())
 
-    # Deferred / non-CUDA fields are empty (not missing).
-    assert row["phase_seconds"] == {}
+    # The internal phase profiler populates phase_seconds (the harness enables
+    # it around the timed fit/predict); fit + predict phases are present.
+    phases = row["phase_seconds"]
+    assert {"preprocessing", "binning", "histogram", "split_scan",
+            "leaf_fit", "eval", "predict"} <= set(phases)
+    assert all(isinstance(v, float) and v >= 0.0 for v in phases.values())
+    assert max(phases.values()) > 0.0
+
+    # Non-CUDA transfer fields are empty (not missing).
     assert row["transfer_bytes"] == {}  # only the CUDA backend tracks transfers
     assert row["peak_gpu_bytes"] is None
 
