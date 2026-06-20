@@ -30,9 +30,13 @@ try:  # Optional compiled fast path for fused per-leaf statistics (native/).
 except ImportError:  # pragma: no cover - depends on optional extension
     _native = None
 
-#: Above this embedding width the BLAS-based NumPy path beats the scalar
-#: fused pass, so the native helper is only used for narrow embeddings.
-_NATIVE_STATS_MAX_DIM = 32
+#: Above this embedding width the BLAS-based NumPy path beats the native fused
+#: pass, so wider embeddings fall back to BLAS. The native helper is rayon
+#: leaf-parallel (parallelizing across leaves — the right axis for the small
+#: per-leaf Gram matrices, which thread poorly inside BLAS), which pushes the
+#: crossover out to ~64 at OMP_NUM_THREADS=1. Tuned with benchmarks/gpu_profile.py
+#: (--backend rust; see experiments/results/2026-06-19-leaf-fit-rayon.md).
+_NATIVE_STATS_MAX_DIM = 64
 
 #: Per-tree leaf parameters: output = bias[leaf] + Z @ weights[leaf].
 #: For constant leaves, the weight row is all zeros (weights may have zero
