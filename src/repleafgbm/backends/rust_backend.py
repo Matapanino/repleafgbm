@@ -31,6 +31,11 @@ class RustSplitBackend(BaseSplitBackend):
                 'or use split_backend="numpy".'
             ) from exc
         self._native = repleafgbm_native
+        # Cached feature-major (n_features, n_rows) copy of the binned matrix.
+        # Runtime-only handle — the backend is never serialized
+        # (Booster.__getstate__ drops split_backend_).
+        self._binned_fmajor: np.ndarray | None = None
+        self._binned_fmajor_src: np.ndarray | None = None
 
     def build_histograms(
         self,
@@ -41,12 +46,34 @@ class RustSplitBackend(BaseSplitBackend):
         n_bins_max: int,
     ) -> np.ndarray:
         return self._native.build_histograms(
-            np.ascontiguousarray(binned, dtype=np.uint16),
+            self._feature_major(binned),
             np.ascontiguousarray(rows, dtype=np.int64),
             np.ascontiguousarray(grad, dtype=np.float64),
             np.ascontiguousarray(hess, dtype=np.float64),
             int(n_bins_max),
         )
+
+    def _feature_major(self, binned: np.ndarray) -> np.ndarray:
+        """Cached feature-major ``(n_features, n_rows)`` copy of ``binned``.
+
+        The native kernel parallelizes over features and reads each feature's
+        bins as a contiguous slice; a row-major matrix would force a strided
+        per-feature gather that is memory-bound and barely scales (~1.3x). The
+        transpose is computed once per binned matrix — the Splitter reuses one
+        for the whole fit — and reused across every node and class. Values are
+        unchanged, so NumPy/Rust histograms stay bitwise-identical.
+
+        Invalidated by object identity; the cache also *holds* a reference to the
+        source so its identity cannot be recycled by the GC while cached (a fresh
+        ``binned`` is a distinct object → recompute). This keeps it correct even
+        if a backend instance were ever reused across fits.
+        """
+        if self._binned_fmajor_src is not binned:
+            self._binned_fmajor = np.ascontiguousarray(
+                np.asarray(binned, dtype=np.uint16).T
+            )
+            self._binned_fmajor_src = binned
+        return self._binned_fmajor
 
     def find_best_split(
         self,

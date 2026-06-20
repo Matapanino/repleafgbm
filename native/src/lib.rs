@@ -7,12 +7,54 @@
 //! floating-point accumulation order where it is observable (per-bin
 //! accumulation in row order; cumulative sums with the missing block added
 //! per candidate), so the two backends agree to numerical noise.
+//!
+//! `build_histograms` is parallelized across *features* (rayon): each feature
+//! owns a disjoint output slice and accumulates its bins in row order, so every
+//! `(feature, bin)` cell sees the exact same summation order as the serial scan
+//! — the histograms stay **bitwise-identical** to the NumPy reference regardless
+//! of thread count (`test_rust_backend.py::test_histogram_parity_*`). Row-wise
+//! parallelism would reorder the per-cell sums and break that, so it is avoided.
+//! The `binned` matrix is passed **feature-major** (`(n_features, n_rows)`, the
+//! `RustSplitBackend` caches the transpose), so each feature's bins are a
+//! contiguous slice and the (sorted) row gather reads them near-sequentially —
+//! without that the per-feature stride across a row-major matrix is memory-bound
+//! and barely scales.
 
-use ndarray::{Array3, ArrayView3};
+use ndarray::{Array3, ArrayView1, ArrayView3};
 use numpy::{
     IntoPyArray, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
 };
 use pyo3::prelude::*;
+use rayon::prelude::*;
+
+/// Minimum `rows * features` work before histogram construction goes parallel.
+/// Below this rayon's dispatch overhead dominates; both branches are
+/// bitwise-identical, so the threshold only trades latency, never numerics.
+const PARALLEL_MIN_CELLS: usize = 1 << 17;
+
+/// Accumulate one feature's `(n_bins_max, 3)` histogram block in row order.
+///
+/// `hf` is the disjoint output slice for this feature (grad/hess/count
+/// interleaved per bin) and `bin_row` is the feature's contiguous bins for all
+/// rows. Iterating `rows` in order preserves the per-`(feature, bin)` summation
+/// order shared with the NumPy backend, so the serial and parallel callers stay
+/// bitwise-identical.
+#[inline]
+fn accumulate_feature(
+    hf: &mut [f64],
+    bin_row: &[u16],
+    rows: &ArrayView1<'_, i64>,
+    grad: &ArrayView1<'_, f64>,
+    hess: &ArrayView1<'_, f64>,
+) {
+    for &r in rows.iter() {
+        let r = r as usize;
+        let b = bin_row[r] as usize;
+        hf[b * 3] += grad[r];
+        hf[b * 3 + 1] += hess[r];
+        hf[b * 3 + 2] += 1.0;
+    }
+}
 
 #[pyfunction]
 fn build_histograms<'py>(
@@ -23,24 +65,33 @@ fn build_histograms<'py>(
     hess: PyReadonlyArray1<'py, f64>,
     n_bins_max: usize,
 ) -> Bound<'py, PyArray3<f64>> {
-    let binned = binned.as_array();
+    let binned = binned.as_array(); // feature-major: (n_features, n_rows)
     let rows = rows.as_array();
     let grad = grad.as_array();
     let hess = hess.as_array();
-    let n_features = binned.shape()[1];
+    let n_features = binned.shape()[0];
+    let n_rows = binned.shape()[1];
+    let binned_s = binned
+        .as_slice()
+        .expect("feature-major binned must be C-contiguous");
 
     let mut hist = Array3::<f64>::zeros((n_features, n_bins_max, 3));
     let h = hist.as_slice_mut().expect("freshly allocated array is contiguous");
-    for &r in rows.iter() {
-        let r = r as usize;
-        let g = grad[r];
-        let hh = hess[r];
-        for (f, &b) in binned.row(r).iter().enumerate() {
-            let base = (f * n_bins_max + b as usize) * 3;
-            h[base] += g;
-            h[base + 1] += hh;
-            h[base + 2] += 1.0;
-        }
+    let chunk = n_bins_max * 3; // one feature's (n_bins_max, 3) output block
+
+    // Feature-parallel scatter-add: output chunk f is paired with feature f's
+    // contiguous bin row and accumulated in (sorted) row order. The per-feature
+    // summation order matches the serial scan and NumPy, so the histogram stays
+    // bitwise-identical regardless of thread count. Small nodes take the serial
+    // branch to dodge rayon's dispatch overhead.
+    if rows.len() * n_features < PARALLEL_MIN_CELLS {
+        h.chunks_mut(chunk)
+            .zip(binned_s.chunks(n_rows))
+            .for_each(|(hf, bin_row)| accumulate_feature(hf, bin_row, &rows, &grad, &hess));
+    } else {
+        h.par_chunks_mut(chunk)
+            .zip(binned_s.par_chunks(n_rows))
+            .for_each(|(hf, bin_row)| accumulate_feature(hf, bin_row, &rows, &grad, &hess));
     }
     hist.into_pyarray(py)
 }
