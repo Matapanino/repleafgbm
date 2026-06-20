@@ -32,6 +32,13 @@ use rayon::prelude::*;
 /// bitwise-identical, so the threshold only trades latency, never numerics.
 const PARALLEL_MIN_CELLS: usize = 1 << 17;
 
+/// Minimum `rows * d` work before the per-leaf statistics loop goes parallel.
+/// Leaf-parallelism writes disjoint per-leaf output chunks and accumulates each
+/// leaf's rows in order, so it is bitwise-identical to the serial branch — the
+/// threshold only trades latency, never numerics. Below it rayon's dispatch
+/// overhead dominates (small trees / tiny datasets take the serial branch).
+const LEAF_PARALLEL_MIN_CELLS: usize = 1 << 16;
+
 /// Accumulate one feature's `(n_bins_max, 3)` histogram block in row order.
 ///
 /// `hf` is the disjoint output slice for this feature (grad/hess/count
@@ -275,14 +282,73 @@ fn best_categorical_split(
     best
 }
 
+/// Accumulate one leaf's fused statistics into its disjoint output chunks.
+///
+/// `gram_j`/`s_hz_j`/`gz_j`/`zmin_j`/`zmax_j` are this leaf's `(d*d)` / `d`
+/// output slices (already zeroed / set to ±inf by the caller); the shared
+/// `grad`/`hess`/`order`/`offsets`/`z_s` are read-only. Rows are visited in
+/// leaf order, so the per-leaf accumulation order is identical whether this is
+/// called serially or from a rayon worker — the parallel and serial branches
+/// stay bitwise-identical.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn accumulate_leaf(
+    gram_j: &mut [f64],
+    s_hz_j: &mut [f64],
+    gz_j: &mut [f64],
+    zmin_j: &mut [f64],
+    zmax_j: &mut [f64],
+    li: i64,
+    d: usize,
+    offsets: &ArrayView1<'_, i64>,
+    order: &ArrayView1<'_, i64>,
+    grad: &ArrayView1<'_, f64>,
+    hess: &ArrayView1<'_, f64>,
+    z_s: &[f64],
+) {
+    let l = li as usize;
+    for idx in offsets[l]..offsets[l + 1] {
+        let r = order[idx as usize] as usize;
+        let g = grad[r];
+        let h = hess[r];
+        let row = &z_s[r * d..(r + 1) * d];
+        for a in 0..d {
+            let za = row[a];
+            s_hz_j[a] += h * za;
+            gz_j[a] += g * za;
+            if za < zmin_j[a] {
+                zmin_j[a] = za;
+            }
+            if za > zmax_j[a] {
+                zmax_j[a] = za;
+            }
+            let hza = h * za;
+            let grow = a * d;
+            for b in a..d {
+                gram_j[grow + b] += hza * row[b];
+            }
+        }
+    }
+    // Mirror the upper triangle.
+    for a in 1..d {
+        for b in 0..a {
+            gram_j[a * d + b] = gram_j[b * d + a];
+        }
+    }
+}
+
 /// Fused per-leaf statistics for embedded-linear leaf fitting (Phase 11).
 ///
 /// One pass over the rows (in leaf order) computes, per linear-eligible
 /// leaf, everything the batched normal equations need except the LAPACK
 /// solve: weighted Gram matrix, gradient projection, weighted embedding
-/// sums, and the extrapolation-guard min/max. Intended for narrow
-/// embeddings (the scalar Gram loop beats BLAS only for small d; the
-/// Python caller routes wide embeddings to the NumPy path).
+/// sums, and the extrapolation-guard min/max. The per-leaf loop is rayon
+/// leaf-parallel — each leaf writes disjoint output chunks and accumulates
+/// its own rows in order, so results are bitwise-identical to a serial scan
+/// regardless of thread count. Parallelizing across leaves (rather than
+/// threading each small per-leaf BLAS Gram, which scales poorly) is the right
+/// axis, so the Python caller routes embeddings up to `_NATIVE_STATS_MAX_DIM`
+/// here and only falls back to BLAS for very wide ones.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 fn leaf_linear_stats<'py>(
@@ -331,43 +397,48 @@ fn leaf_linear_stats<'py>(
     let mut gz = ndarray::Array2::<f64>::zeros((k, d));
     let mut z_min = ndarray::Array2::<f64>::from_elem((k, d), f64::INFINITY);
     let mut z_max = ndarray::Array2::<f64>::from_elem((k, d), f64::NEG_INFINITY);
-    {
+    if d > 0 {
         let s_hz = s_hz.as_slice_mut().unwrap();
         let gram = gram.as_slice_mut().unwrap();
         let gz = gz.as_slice_mut().unwrap();
         let z_min = z_min.as_slice_mut().unwrap();
         let z_max = z_max.as_slice_mut().unwrap();
-        for (j, &li) in linear.iter().enumerate() {
-            let l = li as usize;
-            let (sh, gr, gj) = (j * d, j * d * d, j * d);
-            for idx in offsets[l]..offsets[l + 1] {
-                let r = order[idx as usize] as usize;
-                let g = grad[r];
-                let h = hess[r];
-                let row = &z_s[r * d..(r + 1) * d];
-                for a in 0..d {
-                    let za = row[a];
-                    s_hz[sh + a] += h * za;
-                    gz[gj + a] += g * za;
-                    if za < z_min[sh + a] {
-                        z_min[sh + a] = za;
-                    }
-                    if za > z_max[sh + a] {
-                        z_max[sh + a] = za;
-                    }
-                    let hza = h * za;
-                    let grow = gr + a * d;
-                    for b in a..d {
-                        gram[grow + b] += hza * row[b];
-                    }
-                }
-            }
-            // Mirror the upper triangle.
-            for a in 1..d {
-                for b in 0..a {
-                    gram[gr + a * d + b] = gram[gr + b * d + a];
-                }
-            }
+        let linear_s = linear
+            .as_slice()
+            .expect("linear indices must be C-contiguous");
+
+        // Leaf-parallel: each leaf owns disjoint (d*d)/(d) output chunks and
+        // reads the shared, immutable grad/hess/order/offsets/Z, so the rayon
+        // and serial branches produce bitwise-identical per-leaf stats. Small
+        // batches take the serial branch to dodge rayon's dispatch overhead
+        // (same shape as build_histograms above). `order.len()` is the total
+        // routed-row count (all leaves), a coarse proxy for per-leaf work.
+        if k < 2 || order.len() * d < LEAF_PARALLEL_MIN_CELLS {
+            gram.chunks_mut(d * d)
+                .zip(s_hz.chunks_mut(d))
+                .zip(gz.chunks_mut(d))
+                .zip(z_min.chunks_mut(d))
+                .zip(z_max.chunks_mut(d))
+                .zip(linear_s.iter())
+                .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
+                    accumulate_leaf(
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, d, &offsets,
+                        &order, &grad, &hess, z_s,
+                    );
+                });
+        } else {
+            gram.par_chunks_mut(d * d)
+                .zip(s_hz.par_chunks_mut(d))
+                .zip(gz.par_chunks_mut(d))
+                .zip(z_min.par_chunks_mut(d))
+                .zip(z_max.par_chunks_mut(d))
+                .zip(linear_s.par_iter())
+                .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
+                    accumulate_leaf(
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, d, &offsets,
+                        &order, &grad, &hess, z_s,
+                    );
+                });
         }
     }
     (

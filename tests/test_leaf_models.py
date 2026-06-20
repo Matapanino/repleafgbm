@@ -108,14 +108,20 @@ def test_batched_fit_matches_reference_implementation():
         np.testing.assert_array_equal(lv.z_max[i], Z[rows].max(axis=0))
 
 
-def test_native_and_numpy_stat_paths_agree(monkeypatch):
-    """When the compiled helper is installed, the Rust fused-stats path and
-    the NumPy path must produce the same leaf models (to float noise)."""
+@pytest.mark.parametrize("d", [8, 33, 48, 64])
+def test_native_and_numpy_stat_paths_agree(monkeypatch, d):
+    """The Rust fused-stats path and the NumPy/BLAS path must produce the same
+    leaf models (to float noise) across the embedding widths the native gate
+    now covers (``_NATIVE_STATS_MAX_DIM`` == 64). With n=1500 rows, d=8/33 take
+    the native serial branch while d=48/64 exceed ``LEAF_PARALLEL_MIN_CELLS``
+    and exercise the rayon leaf-parallel branch; d>32 also guards the raised
+    gate (native vs BLAS up to d=64)."""
     pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
     import repleafgbm.core.leaf_models as lm
 
+    assert d <= lm._NATIVE_STATS_MAX_DIM  # every case must reach the native path
     rng = np.random.default_rng(10)
-    n, d = 1500, 8
+    n = 1500
     Z = rng.normal(size=(n, d))
     residual = Z @ rng.normal(size=d) + rng.normal(0, 0.2, n)
     g, h = -residual, np.abs(rng.normal(1.0, 0.3, n)) + 0.1
@@ -127,9 +133,13 @@ def test_native_and_numpy_stat_paths_agree(monkeypatch):
     monkeypatch.setattr(lm, "_native", None)
     lv_numpy = model.fit_leaves(leaf_rows, g, h, Z)
 
-    np.testing.assert_allclose(lv_native.bias, lv_numpy.bias, rtol=1e-9)
+    # Native (scalar/rayon Gram) and BLAS accumulate in different orders — the
+    # native per-element three-way product (h*za*row[b]) vs BLAS's Zl.T @ hZ — so
+    # the divergence grows with d; use the project's documented leaf-fit allclose
+    # tolerance (as in tests/test_rust_backend.py) rather than the d=8-era 1e-9.
+    np.testing.assert_allclose(lv_native.bias, lv_numpy.bias, rtol=1e-6, atol=1e-8)
     np.testing.assert_allclose(lv_native.weights, lv_numpy.weights,
-                               rtol=1e-9, atol=1e-12)
+                               rtol=1e-6, atol=1e-8)
     np.testing.assert_array_equal(lv_native.z_min, lv_numpy.z_min)
     np.testing.assert_array_equal(lv_native.z_max, lv_numpy.z_max)
 
