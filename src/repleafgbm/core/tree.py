@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import heapq
 import itertools
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -138,115 +139,320 @@ class _GrowCandidate:
     hist: np.ndarray = field(compare=False)
 
 
-class TreeGrower:
-    """Grows one tree leaf-wise (best-gain-first), like LightGBM.
+@dataclass
+class _NodeStore:
+    """Growable node arrays for one tree (node 0 is the root).
 
-    Leaf-wise growth makes ``num_leaves`` the natural complexity control;
-    ``max_depth`` (-1 = unlimited) additionally caps depth.
+    All three growth policies populate this same flat structure — they differ
+    only in *which* node they split next and in what order — then hand it to
+    :meth:`TreeGrower._finalize`, which assigns leaf ids and builds the ``Tree``.
     """
+
+    feature: list[int]
+    threshold: list[float]
+    left: list[int]
+    right: list[int]
+    gain: list[float]
+    left_cats: list[np.ndarray | None]
+    node_rows: dict[int, np.ndarray]
+
+
+class TreeGrower:
+    """Grows one tree under a configurable ``grow_policy`` on raw features.
+
+    * ``"leafwise"`` (default): best-gain-first growth like LightGBM, where
+      ``num_leaves`` is the natural complexity control and ``max_depth``
+      (-1 = unlimited) additionally caps depth. Unchanged from earlier versions.
+    * ``"depthwise"``: level-order (breadth-first) growth to ``max_depth``, like
+      XGBoost's ``grow_policy=depthwise``; ``num_leaves`` still applies as an
+      optional secondary cap.
+    * ``"symmetric"``: CatBoost-style oblivious trees — every node at a level
+      shares one ``(feature, threshold)`` chosen to maximize the *summed*
+      per-node gain, giving a complete tree with up to ``2**max_depth`` leaves
+      and strong implicit regularization. Numeric/ordered splits and scalar
+      targets only in v0 (see :meth:`_grow_symmetric`).
+
+    ``depthwise`` and ``symmetric`` require ``max_depth >= 1``. Routing always
+    uses raw features only; leaf modeling is orthogonal (see leaf_models).
+    """
+
+    _POLICIES = ("leafwise", "depthwise", "symmetric")
 
     def __init__(
         self,
         splitter: Splitter,
         num_leaves: int = 31,
         max_depth: int = -1,
+        grow_policy: str = "leafwise",
     ) -> None:
         if num_leaves < 2:
             raise ValueError(f"num_leaves must be >= 2, got {num_leaves}")
+        if grow_policy not in self._POLICIES:
+            raise ValueError(
+                f"grow_policy must be one of {self._POLICIES}, got {grow_policy!r}"
+            )
+        if grow_policy in ("depthwise", "symmetric") and max_depth < 1:
+            raise ValueError(
+                f"grow_policy={grow_policy!r} requires max_depth >= 1 (a finite "
+                f"depth bounds the tree); got max_depth={max_depth}. Set a positive "
+                "max_depth, or use grow_policy='leafwise'."
+            )
         self.splitter = splitter
         self.num_leaves = num_leaves
         self.max_depth = max_depth
+        self.grow_policy = grow_policy
 
     def grow(
         self, grad: np.ndarray, hess: np.ndarray
     ) -> tuple[Tree, list[np.ndarray]]:
         """Grow a tree on the full training set; returns (tree, rows-per-leaf)."""
-        n_rows = self.splitter.binned.shape[0]
-        all_rows = np.arange(n_rows, dtype=np.int64)
+        if self.grow_policy == "depthwise":
+            return self._grow_depthwise(grad, hess)
+        if self.grow_policy == "symmetric":
+            return self._grow_symmetric(grad, hess)
+        return self._grow_leafwise(grad, hess)
 
-        # Growable node store; flattened to arrays at the end.
-        feature: list[int] = [-1]
-        threshold: list[float] = [np.nan]
-        left: list[int] = [-1]
-        right: list[int] = [-1]
-        gain: list[float] = [0.0]
-        left_cats: list[np.ndarray | None] = [None]
-        node_rows: dict[int, np.ndarray] = {0: all_rows}
+    # ------------------------------------------------------------------ #
+    # Growth policies
+    # ------------------------------------------------------------------ #
+    def _grow_leafwise(
+        self, grad: np.ndarray, hess: np.ndarray
+    ) -> tuple[Tree, list[np.ndarray]]:
+        """Best-gain-first growth (the historical default).
 
+        A max-heap on split gain pops the most promising leaf each step until
+        ``num_leaves`` is reached.
+        """
+        store = self._new_store()
         counter = itertools.count()  # deterministic heap tie-break
         heap: list[_GrowCandidate] = []
-        if self._can_split(all_rows, depth=0):
-            root_hist = self.splitter.build_histograms(all_rows, grad, hess)
-            self._push_candidate(heap, counter, 0, all_rows, depth=0, hist=root_hist)
+        root_rows = store.node_rows[0]
+        if self._can_split(root_rows, depth=0):
+            root_hist = self.splitter.build_histograms(root_rows, grad, hess)
+            root = self._make_candidate(counter, 0, root_rows, 0, root_hist)
+            if root is not None:
+                heapq.heappush(heap, root)
 
         n_leaves = 1
         while heap and n_leaves < self.num_leaves:
             cand = heapq.heappop(heap)
-            rows_l, rows_r = self.splitter.partition(cand.rows, cand.split)
-            li, ri = len(feature), len(feature) + 1
-            for _ in range(2):
-                feature.append(-1)
-                threshold.append(np.nan)
-                left.append(-1)
-                right.append(-1)
-                gain.append(0.0)
-                left_cats.append(None)
-            feature[cand.node_index] = cand.split.feature
-            if cand.split.left_categories is not None:
-                # Categorical subset split: codes compared by membership,
-                # stored as float64 to match the raw feature matrix.
-                left_cats[cand.node_index] = cand.split.left_categories.astype(
-                    np.float64
-                )
-            else:
-                threshold[cand.node_index] = self.splitter.threshold_value(cand.split)
-            left[cand.node_index] = li
-            right[cand.node_index] = ri
-            gain[cand.node_index] = cand.split.gain
-            del node_rows[cand.node_index]
-            node_rows[li] = rows_l
-            node_rows[ri] = rows_r
             n_leaves += 1
+            for node_index, rows, depth, hist in self._expand(store, grad, hess, cand):
+                child = self._make_candidate(counter, node_index, rows, depth, hist)
+                if child is not None:
+                    heapq.heappush(heap, child)
+        return self._finalize(store)
 
-            # Sibling subtraction: accumulate the smaller child's histogram,
-            # derive the larger one from the parent's.
-            child_depth = cand.depth + 1
-            can_l = self._can_split(rows_l, child_depth)
-            can_r = self._can_split(rows_r, child_depth)
-            hist_l = hist_r = None
-            if can_l or can_r:
-                if rows_l.shape[0] <= rows_r.shape[0]:
-                    hist_l = self.splitter.build_histograms(rows_l, grad, hess)
-                    if can_r:
-                        hist_r = cand.hist - hist_l
-                else:
-                    hist_r = self.splitter.build_histograms(rows_r, grad, hess)
-                    if can_l:
-                        hist_l = cand.hist - hist_r
-            if can_l:
-                self._push_candidate(heap, counter, li, rows_l, child_depth, hist_l)
-            if can_r:
-                self._push_candidate(heap, counter, ri, rows_r, child_depth, hist_r)
+    def _grow_depthwise(
+        self, grad: np.ndarray, hess: np.ndarray
+    ) -> tuple[Tree, list[np.ndarray]]:
+        """Level-order growth to ``max_depth`` (XGBoost ``grow_policy=depthwise``).
 
-        # Remaining entries in node_rows are the final leaves.
-        n_nodes = len(feature)
+        A FIFO queue expands nodes breadth-first, so the tree fills level by
+        level; ``_can_split`` stops it at ``max_depth``. ``num_leaves`` remains an
+        optional secondary cap (raise it to allow a full depth-``d`` tree).
+        """
+        store = self._new_store()
+        counter = itertools.count()  # deterministic tie-break inside _GrowCandidate
+        frontier: deque[_GrowCandidate] = deque()
+        root_rows = store.node_rows[0]
+        if self._can_split(root_rows, depth=0):
+            root_hist = self.splitter.build_histograms(root_rows, grad, hess)
+            root = self._make_candidate(counter, 0, root_rows, 0, root_hist)
+            if root is not None:
+                frontier.append(root)
+
+        n_leaves = 1
+        while frontier and n_leaves < self.num_leaves:
+            cand = frontier.popleft()  # FIFO -> breadth-first / level order
+            n_leaves += 1
+            for node_index, rows, depth, hist in self._expand(store, grad, hess, cand):
+                child = self._make_candidate(counter, node_index, rows, depth, hist)
+                if child is not None:
+                    frontier.append(child)
+        return self._finalize(store)
+
+    def _grow_symmetric(
+        self, grad: np.ndarray, hess: np.ndarray
+    ) -> tuple[Tree, list[np.ndarray]]:
+        """CatBoost-style oblivious growth: one shared split per level.
+
+        Each level picks the single ``(feature, bin)`` maximizing the summed
+        per-node gain (host-side :meth:`Splitter.find_best_level_split`) and
+        applies it to *every* node, doubling the level. A candidate must be valid
+        at all nodes, so growth is all-or-none per level and the tree stays
+        complete (up to ``2**max_depth`` leaves). v0 limitations: scalar targets
+        only (multi-output raises), and numeric/ordered-threshold splits only
+        (categorical features route as ordered thresholds, no subset splits).
+        """
+        if grad.ndim > 1:
+            raise NotImplementedError(
+                "grow_policy='symmetric' does not support multi-output / vector "
+                "targets in v0; use grow_policy='leafwise' or 'depthwise'."
+            )
+        store = self._new_store()
+        root_rows = store.node_rows[0]
+        if not self._can_split(root_rows, depth=0):
+            return self._finalize(store)  # root-only tree
+        root_hist = self.splitter.build_histograms(root_rows, grad, hess)
+        # One level at a time: (node_index, rows, histogram) sharing one split.
+        level = [(0, root_rows, root_hist)]
+        for depth in range(self.max_depth):
+            if not level or not all(
+                self._can_split(rows, depth) for _, rows, _ in level
+            ):
+                break
+            choice = self.splitter.find_best_level_split([h for _, _, h in level])
+            if choice is None:
+                break  # no globally-valid split improves the level
+            feature, bin_ = choice
+            build_children = depth + 1 < self.max_depth
+            next_level: list[tuple[int, np.ndarray, np.ndarray]] = []
+            for node_index, rows, hist in level:
+                split = self.splitter.split_at(hist, feature, bin_)
+                rows_l, rows_r = self.splitter.partition(rows, split)
+                li, ri = self._commit_split(store, node_index, split, rows_l, rows_r)
+                if build_children:
+                    hist_l, hist_r = self._child_hists(
+                        grad, hess, hist, rows_l, rows_r, can_l=True, can_r=True
+                    )
+                    next_level.append((li, rows_l, hist_l))
+                    next_level.append((ri, rows_r, hist_r))
+            level = next_level
+        return self._finalize(store)
+
+    # ------------------------------------------------------------------ #
+    # Shared scaffolding
+    # ------------------------------------------------------------------ #
+    def _new_store(self) -> _NodeStore:
+        """Fresh node store holding just the root (all rows)."""
+        n_rows = self.splitter.binned.shape[0]
+        all_rows = np.arange(n_rows, dtype=np.int64)
+        return _NodeStore(
+            feature=[-1],
+            threshold=[np.nan],
+            left=[-1],
+            right=[-1],
+            gain=[0.0],
+            left_cats=[None],
+            node_rows={0: all_rows},
+        )
+
+    def _commit_split(
+        self,
+        store: _NodeStore,
+        node_index: int,
+        split: SplitCandidate,
+        rows_l: np.ndarray,
+        rows_r: np.ndarray,
+    ) -> tuple[int, int]:
+        """Turn ``node_index`` into an internal node; append its two leaf slots.
+
+        Returns the new (left, right) child node indices. Identical bookkeeping
+        for every policy: set the split feature/threshold (or categorical subset),
+        the gain, and the child row partitions.
+        """
+        li, ri = len(store.feature), len(store.feature) + 1
+        for _ in range(2):
+            store.feature.append(-1)
+            store.threshold.append(np.nan)
+            store.left.append(-1)
+            store.right.append(-1)
+            store.gain.append(0.0)
+            store.left_cats.append(None)
+        store.feature[node_index] = split.feature
+        if split.left_categories is not None:
+            # Categorical subset split: codes compared by membership, stored as
+            # float64 to match the raw feature matrix.
+            store.left_cats[node_index] = split.left_categories.astype(np.float64)
+        else:
+            store.threshold[node_index] = self.splitter.threshold_value(split)
+        store.left[node_index] = li
+        store.right[node_index] = ri
+        store.gain[node_index] = split.gain
+        del store.node_rows[node_index]
+        store.node_rows[li] = rows_l
+        store.node_rows[ri] = rows_r
+        return li, ri
+
+    def _child_hists(
+        self,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        parent_hist: np.ndarray,
+        rows_l: np.ndarray,
+        rows_r: np.ndarray,
+        can_l: bool,
+        can_r: bool,
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Child histograms via sibling subtraction.
+
+        Build the smaller child directly and derive the larger from the parent
+        (``parent - child == sibling``). A child whose ``can_*`` flag is False is
+        not needed downstream and returned as None (its histogram is not built).
+        """
+        hist_l = hist_r = None
+        if can_l or can_r:
+            if rows_l.shape[0] <= rows_r.shape[0]:
+                hist_l = self.splitter.build_histograms(rows_l, grad, hess)
+                if can_r:
+                    hist_r = parent_hist - hist_l
+            else:
+                hist_r = self.splitter.build_histograms(rows_r, grad, hess)
+                if can_l:
+                    hist_l = parent_hist - hist_r
+        return hist_l, hist_r
+
+    def _expand(
+        self,
+        store: _NodeStore,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        cand: _GrowCandidate,
+    ) -> list[tuple[int, np.ndarray, int, np.ndarray]]:
+        """Split ``cand``'s node and return its splittable children.
+
+        Shared by leaf-wise and depth-wise growth (they differ only in the order
+        children are revisited). Each returned tuple is
+        ``(node_index, rows, depth, histogram)`` ready for :meth:`_make_candidate`.
+        """
+        rows_l, rows_r = self.splitter.partition(cand.rows, cand.split)
+        li, ri = self._commit_split(store, cand.node_index, cand.split, rows_l, rows_r)
+        child_depth = cand.depth + 1
+        can_l = self._can_split(rows_l, child_depth)
+        can_r = self._can_split(rows_r, child_depth)
+        hist_l, hist_r = self._child_hists(
+            grad, hess, cand.hist, rows_l, rows_r, can_l, can_r
+        )
+        children: list[tuple[int, np.ndarray, int, np.ndarray]] = []
+        if can_l:
+            children.append((li, rows_l, child_depth, hist_l))
+        if can_r:
+            children.append((ri, rows_r, child_depth, hist_r))
+        return children
+
+    def _finalize(self, store: _NodeStore) -> tuple[Tree, list[np.ndarray]]:
+        """Assign leaf ids to the remaining nodes and build the ``Tree``."""
+        n_nodes = len(store.feature)
         leaf_id = np.full(n_nodes, -1, dtype=np.int32)
         leaf_rows: list[np.ndarray] = []
-        for node_index in sorted(node_rows):
+        for node_index in sorted(store.node_rows):
             leaf_id[node_index] = len(leaf_rows)
-            leaf_rows.append(node_rows[node_index])
+            leaf_rows.append(store.node_rows[node_index])
 
         tree = Tree(
-            feature=np.asarray(feature, dtype=np.int32),
-            threshold=np.asarray(threshold, dtype=np.float64),
-            left=np.asarray(left, dtype=np.int32),
-            right=np.asarray(right, dtype=np.int32),
+            feature=np.asarray(store.feature, dtype=np.int32),
+            threshold=np.asarray(store.threshold, dtype=np.float64),
+            left=np.asarray(store.left, dtype=np.int32),
+            right=np.asarray(store.right, dtype=np.int32),
             leaf_id=leaf_id,
             # Native training always routes missing values left (v0 rule).
             missing_left=np.ones(n_nodes, dtype=bool),
-            gain=np.asarray(gain, dtype=np.float64),
+            gain=np.asarray(store.gain, dtype=np.float64),
             left_categories=(
-                left_cats if any(c is not None for c in left_cats) else None
+                store.left_cats
+                if any(c is not None for c in store.left_cats)
+                else None
             ),
         )
         return tree, leaf_rows
@@ -256,27 +462,24 @@ class TreeGrower:
             return False
         return rows.shape[0] >= 2 * self.splitter.min_samples_leaf
 
-    def _push_candidate(
+    def _make_candidate(
         self,
-        heap: list[_GrowCandidate],
         counter,
         node_index: int,
         rows: np.ndarray,
         depth: int,
         hist: np.ndarray,
-    ) -> None:
+    ) -> _GrowCandidate | None:
+        """Best split for a node as a heap/queue entry, or None if it can't split."""
         split = self.splitter.find_best_split(hist)
         if split is None:
-            return
-        heapq.heappush(
-            heap,
-            _GrowCandidate(
-                neg_gain=-split.gain,
-                tiebreak=next(counter),
-                node_index=node_index,
-                rows=rows,
-                depth=depth,
-                split=split,
-                hist=hist,
-            ),
+            return None
+        return _GrowCandidate(
+            neg_gain=-split.gain,
+            tiebreak=next(counter),
+            node_index=node_index,
+            rows=rows,
+            depth=depth,
+            split=split,
+            hist=hist,
         )

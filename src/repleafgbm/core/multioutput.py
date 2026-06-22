@@ -188,7 +188,12 @@ class MultiOutputBooster:
             profiler=profiler,
         )
         self.split_backend_ = splitter.backend
-        grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
+        grower = TreeGrower(
+            splitter,
+            num_leaves=p.num_leaves,
+            max_depth=p.max_depth,
+            grow_policy=p.grow_policy,
+        )
 
         self.init_score_ = self.objective.init_score(y, weight=w)
         F = np.tile(self.init_score_, (y.shape[0], 1))

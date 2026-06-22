@@ -53,46 +53,14 @@ class NumPySplitBackend(BaseSplitBackend):
         min_data_per_group: int = 100,
         max_cat_threshold: int = 32,
     ) -> SplitCandidate | None:
-        g, h, n = hist[:, :, 0], hist[:, :, 1], hist[:, :, 2]
-        n_features, n_bins_max = g.shape
-        feat_idx = np.arange(n_features)
-
-        # Every feature's bins partition the same rows, so per-feature totals
-        # all equal the node totals; read them off feature 0.
-        g_total = float(g[0].sum())
-        h_total = float(h[0].sum())
-        n_total = float(n[0].sum())
-        parent_score = _leaf_score(g_total, h_total, l2)
-
-        # Missing values (bin index n_bins_per_feature[f]) always go left.
-        miss_g = g[feat_idx, n_bins_per_feature][:, None]
-        miss_h = h[feat_idx, n_bins_per_feature][:, None]
-        miss_n = n[feat_idx, n_bins_per_feature][:, None]
-
-        # Candidate c sends non-missing bins <= c left. Cumsums up to
-        # c < n_bins_per_feature[f] never include the missing bin, which sits
-        # at a higher index; invalid candidates are masked below.
-        left_g = np.cumsum(g, axis=1) + miss_g
-        left_h = np.cumsum(h, axis=1) + miss_h
-        left_n = np.cumsum(n, axis=1) + miss_n
-        right_n = n_total - left_n
-
-        valid = (
-            (np.arange(n_bins_max)[None, :] <= (n_bins_per_feature - 2)[:, None])
-            & (left_n >= min_samples_leaf)
-            & (right_n >= min_samples_leaf)
+        gain, left_n, right_n, totals = _numeric_split_table(
+            hist, n_bins_per_feature, min_samples_leaf, l2
         )
+        n_bins_max = gain.shape[1]
         if categorical_mask is not None:
             # Categorical features get the subset scan below, not the
             # ordered-threshold scan.
-            valid &= ~categorical_mask[:, None]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            gain = (
-                _leaf_score(left_g, left_h, l2)
-                + _leaf_score(g_total - left_g, h_total - left_h, l2)
-                - parent_score
-            )
-        gain = np.where(valid & np.isfinite(gain), gain, -np.inf)
+            gain = np.where(categorical_mask[:, None], -np.inf, gain)
 
         best_flat = int(np.argmax(gain))  # deterministic tie-break: lowest index
         best_gain = float(gain.flat[best_flat])
@@ -108,6 +76,7 @@ class NumPySplitBackend(BaseSplitBackend):
             )
 
         if categorical_mask is not None and categorical_mask.any():
+            g_total, h_total, n_total, parent_score = totals
             for f in np.flatnonzero(categorical_mask):
                 cand = self._best_categorical_split(
                     int(f), hist[f], int(n_bins_per_feature[f]),
@@ -194,6 +163,61 @@ def _leaf_score(g, h, l2: float):
     return g * g / (h + l2)
 
 
+def _numeric_split_table(
+    hist: np.ndarray,
+    n_bins_per_feature: np.ndarray,
+    min_samples_leaf: int,
+    l2: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float, float, float]]:
+    """Per-(feature, bin) ordered-threshold gain table for one node.
+
+    Returns ``(gain, left_n, right_n, (g_total, h_total, n_total, parent_score))``.
+    ``gain`` is ``(n_features, n_bins_max)`` and already -inf at invalid candidates
+    (bin past the feature's range, or a child below ``min_samples_leaf``); missing
+    values (bin index ``n_bins_per_feature[f]``) always join the left child. This
+    is the shared numeric scan behind :meth:`NumPySplitBackend.find_best_split`
+    (which overlays the categorical subset scan and excludes categorical features)
+    and the symmetric level scan :func:`find_best_level_split`.
+    """
+    g, h, n = hist[:, :, 0], hist[:, :, 1], hist[:, :, 2]
+    n_features, n_bins_max = g.shape
+    feat_idx = np.arange(n_features)
+
+    # Every feature's bins partition the same rows, so per-feature totals
+    # all equal the node totals; read them off feature 0.
+    g_total = float(g[0].sum())
+    h_total = float(h[0].sum())
+    n_total = float(n[0].sum())
+    parent_score = _leaf_score(g_total, h_total, l2)
+
+    # Missing values (bin index n_bins_per_feature[f]) always go left.
+    miss_g = g[feat_idx, n_bins_per_feature][:, None]
+    miss_h = h[feat_idx, n_bins_per_feature][:, None]
+    miss_n = n[feat_idx, n_bins_per_feature][:, None]
+
+    # Candidate c sends non-missing bins <= c left. Cumsums up to
+    # c < n_bins_per_feature[f] never include the missing bin, which sits
+    # at a higher index; invalid candidates are masked below.
+    left_g = np.cumsum(g, axis=1) + miss_g
+    left_h = np.cumsum(h, axis=1) + miss_h
+    left_n = np.cumsum(n, axis=1) + miss_n
+    right_n = n_total - left_n
+
+    valid = (
+        (np.arange(n_bins_max)[None, :] <= (n_bins_per_feature - 2)[:, None])
+        & (left_n >= min_samples_leaf)
+        & (right_n >= min_samples_leaf)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        gain = (
+            _leaf_score(left_g, left_h, l2)
+            + _leaf_score(g_total - left_g, h_total - left_h, l2)
+            - parent_score
+        )
+    gain = np.where(valid & np.isfinite(gain), gain, -np.inf)
+    return gain, left_n, right_n, (g_total, h_total, n_total, parent_score)
+
+
 def find_best_split_multioutput(
     hist: np.ndarray,
     n_bins_per_feature: np.ndarray,
@@ -254,4 +278,80 @@ def find_best_split_multioutput(
         gain=best_gain,
         n_left=int(left_n[f, c]),
         n_right=int(right_n[f, c]),
+    )
+
+
+def find_best_level_split(
+    hists: list[np.ndarray],
+    n_bins_per_feature: np.ndarray,
+    min_samples_leaf: int,
+    l2: float,
+) -> tuple[int, int] | None:
+    """Single ``(feature, bin)`` for one level of a symmetric (oblivious) tree.
+
+    Every node at the level must split on the *same* rule, so the chosen
+    ``(feature, bin)`` maximizes the **sum** of per-node Newton gains across all
+    ``hists`` — gain is nonlinear (``G^2 / (H + l2)``), so histograms cannot be
+    summed but gains can. A candidate counts only where it is valid
+    (``min_samples_leaf`` satisfied) at *every* node: each node's ``gain`` is -inf
+    at its invalid candidates, so summing propagates -inf to any candidate invalid
+    anywhere, keeping the tree complete (all level nodes split on one rule, or none
+    do). Returns ``(feature, bin)`` of the max summed gain, or None if none has
+    positive summed gain. Tie-break: lowest feature then lowest bin (row-major
+    argmax), matching :meth:`NumPySplitBackend.find_best_split`.
+
+    Numeric/ordered-threshold scan only: categorical features are scanned as
+    ordered thresholds here (no gradient-sorted subset splits) in v0.
+    """
+    summed: np.ndarray | None = None
+    for hist in hists:
+        gain, _, _, _ = _numeric_split_table(
+            hist, n_bins_per_feature, min_samples_leaf, l2
+        )
+        summed = gain.copy() if summed is None else summed + gain
+    if summed is None:
+        return None
+    best_flat = int(np.argmax(summed))
+    if float(summed.flat[best_flat]) <= 1e-12:
+        return None
+    f, c = divmod(best_flat, summed.shape[1])
+    return int(f), int(c)
+
+
+def split_at(
+    hist: np.ndarray,
+    feature: int,
+    bin_: int,
+    n_bins_per_feature: np.ndarray,
+    l2: float,
+) -> SplitCandidate:
+    """SplitCandidate for a fixed numeric ``(feature, bin)`` on one node.
+
+    Symmetric growth applies the level's shared ``(feature, bin)`` to every node;
+    this recovers that node's own child counts and gain (the latter stored for
+    feature importance). Bins ``0..bin_`` plus the missing bin go left, matching
+    the cumulative-sum convention in :func:`_numeric_split_table` and the v0
+    missing-left rule. Validity (``min_samples_leaf``) was already decided for the
+    whole level by :func:`find_best_level_split`; the gain here is descriptive
+    only (it is not a gate and may be <= 0 for an individual node).
+    """
+    g, h, n = hist[:, :, 0], hist[:, :, 1], hist[:, :, 2]
+    nb = int(n_bins_per_feature[feature])
+    g_total = float(g[feature].sum())
+    h_total = float(h[feature].sum())
+    n_total = float(n[feature].sum())
+    left_g = float(g[feature, : bin_ + 1].sum()) + float(g[feature, nb])
+    left_h = float(h[feature, : bin_ + 1].sum()) + float(h[feature, nb])
+    left_n = float(n[feature, : bin_ + 1].sum()) + float(n[feature, nb])
+    gain = (
+        _leaf_score(left_g, left_h, l2)
+        + _leaf_score(g_total - left_g, h_total - left_h, l2)
+        - _leaf_score(g_total, h_total, l2)
+    )
+    return SplitCandidate(
+        feature=int(feature),
+        bin=int(bin_),
+        gain=float(gain),
+        n_left=int(left_n),
+        n_right=int(n_total - left_n),
     )
