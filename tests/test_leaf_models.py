@@ -144,6 +144,54 @@ def test_native_and_numpy_stat_paths_agree(monkeypatch, d):
     np.testing.assert_array_equal(lv_native.z_max, lv_numpy.z_max)
 
 
+def test_multiclass_pooled_matches_per_class(monkeypatch):
+    """Session 4: fitting all K class trees' leaves in one pooled native pass
+    (``leaf_linear_stats_mc``) must match independent per-class ``fit_leaves``
+    *bitwise* — it is a scheduling change only (each pooled leaf still sums its
+    own rows in order, reading its class's grad/hess column, and each leaf's
+    ridge system is solved independently). Exercises uneven per-class leaf counts
+    and a sub-threshold constant-fallback leaf; also checks the NumPy fallback."""
+    pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
+    import repleafgbm.core.leaf_models as lm
+
+    rng = np.random.default_rng(11)
+    n, K, d = 1500, 4, 16
+    Z = np.ascontiguousarray(rng.normal(size=(n, d)))
+    grad = np.ascontiguousarray(rng.normal(size=(n, K)))
+    hess = np.ascontiguousarray(np.abs(rng.normal(1.0, 0.3, (n, K))) + 0.1)
+
+    def leaves(seed, nl):
+        parts = np.array_split(np.random.default_rng(seed).permutation(n), nl)
+        return [np.sort(p).astype(np.int64) for p in parts]
+
+    # Uneven leaf counts per class; class 3 also gets a tiny sub-threshold leaf.
+    rows_per_class = [leaves(20 + k, nl) for k, nl in enumerate([5, 7, 4, 6])]
+    rows_per_class[3].append(np.sort(rng.choice(n, 4, replace=False)).astype(np.int64))
+
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+    pooled = model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+    per_class = [
+        model.fit_leaves(rows_per_class[k], grad[:, k], hess[:, k], Z)
+        for k in range(K)
+    ]
+    assert len(pooled) == K
+    for k in range(K):
+        np.testing.assert_array_equal(pooled[k].bias, per_class[k].bias)
+        np.testing.assert_array_equal(pooled[k].weights, per_class[k].weights)
+        np.testing.assert_array_equal(pooled[k].z_min, per_class[k].z_min)
+        np.testing.assert_array_equal(pooled[k].z_max, per_class[k].z_max)
+
+    # Without the native helper, fit_leaves_multiclass routes through per-class
+    # BLAS fits, which stay allclose to the native pooled result.
+    monkeypatch.setattr(lm, "_native", None)
+    fallback = model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+    for k in range(K):
+        np.testing.assert_allclose(fallback[k].bias, pooled[k].bias, rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(
+            fallback[k].weights, pooled[k].weights, rtol=1e-6, atol=1e-8
+        )
+
+
 def test_batched_fit_singular_leaf_falls_back_individually():
     """One leaf with a constant Z block at l2=0 must not poison the batch:
     it falls back to a constant while other leaves keep their linear fits."""
@@ -158,3 +206,69 @@ def test_batched_fit_singular_leaf_falls_back_individually():
     assert np.any(lv.weights[0] != 0.0)          # healthy leaf fitted
     assert np.all(lv.weights[1] == 0.0)          # singular leaf fell back
     assert np.isinf(lv.z_min[1]).all()
+
+
+@pytest.mark.parametrize("clip", [False, True])
+@pytest.mark.parametrize("n", [2000, 6000])  # n*d below/above the parallel gate
+def test_predict_linear_native_matches_numpy(monkeypatch, clip, n):
+    """Session 4: the fused native ``predict_linear`` must match the NumPy
+    bias-gather + einsum to float noise, for both the training-eval path
+    (clip=False) and the clipped prediction path (clip=True), across the serial
+    (small n*d) and rayon (large n*d) branches. Rows are independent, so the two
+    native branches are bitwise-identical; both are checked against NumPy here."""
+    pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
+    import repleafgbm.core.leaf_models as lm
+
+    rng = np.random.default_rng(12)
+    L, d = 10, 24
+    Z = rng.normal(size=(n, d))
+    z_min = rng.normal(size=(L, d)) - 0.5
+    z_max = z_min + 1.0 + rng.random((L, d))
+    z_min[0] = -np.inf  # constant-fallback leaf: clip must be the identity
+    z_max[0] = np.inf
+    lv = LeafValues(
+        bias=rng.normal(size=L),
+        weights=rng.normal(size=(L, d)),
+        z_min=z_min,
+        z_max=z_max,
+    )
+    leaf_idx = rng.integers(0, L, n).astype(np.int64)
+
+    assert lm._native is not None and hasattr(lm._native, "predict_linear")
+    out_native = lv.predict(leaf_idx, Z, clip=clip)
+    monkeypatch.setattr(lm, "_native", None)
+    out_numpy = lv.predict(leaf_idx, Z, clip=clip)
+    np.testing.assert_allclose(out_native, out_numpy, rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize("clip", [False, True])
+def test_predict_linear_serial_parallel_bitwise(clip):
+    """The native ``predict_linear`` serial and rayon branches must be
+    *bitwise*-identical: rows are computed independently, so the result must not
+    depend on the branch (size gate) or thread count. Computing one large array
+    (n*d above the gate -> parallel) and the same rows in small slices (each
+    below the gate -> serial) must give exactly equal outputs."""
+    pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
+    rng = np.random.default_rng(13)
+    L, d = 8, 24
+    n = 8000  # n*d = 192000 > PREDICT_PARALLEL_MIN -> parallel branch
+    Z = rng.normal(size=(n, d))
+    z_min = rng.normal(size=(L, d)) - 0.5
+    z_max = z_min + 1.0 + rng.random((L, d))
+    z_min[0] = -np.inf
+    z_max[0] = np.inf
+    lv = LeafValues(
+        bias=rng.normal(size=L),
+        weights=rng.normal(size=(L, d)),
+        z_min=z_min,
+        z_max=z_max,
+    )
+    leaf_idx = rng.integers(0, L, n).astype(np.int64)
+
+    full = lv.predict(leaf_idx, Z, clip=clip)  # parallel branch
+    step = 1000  # 1000*24 = 24000 < gate -> each slice takes the serial branch
+    serial = np.concatenate(
+        [lv.predict(leaf_idx[i:i + step], Z[i:i + step], clip=clip)
+         for i in range(0, n, step)]
+    )
+    np.testing.assert_array_equal(full, serial)
