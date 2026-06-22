@@ -73,6 +73,30 @@ class LeafValues:
         update), where clipping to the leaf's own min/max is exactly the
         identity.
         """
+        if (
+            self.weights.ndim == 2
+            and self.weights.shape[1] > 0
+            and _native is not None
+            and hasattr(_native, "predict_linear")
+        ):
+            # Fused native gather+dot (Session 4): replaces the bias gather +
+            # einsum (which materializes an (n_rows, d) weight gather) — the
+            # dominant multiclass training-eval cost and a prediction speedup.
+            # Vector (multi-output) and constant leaves fall through to NumPy.
+            assert Z is not None, "embedding matrix required for linear leaves"
+            do_clip = clip and self.z_min is not None
+            zmn = self.z_min if self.z_min is not None else self.weights
+            zmx = self.z_max if self.z_max is not None else self.weights
+            return _native.predict_linear(
+                np.ascontiguousarray(leaf_idx, dtype=np.int64),
+                np.ascontiguousarray(Z, dtype=np.float64),
+                np.ascontiguousarray(self.bias, dtype=np.float64),
+                np.ascontiguousarray(self.weights, dtype=np.float64),
+                np.ascontiguousarray(zmn, dtype=np.float64),
+                np.ascontiguousarray(zmx, dtype=np.float64),
+                do_clip,
+            )
+
         out = self.bias[leaf_idx]
         if self.weights.shape[1] > 0:
             assert Z is not None, "embedding matrix required for linear leaves"
@@ -111,6 +135,25 @@ class BaseLeafModel(ABC):
         Z: np.ndarray | None,
     ) -> LeafValues:
         """Fit parameters for every leaf of one tree."""
+
+    def fit_leaves_multiclass(
+        self,
+        leaf_rows_per_class: list[list[np.ndarray]],
+        grad: np.ndarray,
+        hess: np.ndarray,
+        Z: np.ndarray | None,
+    ) -> list[LeafValues]:
+        """Fit the K per-class trees' leaves for one boosting round.
+
+        Default: independent per-class fits. ``grad``/``hess`` are the
+        ``(n_rows, n_classes)`` matrices; ``leaf_rows_per_class[k]`` holds class
+        k's leaf row-sets. :class:`EmbeddedLinearLeafModel` overrides this to pool
+        all classes into a single native pass (Session 4).
+        """
+        return [
+            self.fit_leaves(leaf_rows_per_class[k], grad[:, k], hess[:, k], Z)
+            for k in range(len(leaf_rows_per_class))
+        ]
 
 
 class ConstantLeafModel(BaseLeafModel):
@@ -202,43 +245,95 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
                 np.ascontiguousarray(Z), grad, hess, order, offsets,
                 linear.astype(np.int64),
             )
-            bias = -g_sum / (h_sum + self.l2)
-            z_mean = s_hz / h_sum[linear][:, None]
-            t_mean = -g_sum[linear] / h_sum[linear]
-            A -= z_mean[:, :, None] * s_hz[:, None, :]
-            rhs = -gz - t_mean[:, None] * s_hz
-            z_min[linear] = zmn
-            z_max[linear] = zmx
-        else:
-            seg = np.repeat(np.arange(n_leaves), sizes)
-            g_seg = grad[order]
-            h_seg = hess[order]
-            g_sum = np.bincount(seg, weights=g_seg, minlength=n_leaves)
-            h_sum = np.bincount(seg, weights=h_seg, minlength=n_leaves)
-            bias = -g_sum / (h_sum + self.l2)
-            if k == 0:
-                return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+            return self._leafvalues_from_native_stats(
+                g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, n_leaves, emb_dim
+            )
 
-            Z_seg = Z[order]
-            hZ_seg = Z_seg * h_seg[:, None]
-            A = np.empty((k, emb_dim, emb_dim), dtype=np.float64)
-            rhs = np.empty((k, emb_dim), dtype=np.float64)
-            z_mean = np.empty((k, emb_dim), dtype=np.float64)
-            t_mean = np.empty(k, dtype=np.float64)
-            for j, i in enumerate(linear):
-                sl = slice(offsets[i], offsets[i + 1])
-                Zl = Z_seg[sl]
-                hZ = hZ_seg[sl]
-                s_hz = hZ.sum(axis=0)
-                z_mean[j] = s_hz / h_sum[i]
-                t_mean[j] = -g_sum[i] / h_sum[i]
-                A[j] = Zl.T @ hZ
-                A[j] -= np.outer(z_mean[j], s_hz)
-                rhs[j] = -(g_seg[sl] @ Zl) - t_mean[j] * s_hz
-                z_min[i] = Zl.min(axis=0)
-                z_max[i] = Zl.max(axis=0)
+        # NumPy fallback: per-leaf BLAS Gram (native unavailable, or embeddings
+        # too wide for the fused pass).
+        seg = np.repeat(np.arange(n_leaves), sizes)
+        g_seg = grad[order]
+        h_seg = hess[order]
+        g_sum = np.bincount(seg, weights=g_seg, minlength=n_leaves)
+        h_sum = np.bincount(seg, weights=h_seg, minlength=n_leaves)
+        bias = -g_sum / (h_sum + self.l2)
+        if k == 0:
+            return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+
+        Z_seg = Z[order]
+        hZ_seg = Z_seg * h_seg[:, None]
+        A = np.empty((k, emb_dim, emb_dim), dtype=np.float64)
+        rhs = np.empty((k, emb_dim), dtype=np.float64)
+        z_mean = np.empty((k, emb_dim), dtype=np.float64)
+        t_mean = np.empty(k, dtype=np.float64)
+        for j, i in enumerate(linear):
+            sl = slice(offsets[i], offsets[i + 1])
+            Zl = Z_seg[sl]
+            hZ = hZ_seg[sl]
+            s_hz = hZ.sum(axis=0)
+            z_mean[j] = s_hz / h_sum[i]
+            t_mean[j] = -g_sum[i] / h_sum[i]
+            A[j] = Zl.T @ hZ
+            A[j] -= np.outer(z_mean[j], s_hz)
+            rhs[j] = -(g_seg[sl] @ Zl) - t_mean[j] * s_hz
+            z_min[i] = Zl.min(axis=0)
+            z_max[i] = Zl.max(axis=0)
+        return self._solve_and_assemble(
+            A, rhs, bias, weights, z_mean, t_mean, z_min, z_max, linear, emb_dim
+        )
+
+    def _leafvalues_from_native_stats(
+        self,
+        g_sum: np.ndarray,
+        h_sum: np.ndarray,
+        s_hz: np.ndarray,
+        A: np.ndarray,
+        gz: np.ndarray,
+        zmn: np.ndarray,
+        zmx: np.ndarray,
+        linear: np.ndarray,
+        n_leaves: int,
+        emb_dim: int,
+    ) -> LeafValues:
+        """Assemble :class:`LeafValues` from the fused native statistics.
+
+        Shared by the scalar native path (:func:`leaf_linear_stats`) and the
+        pooled-multiclass path (:func:`leaf_linear_stats_mc`); the centering
+        identities mirror the :meth:`fit_leaves` docstring. ``linear`` indexes
+        the (possibly pooled) leaves that received a linear fit.
+        """
+        weights = np.zeros((n_leaves, emb_dim), dtype=np.float64)
+        z_min = np.full((n_leaves, emb_dim), -np.inf, dtype=np.float64)
+        z_max = np.full((n_leaves, emb_dim), np.inf, dtype=np.float64)
+        bias = -g_sum / (h_sum + self.l2)
+        if linear.size == 0:
+            return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+        z_mean = s_hz / h_sum[linear][:, None]
+        t_mean = -g_sum[linear] / h_sum[linear]
+        A = A - z_mean[:, :, None] * s_hz[:, None, :]
+        rhs = -gz - t_mean[:, None] * s_hz
+        z_min[linear] = zmn
+        z_max[linear] = zmx
+        return self._solve_and_assemble(
+            A, rhs, bias, weights, z_mean, t_mean, z_min, z_max, linear, emb_dim
+        )
+
+    def _solve_and_assemble(
+        self,
+        A: np.ndarray,
+        rhs: np.ndarray,
+        bias: np.ndarray,
+        weights: np.ndarray,
+        z_mean: np.ndarray,
+        t_mean: np.ndarray,
+        z_min: np.ndarray,
+        z_max: np.ndarray,
+        linear: np.ndarray,
+        emb_dim: int,
+    ) -> LeafValues:
+        """Batched ridge solve + per-leaf assembly shared by every fit path."""
+        k = linear.size
         A[:, np.arange(emb_dim), np.arange(emb_dim)] += self.l2
-
         try:
             # rhs as (k, d, 1): NumPy 2.0 treats a 2-D b as a matrix, not a
             # stack of vectors, so the explicit trailing axis is required for
@@ -263,6 +358,82 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
                 z_min[i] = -np.inf
                 z_max[i] = np.inf
         return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+
+    def fit_leaves_multiclass(
+        self,
+        leaf_rows_per_class: list[list[np.ndarray]],
+        grad: np.ndarray,
+        hess: np.ndarray,
+        Z: np.ndarray | None,
+    ) -> list[LeafValues]:
+        """Fit all K class trees' leaves in one pooled native pass.
+
+        A single class tree routinely puts >50% of its rows in one leaf, so
+        fitting each class separately caps rayon leaf-parallelism near ~2x.
+        Pooling every class's leaves into one ``leaf_linear_stats_mc`` call
+        dilutes any one giant leaf to a small fraction of the total work, so the
+        scheduler keeps all cores busy. Each pooled leaf accumulates its own rows
+        in order (reading its class's grad/hess column), so the result is
+        bitwise-identical to per-class fitting — only the schedule changes.
+        Falls back to independent per-class fits when the native pooled helper is
+        unavailable or the embedding is too wide for the fused pass.
+        """
+        if Z is None:
+            raise ValueError("EmbeddedLinearLeafModel requires an embedding matrix Z")
+        emb_dim = Z.shape[1]
+        n_classes = len(leaf_rows_per_class)
+        if (
+            _native is None
+            or not hasattr(_native, "leaf_linear_stats_mc")
+            or emb_dim > _NATIVE_STATS_MAX_DIM
+        ):
+            return [
+                self.fit_leaves(
+                    leaf_rows_per_class[k], grad[:, k], hess[:, k], Z
+                )
+                for k in range(n_classes)
+            ]
+
+        # Pool every class's leaves into one global leaf list (class 0's leaves,
+        # then class 1's, ...); leaf_class[l] selects leaf l's grad/hess column.
+        n_leaves_per_class = [len(lr) for lr in leaf_rows_per_class]
+        all_leaves = [r for lr in leaf_rows_per_class for r in lr]
+        total_leaves = len(all_leaves)
+        sizes = np.array([r.shape[0] for r in all_leaves], dtype=np.int64)
+        order = np.concatenate(all_leaves) if all_leaves else np.empty(0, np.int64)
+        offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+        leaf_class = np.repeat(np.arange(n_classes), n_leaves_per_class).astype(
+            np.int64
+        )
+        min_n = max(self.min_samples_linear, emb_dim + 2)
+        linear = np.flatnonzero(sizes >= min_n)
+        g_sum, h_sum, s_hz, A, gz, zmn, zmx = _native.leaf_linear_stats_mc(
+            np.ascontiguousarray(Z),
+            np.ascontiguousarray(grad),
+            np.ascontiguousarray(hess),
+            order,
+            offsets,
+            linear.astype(np.int64),
+            leaf_class,
+        )
+        pooled = self._leafvalues_from_native_stats(
+            g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, total_leaves, emb_dim
+        )
+        # Split the pooled per-leaf parameters back into per-class LeafValues.
+        out: list[LeafValues] = []
+        start = 0
+        for nl in n_leaves_per_class:
+            sl = slice(start, start + nl)
+            out.append(
+                LeafValues(
+                    bias=pooled.bias[sl].copy(),
+                    weights=pooled.weights[sl].copy(),
+                    z_min=pooled.z_min[sl].copy(),
+                    z_max=pooled.z_max[sl].copy(),
+                )
+            )
+            start += nl
+        return out
 
 
 def _newton_constant(g: np.ndarray, h: np.ndarray, l2: float) -> float:

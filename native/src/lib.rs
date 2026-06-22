@@ -337,6 +337,59 @@ fn accumulate_leaf(
     }
 }
 
+/// Pooled-multiclass variant of `accumulate_leaf`: the grad/hess for this leaf
+/// come from column `c` of the row-major `(n_rows, n_classes)` matrices
+/// (`g_s`/`h_s`), stride `kcls`. Identical per-leaf math and row order as the
+/// scalar `accumulate_leaf`, so a pooled leaf's stats are bitwise-identical to
+/// fitting that class on its own.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn accumulate_leaf_mc(
+    gram_j: &mut [f64],
+    s_hz_j: &mut [f64],
+    gz_j: &mut [f64],
+    zmin_j: &mut [f64],
+    zmax_j: &mut [f64],
+    li: i64,
+    c: usize,
+    kcls: usize,
+    d: usize,
+    offsets: &ArrayView1<'_, i64>,
+    order: &ArrayView1<'_, i64>,
+    g_s: &[f64],
+    h_s: &[f64],
+    z_s: &[f64],
+) {
+    let l = li as usize;
+    for idx in offsets[l]..offsets[l + 1] {
+        let r = order[idx as usize] as usize;
+        let g = g_s[r * kcls + c];
+        let h = h_s[r * kcls + c];
+        let row = &z_s[r * d..(r + 1) * d];
+        for a in 0..d {
+            let za = row[a];
+            s_hz_j[a] += h * za;
+            gz_j[a] += g * za;
+            if za < zmin_j[a] {
+                zmin_j[a] = za;
+            }
+            if za > zmax_j[a] {
+                zmax_j[a] = za;
+            }
+            let hza = h * za;
+            let grow = a * d;
+            for b in a..d {
+                gram_j[grow + b] += hza * row[b];
+            }
+        }
+    }
+    for a in 1..d {
+        for b in 0..a {
+            gram_j[a * d + b] = gram_j[b * d + a];
+        }
+    }
+}
+
 /// Fused per-leaf statistics for embedded-linear leaf fitting (Phase 11).
 ///
 /// One pass over the rows (in leaf order) computes, per linear-eligible
@@ -452,10 +505,235 @@ fn leaf_linear_stats<'py>(
     )
 }
 
+/// Pooled fused per-leaf statistics across all K multiclass trees (Session 4).
+///
+/// Multiclass grows one tree per class per round; fitting each class's leaves
+/// in a separate `leaf_linear_stats` call caps rayon at that tree's largest
+/// leaf — and real softmax trees routinely put >50% of a class's rows in one
+/// leaf, so per-class parallelism stalls near ~2x (one thread does the giant
+/// leaf while the rest idle). Pooling every class's leaves into a single
+/// parallel pass dilutes any one giant leaf to a small fraction of the total
+/// work, keeping all cores busy. `grad`/`hess` are the `(n_rows, n_classes)`
+/// matrices; `leaf_class[l]` selects leaf `l`'s column. Each leaf still
+/// accumulates its own rows in order, so per-leaf output is bitwise-identical
+/// to the per-class `leaf_linear_stats` — only the schedule changes. Outputs
+/// are pooled (indexed by global leaf / global linear-leaf order); the Python
+/// caller splits them back per class.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+fn leaf_linear_stats_mc<'py>(
+    py: Python<'py>,
+    z: PyReadonlyArray2<'py, f64>,
+    grad: PyReadonlyArray2<'py, f64>,
+    hess: PyReadonlyArray2<'py, f64>,
+    order: PyReadonlyArray1<'py, i64>,
+    offsets: PyReadonlyArray1<'py, i64>,
+    linear: PyReadonlyArray1<'py, i64>,
+    leaf_class: PyReadonlyArray1<'py, i64>,
+) -> (
+    Bound<'py, numpy::PyArray1<f64>>, // g_sum (n_leaves,)
+    Bound<'py, numpy::PyArray1<f64>>, // h_sum (n_leaves,)
+    Bound<'py, numpy::PyArray2<f64>>, // s_hz  (k, d)
+    Bound<'py, PyArray3<f64>>,        // gram  (k, d, d)
+    Bound<'py, numpy::PyArray2<f64>>, // gz    (k, d)
+    Bound<'py, numpy::PyArray2<f64>>, // z_min (k, d)
+    Bound<'py, numpy::PyArray2<f64>>, // z_max (k, d)
+) {
+    let z = z.as_array();
+    let z_s = z.as_slice().expect("Z must be C-contiguous");
+    let grad = grad.as_array();
+    let g_s = grad.as_slice().expect("grad must be C-contiguous");
+    let hess = hess.as_array();
+    let h_s = hess.as_slice().expect("hess must be C-contiguous");
+    let order = order.as_array();
+    let offsets = offsets.as_array();
+    let linear = linear.as_array();
+    let leaf_class = leaf_class.as_array();
+    let d = z.shape()[1];
+    let kcls = grad.shape()[1]; // number of classes (row stride of grad/hess)
+    let n_leaves = offsets.len() - 1;
+    let k = linear.len();
+
+    // Per-leaf g/h sums for every pooled leaf (cheap serial pass over routed rows).
+    let mut g_sum = ndarray::Array1::<f64>::zeros(n_leaves);
+    let mut h_sum = ndarray::Array1::<f64>::zeros(n_leaves);
+    for l in 0..n_leaves {
+        let c = leaf_class[l] as usize;
+        let (mut gs, mut hs) = (0.0, 0.0);
+        for idx in offsets[l]..offsets[l + 1] {
+            let r = order[idx as usize] as usize;
+            gs += g_s[r * kcls + c];
+            hs += h_s[r * kcls + c];
+        }
+        g_sum[l] = gs;
+        h_sum[l] = hs;
+    }
+
+    let mut s_hz = ndarray::Array2::<f64>::zeros((k, d));
+    let mut gram = Array3::<f64>::zeros((k, d, d));
+    let mut gz = ndarray::Array2::<f64>::zeros((k, d));
+    let mut z_min = ndarray::Array2::<f64>::from_elem((k, d), f64::INFINITY);
+    let mut z_max = ndarray::Array2::<f64>::from_elem((k, d), f64::NEG_INFINITY);
+    if d > 0 && k > 0 {
+        let s_hz = s_hz.as_slice_mut().unwrap();
+        let gram = gram.as_slice_mut().unwrap();
+        let gz = gz.as_slice_mut().unwrap();
+        let z_min = z_min.as_slice_mut().unwrap();
+        let z_max = z_max.as_slice_mut().unwrap();
+        let linear_s = linear.as_slice().expect("linear indices C-contiguous");
+        let lc_s = leaf_class.as_slice().expect("leaf_class C-contiguous");
+
+        // Leaf-parallel across the *pooled* linear leaves (all classes at once),
+        // so a single class's giant leaf no longer bounds the whole pass. Output
+        // chunks are disjoint and each leaf reads only shared immutable inputs, so
+        // the rayon and serial branches are bitwise-identical. `order.len()` is the
+        // total routed-row count across all classes — a coarse work proxy.
+        if k < 2 || order.len() * d < LEAF_PARALLEL_MIN_CELLS {
+            gram.chunks_mut(d * d)
+                .zip(s_hz.chunks_mut(d))
+                .zip(gz.chunks_mut(d))
+                .zip(z_min.chunks_mut(d))
+                .zip(z_max.chunks_mut(d))
+                .zip(linear_s.iter())
+                .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
+                    let c = lc_s[li as usize] as usize;
+                    accumulate_leaf_mc(
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, c, kcls, d,
+                        &offsets, &order, g_s, h_s, z_s,
+                    );
+                });
+        } else {
+            gram.par_chunks_mut(d * d)
+                .zip(s_hz.par_chunks_mut(d))
+                .zip(gz.par_chunks_mut(d))
+                .zip(z_min.par_chunks_mut(d))
+                .zip(z_max.par_chunks_mut(d))
+                .zip(linear_s.par_iter())
+                .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
+                    let c = lc_s[li as usize] as usize;
+                    accumulate_leaf_mc(
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, c, kcls, d,
+                        &offsets, &order, g_s, h_s, z_s,
+                    );
+                });
+        }
+    }
+    (
+        g_sum.into_pyarray(py),
+        h_sum.into_pyarray(py),
+        s_hz.into_pyarray(py),
+        gram.into_pyarray(py),
+        gz.into_pyarray(py),
+        z_min.into_pyarray(py),
+        z_max.into_pyarray(py),
+    )
+}
+
+/// Minimum `n_rows * d` work before fused leaf prediction goes parallel.
+const PREDICT_PARALLEL_MIN: usize = 1 << 16;
+/// Row block per rayon task in `predict_linear` (coarse enough to amortize
+/// dispatch, fine enough to balance across cores).
+const PREDICT_CHUNK: usize = 8192;
+
+/// One row's scalar embedded-linear leaf output:
+/// `bias[l] + sum_j z'[i,j] * weights[l,j]`, with `z'` the row optionally
+/// clamped to the leaf's `[z_min, z_max]` extrapolation guard. Rows are
+/// independent, so callers stay bitwise-identical serial vs parallel.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn predict_row(
+    i: usize,
+    d: usize,
+    clip: bool,
+    li_s: &[i64],
+    z_s: &[f64],
+    w_s: &[f64],
+    b_s: &[f64],
+    zmin_s: &[f64],
+    zmax_s: &[f64],
+) -> f64 {
+    let l = li_s[i] as usize;
+    let zr = &z_s[i * d..(i + 1) * d];
+    let wr = &w_s[l * d..(l + 1) * d];
+    let mut acc = b_s[l];
+    if clip {
+        let lo = &zmin_s[l * d..(l + 1) * d];
+        let hi = &zmax_s[l * d..(l + 1) * d];
+        for j in 0..d {
+            acc += zr[j].clamp(lo[j], hi[j]) * wr[j];
+        }
+    } else {
+        for j in 0..d {
+            acc += zr[j] * wr[j];
+        }
+    }
+    acc
+}
+
+/// Fused scalar embedded-linear leaf prediction (Session 4).
+///
+/// Replaces the NumPy `bias[leaf_idx] + einsum("ij,ij->i", Z, weights[leaf_idx])`
+/// — whose `weights[leaf_idx]` materializes an `(n_rows, d)` gather — with one
+/// rayon pass over rows that reads the small per-leaf weight/bias tables
+/// (L1-resident) directly. This is the dominant cost of the multiclass training
+/// `eval` F-update (and of prediction). `clip` applies the per-leaf
+/// extrapolation guard (predict path); the training update passes `clip=false`.
+/// Each output row is computed independently, so the serial and parallel
+/// branches are bitwise-identical; results match the einsum to float noise
+/// (per-row dot-product order), the project's leaf-predict allclose contract.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn predict_linear<'py>(
+    py: Python<'py>,
+    leaf_idx: PyReadonlyArray1<'py, i64>,
+    z: PyReadonlyArray2<'py, f64>,
+    bias: PyReadonlyArray1<'py, f64>,
+    weights: PyReadonlyArray2<'py, f64>,
+    z_min: PyReadonlyArray2<'py, f64>,
+    z_max: PyReadonlyArray2<'py, f64>,
+    clip: bool,
+) -> Bound<'py, numpy::PyArray1<f64>> {
+    let leaf_idx = leaf_idx.as_array();
+    let li_s = leaf_idx.as_slice().expect("leaf_idx must be C-contiguous");
+    let z = z.as_array();
+    let z_s = z.as_slice().expect("Z must be C-contiguous");
+    let bias = bias.as_array();
+    let b_s = bias.as_slice().expect("bias must be C-contiguous");
+    let weights = weights.as_array();
+    let w_s = weights.as_slice().expect("weights must be C-contiguous");
+    let zmin = z_min.as_array();
+    let zmin_s = zmin.as_slice().expect("z_min must be C-contiguous");
+    let zmax = z_max.as_array();
+    let zmax_s = zmax.as_slice().expect("z_max must be C-contiguous");
+    let n = leaf_idx.len();
+    let d = z.shape()[1];
+
+    let mut out = ndarray::Array1::<f64>::zeros(n);
+    let out_s = out.as_slice_mut().unwrap();
+    if n * d < PREDICT_PARALLEL_MIN {
+        for (i, o) in out_s.iter_mut().enumerate() {
+            *o = predict_row(i, d, clip, li_s, z_s, w_s, b_s, zmin_s, zmax_s);
+        }
+    } else {
+        out_s
+            .par_chunks_mut(PREDICT_CHUNK)
+            .enumerate()
+            .for_each(|(ci, oc)| {
+                let base = ci * PREDICT_CHUNK;
+                for (off, o) in oc.iter_mut().enumerate() {
+                    *o = predict_row(base + off, d, clip, li_s, z_s, w_s, b_s, zmin_s, zmax_s);
+                }
+            });
+    }
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn repleafgbm_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_histograms, m)?)?;
     m.add_function(wrap_pyfunction!(find_best_split, m)?)?;
     m.add_function(wrap_pyfunction!(leaf_linear_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(leaf_linear_stats_mc, m)?)?;
+    m.add_function(wrap_pyfunction!(predict_linear, m)?)?;
     Ok(())
 }

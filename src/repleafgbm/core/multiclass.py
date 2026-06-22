@@ -138,12 +138,19 @@ class MulticlassBooster:
             grad, hess = self.objective.grad_hess(y, F)
             grad, hess = weight_grad_hess(grad, hess, w)
             round_trees: list[tuple[Tree, LeafValues]] = []
-            for k in range(n_classes):
-                tree, leaf_rows = grower.grow(grad[:, k], hess[:, k])
-                with timed(profiler, "leaf_fit"):
-                    leaf_values = leaf_model.fit_leaves(
-                        leaf_rows, grad[:, k], hess[:, k], Z
-                    )
+            # Grow all K class trees first (their leaf row-sets differ), then fit
+            # every class's leaves in one pooled pass. A single class tree often
+            # puts >50% of its rows in one leaf, so per-class leaf-parallelism
+            # stalls near ~2x; pooling all classes dilutes any one giant leaf and
+            # keeps every core busy (Session 4; leaf_model decides how to pool).
+            grows = [grower.grow(grad[:, k], hess[:, k]) for k in range(n_classes)]
+            with timed(profiler, "leaf_fit"):
+                leaf_values_list = leaf_model.fit_leaves_multiclass(
+                    [leaf_rows for _, leaf_rows in grows], grad, hess, Z
+                )
+            for k, ((tree, leaf_rows), leaf_values) in enumerate(
+                zip(grows, leaf_values_list)
+            ):
                 self.trees_.append(tree)
                 self.leaf_values_.append(leaf_values)
                 round_trees.append((tree, leaf_values))
