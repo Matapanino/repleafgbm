@@ -461,6 +461,44 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 - ~~Improved objectives (Huber, quantile, Poisson)~~ done in Phase 18;
   ~~label smoothing~~ done in Phase 23
 
+## Phase 33 — tree growth policies (`grow_policy`) ✅ (2026-06-23)
+
+- New `grow_policy ∈ {"leafwise" (default), "depthwise", "symmetric"}`
+  (ADR 0006; docs/research/2026-06-22-tree-growth-policies.md):
+  - **leafwise** — unchanged best-gain-first growth (byte-identical default).
+  - **depthwise** — XGBoost-style level-order growth to `max_depth`; reuses the
+    existing split scan, so it covers regression / binary / multiclass /
+    multi-output.
+  - **symmetric** — CatBoost-style oblivious trees: one shared `(feature,
+    threshold)` per level chosen by **summed per-node gain** (host-side scan,
+    automatic NumPy⇄Rust parity), complete `2**depth` tree, strong implicit
+    regularization.
+- Expanded into the existing flat `Tree` (no `format_version` bump); `depthwise`
+  and `symmetric` require `max_depth >= 1`; thesis preserved (raw-feature routing
+  only, representation-conditioned leaves untouched).
+- **Implemented limitations (honest):** `symmetric` is numeric/ordered + scalar
+  only in v0 — categorical features route as ordered thresholds (no subset
+  splits) and multi-output `symmetric` raises `NotImplementedError`. Symmetric
+  inference uses the general `Tree.apply` (no compact oblivious fast path yet).
+  CUDA + symmetric is plumbed but unvalidated on GPU.
+- **Usefulness study (synthetic, 5 seeds):** leafwise vs depthwise vs symmetric
+  across 6 synthetic datasets × {constant, embedded_linear} × {reg, binary, mc}
+  (`experiments/grow_policy_comparison.py` →
+  `experiments/results/grow_policy_comparison.md`). Verdict
+  (`experiments/results/2026-06-23-grow-policy-verdict.md`): **keep `leafwise`
+  default**. Symmetric's broad synthetic wins are an oblivious-friendly-design
+  artifact (planted low-order axis-aligned structure, no real data, leaf-wise
+  capacity plausibly handicapped); it wins decisively only on clean/large
+  piecewise + multiclass and loses *harder* than it wins on smooth/interaction
+  and noisy-embedded targets. Provisional guidance: symmetric for strong
+  low-order shared structure / multiclass / oblivious regularization; depthwise
+  as a balanced, never-worst depth-bounded middle; leafwise otherwise.
+- **Open follow-ups:** a **real-data** policy comparison (the gate before any
+  default change — `benchmarks/openml_suite.py` + `benchmark_real_data.py`, a
+  capacity-match sensitivity sweep, ≥5 seeds, a ≥1σ-separation decision rule);
+  categorical-subset and multi-output symmetric; a compact oblivious storage +
+  bitwise-indexed predictor.
+
 ## v2 — native high-performance backend (Phase 10: core shipped ✅)
 
 - ✅ Rust kernels for the `BaseSplitBackend` contract (histogram building +

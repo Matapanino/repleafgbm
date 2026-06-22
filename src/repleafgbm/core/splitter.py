@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from repleafgbm.backends import numpy_backend as _nb
 from repleafgbm.backends.base import BaseSplitBackend, SplitCandidate
 from repleafgbm.backends.numpy_backend import (
     NumPySplitBackend,
@@ -146,6 +147,38 @@ class Splitter:
                 min_data_per_group=self.min_data_per_group,
                 max_cat_threshold=self.max_cat_threshold,
             )
+
+    def find_best_level_split(
+        self, hists: list[np.ndarray]
+    ) -> tuple[int, int] | None:
+        """Shared ``(feature, bin)`` for one symmetric-tree level (host-side).
+
+        Maximizes the summed per-node gain across ``hists`` (one histogram per
+        node at the level); see
+        :func:`~repleafgbm.backends.numpy_backend.find_best_level_split`. Runs on
+        the host for every backend (device-resident histograms are pulled with
+        ``_as_host``), so NumPy and Rust agree automatically — there is no
+        per-backend kernel here.
+        """
+        with timed(self._profiler, "split_scan"):
+            return _nb.find_best_level_split(
+                [_as_host(h) for h in hists],
+                self.n_bins_per_feature,
+                self.min_samples_leaf,
+                self.l2,
+            )
+
+    def split_at(
+        self, hist: np.ndarray, feature: int, bin_: int
+    ) -> SplitCandidate:
+        """Per-node SplitCandidate at a fixed numeric ``(feature, bin)``.
+
+        Symmetric growth applies a level's shared rule to every node; see
+        :func:`~repleafgbm.backends.numpy_backend.split_at`.
+        """
+        return _nb.split_at(
+            _as_host(hist), feature, bin_, self.n_bins_per_feature, self.l2
+        )
 
     def threshold_value(self, split: SplitCandidate) -> float:
         """Real-valued threshold for a winning bin split (x <= t goes left).

@@ -57,6 +57,10 @@ class BoosterParams:
     learning_rate: float = 0.1
     num_leaves: int = 31
     max_depth: int = -1
+    #: Tree growth strategy: "leafwise" (best-gain-first, the default),
+    #: "depthwise" (level-order to max_depth), or "symmetric" (CatBoost-style
+    #: oblivious trees). "depthwise"/"symmetric" require max_depth >= 1.
+    grow_policy: str = "leafwise"
     min_samples_leaf: int = 20
     l2_leaf: float = 1.0
     max_bins: int = 256
@@ -133,7 +137,12 @@ class Booster:
             profiler=profiler,
         )
         self.split_backend_ = splitter.backend
-        grower = TreeGrower(splitter, num_leaves=p.num_leaves, max_depth=p.max_depth)
+        grower = TreeGrower(
+            splitter,
+            num_leaves=p.num_leaves,
+            max_depth=p.max_depth,
+            grow_policy=p.grow_policy,
+        )
         return self._run_boosting(
             dataset, encoder, leaf_model,
             next_tree=grower.grow,

@@ -53,6 +53,15 @@ class BaseRepLeafModel(BaseEstimator):
         learning_rate: Shrinkage applied to every tree's contribution.
         num_leaves: Maximum leaves per tree (leaf-wise growth).
         max_depth: Maximum tree depth; -1 means unlimited.
+        grow_policy: Tree growth strategy. "leafwise" (default) grows
+            best-gain-first (controlled by num_leaves, like LightGBM);
+            "depthwise" grows level-order to max_depth (like XGBoost);
+            "symmetric" grows CatBoost-style oblivious trees where every node at
+            a level shares one split, giving up to 2**max_depth leaves and strong
+            implicit regularization. "depthwise" and "symmetric" require
+            max_depth >= 1. "symmetric" is numeric/scalar-only in v0 (categorical
+            features route as ordered thresholds, not subset splits, and
+            multi-output targets are unsupported).
         min_samples_leaf: Minimum rows per leaf for a split to be valid.
         leaf_model: "constant", "embedded_linear", or "raw_linear". Defaults to
             "embedded_linear"; on unknown real-world tabular data the OpenML
@@ -171,6 +180,7 @@ class BaseRepLeafModel(BaseEstimator):
         learning_rate: float = 0.1,
         num_leaves: int = 31,
         max_depth: int = -1,
+        grow_policy: str = "leafwise",
         min_samples_leaf: int = 20,
         leaf_model: str = "embedded_linear",
         encoder: str | BaseEncoder = "identity",
@@ -194,6 +204,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
         self.max_depth = max_depth
+        self.grow_policy = grow_policy
         self.min_samples_leaf = min_samples_leaf
         self.leaf_model = leaf_model
         self.encoder = encoder
@@ -276,6 +287,7 @@ class BaseRepLeafModel(BaseEstimator):
             learning_rate=self.learning_rate,
             num_leaves=self.num_leaves,
             max_depth=self.max_depth,
+            grow_policy=self.grow_policy,
             min_samples_leaf=self.min_samples_leaf,
             l2_leaf=self.l2_leaf,
             max_bins=self.max_bins,

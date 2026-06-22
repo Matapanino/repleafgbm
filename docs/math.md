@@ -54,8 +54,44 @@ gain = G_L^2/(H_L + λ) + G_R^2/(H_R + λ) - G^2/(H + λ)
 ```
 
 over histogram bins of raw features, with `min_samples_leaf` enforced on both
-children and missing values fixed to the left child. Trees grow leaf-wise
-(best gain first) up to `num_leaves`.
+children and missing values fixed to the left child. The split feature/threshold
+is always chosen from **raw features only** (the representation never enters
+routing); this holds for every growth policy below.
+
+`grow_policy` selects how the tree is expanded:
+
+- **`leafwise`** (default): best-gain-first. A heap pops the leaf with the
+  largest single-split gain until `num_leaves` leaves exist (`max_depth` an
+  optional cap). Highest capacity per tree.
+- **`depthwise`**: level-order (breadth-first) expansion to `max_depth`, scoring
+  each node with the same Newton gain; nodes with no valid positive-gain split
+  become leaves. `num_leaves` is an optional secondary cap.
+- **`symmetric`** (oblivious): every node at a given depth shares **one**
+  `(feature, threshold)`. Because the gain is nonlinear in `(G, H)`, the shared
+  split cannot be chosen from a summed histogram; it is chosen to maximize the
+  **sum of per-node gains** over the `m` nodes at the level,
+
+  ```text
+  (f*, b*) = argmax_{f,b}  Σ_{j=1..m} gain_j(f, b)
+  ```
+
+  evaluated only over candidates `(f, b)` that satisfy `min_samples_leaf` at
+  **every** node `j` (a candidate invalid at any node is disqualified for the
+  whole level — its summed gain is −∞). Growth is therefore all-or-none per
+  level: the tree is complete with `2**depth` leaves, and each leaf index is the
+  depth-bit pattern of the level decisions. This forced uniformity is a strong
+  implicit regularizer (it cannot carve deep, sample-specific branches), which
+  helps on small/noisy data, and `2**depth` leaves with one comparison per level
+  make inference fast. Ties break on the lowest `(feature, bin)` index, matching
+  the leaf-wise scan, so growth stays deterministic. `depthwise` and `symmetric`
+  require `max_depth >= 1`.
+
+The shared per-level split scan runs on the host for every compute backend, so
+it reuses the bitwise-identical histograms and is automatically parity-stable
+across the NumPy and Rust backends. In v0, `symmetric` supports numeric/ordered
+splits and scalar targets (regression, binary, and one-tree-per-class
+multiclass); categorical features route as ordered thresholds (no gradient-sorted
+subset splits) and multi-output targets are unsupported.
 
 ## Constant leaf model
 
