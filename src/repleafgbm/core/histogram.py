@@ -17,43 +17,69 @@ from __future__ import annotations
 
 import numpy as np
 
+from repleafgbm.utils.parallel import map_features
 
-def compute_bin_thresholds(X: np.ndarray, max_bins: int = 256) -> list[np.ndarray]:
+
+def compute_bin_thresholds(
+    X: np.ndarray, max_bins: int = 256, *, n_threads: int | None = None
+) -> list[np.ndarray]:
     """Per-feature sorted candidate thresholds from quantiles of non-NaN values.
 
     Returns a list of float64 arrays (possibly empty for constant features).
+
+    Each feature is independent, so the per-feature work (``np.unique`` /
+    ``np.quantile``) is mapped across a thread pool
+    (:func:`repleafgbm.utils.parallel.map_features`) and reassembled in feature
+    order — bitwise-identical to the serial loop regardless of thread count.
     """
-    n_features = X.shape[1]
-    thresholds: list[np.ndarray] = []
+    n_rows, n_features = X.shape
     qs = np.linspace(0.0, 1.0, max_bins + 1)[1:-1]  # interior quantiles
-    for j in range(n_features):
+
+    def _thresholds_for(j: int) -> np.ndarray:
         col = X[:, j]
         valid = col[~np.isnan(col)]
         if valid.size == 0:
-            thresholds.append(np.empty(0, dtype=np.float64))
-            continue
+            return np.empty(0, dtype=np.float64)
         uniq = np.unique(valid)
         if uniq.size <= max_bins:
             # Midpoints between consecutive unique values are exact candidates.
-            cand = (uniq[:-1] + uniq[1:]) / 2.0
-        else:
-            cand = np.unique(np.quantile(valid, qs))
-        thresholds.append(cand.astype(np.float64))
-    return thresholds
+            return ((uniq[:-1] + uniq[1:]) / 2.0).astype(np.float64)
+        return np.unique(np.quantile(valid, qs)).astype(np.float64)
+
+    return map_features(
+        _thresholds_for, n_features,
+        work_cells=n_rows * n_features, n_threads=n_threads,
+    )
 
 
-def bin_features(X: np.ndarray, thresholds: list[np.ndarray]) -> np.ndarray:
-    """Quantize features into bin indices (uint16) following the semantics above."""
+def bin_features(
+    X: np.ndarray, thresholds: list[np.ndarray], *, n_threads: int | None = None
+) -> np.ndarray:
+    """Quantize features into bin indices (uint16) following the semantics above.
+
+    Per-feature binning is mapped across a thread pool; each feature computes
+    its own contiguous column (avoiding cross-thread false sharing) and the
+    columns are assembled in order, so the result is bitwise-identical to the
+    serial loop regardless of thread count.
+    """
     n_rows, n_features = X.shape
-    binned = np.empty((n_rows, n_features), dtype=np.uint16)
-    for j in range(n_features):
+
+    def _bin_column(j: int) -> np.ndarray:
         t = thresholds[j]
         col = X[:, j]
         missing = np.isnan(col)
         # searchsorted with side="left": x <= t[b] -> bin b; x > t[-1] -> len(t).
         b = np.searchsorted(t, col, side="left")
         b[missing] = len(t) + 1
-        binned[:, j] = b.astype(np.uint16)
+        return b.astype(np.uint16)
+
+    columns = map_features(
+        _bin_column, n_features,
+        work_cells=n_rows * n_features, n_threads=n_threads,
+    )
+    binned = np.empty((n_rows, n_features), dtype=np.uint16)
+    for j in range(n_features):
+        binned[:, j] = columns[j]
     return binned
 
 
