@@ -48,6 +48,9 @@ Install with ``pip install "repleafgbm[cuda]"`` (needs an NVIDIA GPU + driver).
 
 from __future__ import annotations
 
+import os
+import warnings
+
 import numpy as np
 
 from repleafgbm.backends.base import BaseSplitBackend, SplitCandidate
@@ -98,8 +101,37 @@ _BLOCK = 256
 # (experiments/results/2026-06-17-cuda-parity.md): the on-device scan is ~2.1x
 # end-to-end on a 200-feature fit but ~neutral / slightly slower at 30 features,
 # so the crossover sits between; 2^15 keeps narrow fits on the (faster) host path
-# while capturing the wide win. Tune with a per-GPU sweep if needed.
+# while capturing the wide win. Tune with a per-GPU sweep (the env override below
+# feeds benchmarks/gpu_profile.py's --scan-min-cells-sweep) if needed.
 _GPU_SCAN_MIN_CELLS = 32_768
+
+# Private env override for the adaptive-scan threshold, for profiling/tuning only
+# (a per-GPU sweep) — NOT part of the public estimator API. Unset → the measured
+# default above, so the default fit is byte-for-byte unchanged.
+_SCAN_MIN_CELLS_ENV = "REPLEAFGBM_CUDA_SCAN_MIN_CELLS"
+
+
+def _resolve_scan_min_cells() -> int:
+    """Effective adaptive-scan threshold: the env override or the default.
+
+    Reads ``REPLEAFGBM_CUDA_SCAN_MIN_CELLS``. Unset/empty → ``_GPU_SCAN_MIN_CELLS``.
+    A non-integer value is ignored (warns, keeps the default); negatives clamp to
+    0 (forces the on-device scan for every node). Read once per backend (in
+    ``__init__``), so per-node ``find_best_split`` never touches the environment.
+    """
+    raw = os.environ.get(_SCAN_MIN_CELLS_ENV)
+    if raw is None or not raw.strip():
+        return _GPU_SCAN_MIN_CELLS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        warnings.warn(
+            f"Ignoring {_SCAN_MIN_CELLS_ENV}={raw!r} (not an integer); "
+            f"using default {_GPU_SCAN_MIN_CELLS}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _GPU_SCAN_MIN_CELLS
 
 
 class CudaSplitBackend(BaseSplitBackend):
@@ -136,6 +168,12 @@ class CudaSplitBackend(BaseSplitBackend):
         # for every node of every tree, so it is uploaded once and reused.
         self._binned_key: tuple[int, tuple[int, ...]] | None = None
         self._binned_d = None
+        # Effective adaptive-scan threshold for this backend's lifetime, resolved
+        # once here (env override or default) so the per-node find_best_split scan
+        # reads an attribute, never the environment. A fresh backend per fit picks
+        # up the env value active at construction (the benchmark sets it around
+        # the fit). See _resolve_scan_min_cells / _GPU_SCAN_MIN_CELLS.
+        self._scan_min_cells = _resolve_scan_min_cells()
         # Private transfer/work counters (profiling only; not part of the public
         # API or the BaseSplitBackend contract). They are plain integer adds at
         # each H2D/D2H boundary — negligible next to a kernel launch — and let
@@ -144,8 +182,7 @@ class CudaSplitBackend(BaseSplitBackend):
         # after a fit; reset_transfer_stats() zeroes them for a fresh window.
         self._stats: dict[str, int] = self._zero_stats()
 
-    @staticmethod
-    def _zero_stats() -> dict[str, int]:
+    def _zero_stats(self) -> dict[str, int]:
         return {
             "binned_h2d_bytes": 0,
             "rows_h2d_bytes": 0,
@@ -158,6 +195,12 @@ class CudaSplitBackend(BaseSplitBackend):
             "n_small_scans": 0,
             "n_gpu_scans": 0,
             "n_cat_slices": 0,
+            # Effective adaptive-scan threshold in force for this backend (env
+            # override or default). Config, not a transfer counter — re-seeded
+            # (not zeroed) by reset_transfer_stats so a benchmark always records
+            # the threshold that produced the scan-path counts above. It does not
+            # end in "_bytes", so it is excluded from byte totals downstream.
+            "scan_min_cells": self._scan_min_cells,
         }
 
     def _bump(self, key: str, n: int) -> None:
@@ -274,10 +317,12 @@ class CudaSplitBackend(BaseSplitBackend):
 
         # Adaptive: small per-node histograms scan faster on the host (a single
         # bulk copy + vectorized NumPy) than as many tiny GPU kernels; only the
-        # GPU once it is large enough to amortize launch/sync overhead. See
-        # _GPU_SCAN_MIN_CELLS. The histogram stays resident for the build /
-        # subtraction either way; this only copies the small ones back to scan.
-        if n_features * n_bins_max < _GPU_SCAN_MIN_CELLS:
+        # GPU once it is large enough to amortize launch/sync overhead. The
+        # threshold (self._scan_min_cells) is _GPU_SCAN_MIN_CELLS by default,
+        # overridable via REPLEAFGBM_CUDA_SCAN_MIN_CELLS for profiling sweeps. The
+        # histogram stays resident for the build / subtraction either way; this
+        # only copies the small ones back to scan.
+        if n_features * n_bins_max < self._scan_min_cells:
             # Small histogram: one bulk copy back, host scan (see threshold note).
             self._bump("hist_d2h_bytes", 24 * n_features * n_bins_max)
             self._bump("n_small_scans", 1)

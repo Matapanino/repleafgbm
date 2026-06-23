@@ -57,6 +57,14 @@ to the winning split's scalars. Measured on a Tesla T4
     copy + vectorized host scan, so the adaptive threshold keeps it on the host
     path (it matches B1 rather than regressing).
 
+The host/GPU crossover (`_GPU_SCAN_MIN_CELLS`, default `2^15 = 32768` feature×bin
+cells) can be overridden for **profiling/tuning** via the private
+`REPLEAFGBM_CUDA_SCAN_MIN_CELLS` env var (`0` forces every node onto the GPU scan;
+a very large value forces the host scan). It is read once per fit and is **not**
+part of the public estimator API — the default is unchanged. Sweep it with
+`benchmarks/gpu_profile.py --scan-min-cells-sweep` to find a per-GPU optimum; the
+effective value is recorded in the benchmark's `transfer_bytes.scan_min_cells`.
+
 The end-to-end gain is bounded because tree growth, categorical/multi-output
 scans, and leaf fitting still run on the host. GPU leaf fitting was evaluated and
 deferred (leaf stats are already accelerated by the Rust `leaf_linear_stats`

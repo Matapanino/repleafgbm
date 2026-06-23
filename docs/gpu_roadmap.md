@@ -68,6 +68,33 @@ Acceptance criteria:
 > revisit the narrow-fit host-scan crossover (`_GPU_SCAN_MIN_CELLS`). Evidence:
 > `experiments/results/2026-06-19-cuda-gradhess-cache-verdict.md` (before/after:
 > `artifacts/gpu_bench/2026-06-18-T4` vs `2026-06-19-T4`).
+>
+> **Tunability update (2026-06-23).** The host/GPU scan crossover is now
+> *measurable and tunable* without a kernel change: `_GPU_SCAN_MIN_CELLS` can be
+> overridden per fit via the private `REPLEAFGBM_CUDA_SCAN_MIN_CELLS` env var, the
+> effective value is recorded in the CUDA `transfer_bytes.scan_min_cells` counter
+> (next to `n_small_scans` / `n_gpu_scans`), and
+> `benchmarks/gpu_profile.py --scan-min-cells-sweep 0 8192 32768 131072 very_large`
+> sweeps it. The default is unchanged (32768) and the public API is untouched;
+> this only adds the measurement scaffolding the split-scan kernel work (item 3
+> below) should be designed against — no new kernel yet.
+>
+> **A/B verdict (2026-06-23, Tesla T4; results-analyst).** A paired A/B (5 reps,
+> alternating order, same data per pair) of A=32768 (GPU scan at 200f) vs B=131072
+> (host scan) shows the **per-node on-device numeric scan is not the lever**: the
+> host scan is ≥ as fast at every tested shape. multiclass-c5 200f host is
+> **+4.9%** faster end-to-end (Δ +1.14s, 5/5 reps, p<0.01; split_scan is ~84% of
+> that fit), while regression/binary 200f are within fit-level noise (the
+> split_scan phase favours host by ~0.25s but is masked by the encoder /
+> embedded_linear-leaf phases). Quality is unchanged across the whole sweep (the
+> threshold is a **pure speed knob**), and threshold 0 (all-GPU) is 3–5× slower on
+> narrow 30f. **Default stays 32768 (deferred):** the evidence is T4-only, one
+> seed, one 200f boundary shape, with no L4/A100 and no ≥131072-cell regime — not
+> broad enough to move a global default. 131072 is a documented *candidate /
+> per-GPU tuning point*, not the new default. The next CUDA lever is **node/class-
+> batched split_scan** (fewer, larger kernels; multiclass-first) or reducing the
+> host-path `(F,B,3)` D2H — not the current per-node on-device scan. Evidence:
+> `experiments/results/2026-06-23-cuda-scan-ab.md`, `…-cuda-scan-sweep.md`.
 
 ### 1. Cache Full Grad/Hess Buffers On CUDA — shelved (null result)
 

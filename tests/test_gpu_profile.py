@@ -22,9 +22,9 @@ from benchmarks import gpu_profile  # noqa: E402
 
 _REQUIRED_KEYS = {
     "case_id", "task", "backend", "n_train", "n_test", "n_features", "max_bins",
-    "num_leaves", "leaf_model", "encoder", "fit_seconds", "predict_seconds",
-    "quality", "peak_rss_bytes", "peak_gpu_bytes", "phase_seconds",
-    "transfer_bytes", "env",
+    "num_leaves", "leaf_model", "encoder", "cuda_scan_min_cells", "fit_seconds",
+    "predict_seconds", "quality", "peak_rss_bytes", "peak_gpu_bytes",
+    "phase_seconds", "transfer_bytes", "env",
 }
 
 
@@ -115,3 +115,55 @@ def test_appends_rows(tmp_path):
     written = [json.loads(line) for line in out.read_text().splitlines() if line]
     assert len(written) == 2
     assert {r["task"] for r in written} == {"regression", "binary"}
+
+
+# --------------------------------------------------------------------------- #
+# CUDA scan-threshold plumbing (CPU-safe: numpy backend ignores the knob, but the
+# CLI → env → row plumbing is exercised here; the GPU path-switch behaviour is in
+# the GPU-gated tests/test_cuda_backend.py).
+# --------------------------------------------------------------------------- #
+def test_cuda_scan_min_cells_recorded_in_row(tmp_path):
+    row, _, _ = _run(tmp_path, "--task", "regression",
+                     "--cuda-scan-min-cells", "8192")
+    assert row["cuda_scan_min_cells"] == 8192
+    assert "scan8192" in row["case_id"]
+
+
+def test_cuda_scan_min_cells_defaults_to_none(tmp_path):
+    row, _, _ = _run(tmp_path, "--task", "regression")
+    assert row["cuda_scan_min_cells"] is None
+    assert "scan" not in row["case_id"]  # no tag without an override
+
+
+def test_cuda_scan_min_cells_very_large_token(tmp_path):
+    row, _, _ = _run(tmp_path, "--task", "regression",
+                     "--cuda-scan-min-cells", "very_large")
+    assert row["cuda_scan_min_cells"] == 1_000_000_000
+
+
+def test_scan_min_cells_sweep_writes_row_per_threshold(tmp_path):
+    out = tmp_path / "cases.jsonl"
+    rows = gpu_profile.main([
+        "--backend", "numpy", "--quick", "--leaf-model", "constant",
+        "--task", "regression", "--out", str(out),
+        "--scan-min-cells-sweep", "0", "32768", "very_large",
+    ])
+    # The sweep returns a list (one row per threshold); the no-sweep path still
+    # returns a single dict (asserted by the tests above and test_*_writes_*).
+    assert isinstance(rows, list)
+    assert [r["cuda_scan_min_cells"] for r in rows] == [0, 32768, 1_000_000_000]
+    written = [json.loads(line) for line in out.read_text().splitlines() if line]
+    assert len(written) == 3
+    assert written == rows
+    # numpy backend tracks no device transfers, regardless of the threshold knob.
+    assert all(r["transfer_bytes"] == {} for r in rows)
+
+
+def test_scan_env_not_leaked_after_run(tmp_path):
+    """run_case sets REPLEAFGBM_CUDA_SCAN_MIN_CELLS only around the fit and
+    restores it, so it must be unset again afterwards (no cross-test leak)."""
+    import os
+
+    os.environ.pop(gpu_profile._SCAN_ENV, None)
+    _run(tmp_path, "--task", "regression", "--cuda-scan-min-cells", "8192")
+    assert gpu_profile._SCAN_ENV not in os.environ
