@@ -260,9 +260,15 @@ def test_reset_transfer_stats(node_data):
     binned, rows, grad, hess, n_bins_max, _ = node_data
     cu = CudaSplitBackend()
     cu.build_histograms(binned, rows, grad, hess, n_bins_max)
-    assert any(v > 0 for v in cu.get_transfer_stats().values())
+    s = cu.get_transfer_stats()
+    assert any(v > 0 for k, v in s.items() if k != "scan_min_cells")
     cu.reset_transfer_stats()
-    assert all(v == 0 for v in cu.get_transfer_stats().values())
+    s = cu.get_transfer_stats()
+    # Transfer/work counters zero out; the effective threshold is config (the
+    # value that produced the path counts), so reset re-seeds it rather than
+    # zeroing it.
+    assert all(v == 0 for k, v in s.items() if k != "scan_min_cells")
+    assert s["scan_min_cells"] == cu._scan_min_cells
 
 
 def test_transfer_counters_small_scan_copies_full_histogram(node_data):
@@ -339,3 +345,81 @@ def test_booster_exposes_split_backend_handle(regression_data):
     assert stats["n_hist_builds"] > 0
     assert stats["gradhess_h2d_bytes"] > 0
     assert stats["binned_uploads"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Adaptive scan-threshold override (REPLEAFGBM_CUDA_SCAN_MIN_CELLS)
+#
+# The threshold is resolved once at backend construction, so each test sets the
+# env var (monkeypatch auto-restores → no leak) *before* building the backend.
+# The CPU-safe resolver unit tests live in tests/test_cuda_scan_threshold.py;
+# these verify the GPU-side behaviour: which scan path a node takes and that the
+# selected split still matches the NumPy reference on the forced path.
+# --------------------------------------------------------------------------- #
+def test_scan_min_cells_in_stats_default(monkeypatch):
+    monkeypatch.delenv("REPLEAFGBM_CUDA_SCAN_MIN_CELLS", raising=False)
+    assert CudaSplitBackend().get_transfer_stats()["scan_min_cells"] == 32_768
+
+
+def test_scan_min_cells_in_stats_override(monkeypatch):
+    monkeypatch.setenv("REPLEAFGBM_CUDA_SCAN_MIN_CELLS", "12345")
+    cu = CudaSplitBackend()
+    assert cu.get_transfer_stats()["scan_min_cells"] == 12345
+    assert cu._scan_min_cells == 12345
+
+
+def test_env_threshold_forces_host_scan(monkeypatch):
+    """A very high threshold pushes even a large histogram onto the host scan
+    path (n_small_scans), and the selected split still matches the reference."""
+    from repleafgbm.backends.cuda_backend import _GPU_SCAN_MIN_CELLS
+
+    monkeypatch.setenv("REPLEAFGBM_CUDA_SCAN_MIN_CELLS", "1000000000")
+    rng = np.random.default_rng(4)
+    F = 200
+    n_bins_max = (_GPU_SCAN_MIN_CELLS // F) + 2  # large enough to GPU-scan by default
+    assert F * n_bins_max >= _GPU_SCAN_MIN_CELLS
+    n_cats = n_bins_max - 1
+    n = 4000
+    binned = rng.integers(0, n_cats, size=(n, F)).astype(np.uint16)
+    rows = np.arange(n, dtype=np.int64)
+    grad = rng.normal(size=n)
+    hess = np.abs(rng.normal(size=n)) + 0.1
+    n_bins_pf = np.full(F, n_cats, dtype=np.int64)
+
+    np_b, cu_b = NumPySplitBackend(), CudaSplitBackend()
+    assert cu_b.get_transfer_stats()["scan_min_cells"] == 1_000_000_000
+    hist_np = np_b.build_histograms(binned, rows, grad, hess, n_bins_max)
+    hist_cu = cu_b.build_histograms(binned, rows, grad, hess, n_bins_max)
+    cu_b.reset_transfer_stats()
+    cat = np.zeros(F, dtype=bool)
+    s_cu = cu_b.find_best_split(hist_cu, n_bins_pf, 20, 1.0, cat)
+    s_np = np_b.find_best_split(hist_np, n_bins_pf, 20, 1.0, cat)
+    st = cu_b.get_transfer_stats()
+    assert st["n_small_scans"] == 1 and st["n_gpu_scans"] == 0  # forced to host
+    assert (s_np is None) == (s_cu is None)
+    if s_np is not None:
+        assert (s_np.feature, s_np.bin) == (s_cu.feature, s_cu.bin)
+        assert s_np.gain == pytest.approx(s_cu.gain, rel=1e-6)
+        assert (s_np.n_left, s_np.n_right) == (s_cu.n_left, s_cu.n_right)
+
+
+def test_env_threshold_forces_gpu_scan(monkeypatch, node_data):
+    """Threshold 0 pushes even a small histogram onto the on-device scan
+    (n_gpu_scans); the selected split must still agree with the reference."""
+    monkeypatch.setenv("REPLEAFGBM_CUDA_SCAN_MIN_CELLS", "0")
+    binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data  # small (F=8)
+    np_b, cu_b = NumPySplitBackend(), CudaSplitBackend()
+    assert cu_b.get_transfer_stats()["scan_min_cells"] == 0
+    hist_np = np_b.build_histograms(binned, rows, grad, hess, n_bins_max)
+    hist_cu = cu_b.build_histograms(binned, rows, grad, hess, n_bins_max)
+    cu_b.reset_transfer_stats()
+    cat = np.zeros(8, dtype=bool)
+    s_cu = cu_b.find_best_split(hist_cu, n_bins_pf, 20, 1.0, cat)
+    s_np = np_b.find_best_split(hist_np, n_bins_pf, 20, 1.0, cat)
+    st = cu_b.get_transfer_stats()
+    assert st["n_gpu_scans"] == 1 and st["n_small_scans"] == 0  # forced to GPU
+    assert (s_np is None) == (s_cu is None)
+    if s_np is not None:
+        assert (s_np.feature, s_np.bin) == (s_cu.feature, s_cu.bin)
+        assert s_np.gain == pytest.approx(s_cu.gain, rel=1e-6)
+        assert (s_np.n_left, s_np.n_right) == (s_cu.n_left, s_cu.n_right)

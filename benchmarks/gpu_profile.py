@@ -66,6 +66,16 @@ _SIZES: dict[str, tuple[int, int, int]] = {
     "stress": (1_000_000, 200_000, 200),
 }
 
+# CUDA adaptive-scan threshold override env var. Set around the timed fit below;
+# the cuda backend reads it once at construction (_resolve_scan_min_cells).
+# numpy/rust backends ignore it (they have no adaptive GPU scan).
+_SCAN_ENV = "REPLEAFGBM_CUDA_SCAN_MIN_CELLS"
+
+
+def _parse_threshold(s: str) -> int:
+    """Parse a scan-threshold CLI value: an int, or 'very_large' (force host)."""
+    return 1_000_000_000 if s == "very_large" else int(s)
+
 
 # --------------------------------------------------------------------------- #
 # Data
@@ -263,9 +273,14 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
 
     # Enable the internal phase profiler for this measurement run (restored
     # afterwards). The per-phase breakdown is read off the fitted estimator's
-    # ``phase_seconds_`` attribute; profiling is off outside this window.
-    prev_profile = os.environ.get("REPLEAFGBM_PROFILE")
+    # ``phase_seconds_`` attribute; profiling is off outside this window. The
+    # CUDA scan-threshold override (if any) is set the same way: the backend
+    # reads it once at construction during the fit, so it must be live here.
+    scan = getattr(args, "cuda_scan_min_cells", None)
+    prev_env = {k: os.environ.get(k) for k in ("REPLEAFGBM_PROFILE", _SCAN_ENV)}
     os.environ["REPLEAFGBM_PROFILE"] = "1"
+    if scan is not None:
+        os.environ[_SCAN_ENV] = str(scan)
     try:
         t0 = time.perf_counter()
         model.fit(X_train, y_train)
@@ -275,15 +290,18 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
         model.predict(X_test)
         predict_seconds = time.perf_counter() - t0
     finally:
-        if prev_profile is None:
-            os.environ.pop("REPLEAFGBM_PROFILE", None)
-        else:
-            os.environ["REPLEAFGBM_PROFILE"] = prev_profile
+        for key, val in prev_env.items():
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
     phase_seconds = dict(getattr(model, "phase_seconds_", {}))
 
     cls_tag = f"_c{n_classes}" if task == "multiclass" else ""
+    scan_tag = f"_scan{scan}" if scan is not None else ""
     row: dict[str, Any] = {
-        "case_id": f"{task}{cls_tag}_{args.n_features}f_bins{args.max_bins}_{backend}",
+        "case_id":
+            f"{task}{cls_tag}_{args.n_features}f_bins{args.max_bins}{scan_tag}_{backend}",
         "task": task,
         "backend": backend,
         "n_classes": n_classes,
@@ -295,6 +313,7 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
         "leaf_model": args.leaf_model,
         "encoder": args.encoder,
         "device": getattr(args, "device", None),
+        "cuda_scan_min_cells": scan,
         "n_estimators": args.n_estimators,
         "fit_seconds": fit_seconds,
         "predict_seconds": predict_seconds,
@@ -375,6 +394,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-bins", type=int, default=256)
     p.add_argument("--num-leaves", type=int, default=31)
     p.add_argument("--max-leaf-emb-dim", type=int, default=64)
+    p.add_argument(
+        "--cuda-scan-min-cells", type=_parse_threshold, default=None, metavar="N",
+        help="override the CUDA adaptive split-scan threshold for this run via "
+             f"{_SCAN_ENV} (cuda backend only; an int, or 'very_large' to force "
+             "the host path). Default: backend default (32768).",
+    )
+    p.add_argument(
+        "--scan-min-cells-sweep", type=_parse_threshold, nargs="+", default=None,
+        metavar="N",
+        help="run one case per threshold (e.g. 0 8192 32768 131072 very_large); "
+             "writes one JSONL row each. Overrides --cuda-scan-min-cells.",
+    )
     p.add_argument("--parity", action="store_true",
                    help="also fit a numpy twin and record parity_max_abs_diff")
     p.add_argument("--out", type=Path, default=Path("artifacts/gpu_bench/cases.jsonl"),
@@ -382,22 +413,47 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> dict[str, Any]:
-    args = apply_quick(build_parser().parse_args(argv))
-    if args.size:
-        args.n_train, args.n_test, args.n_features = _SIZES[args.size]
-        if args.quick:  # quick shrinks rows but keep the preset's feature width
-            args.n_train, args.n_test = 2_000, 1_000
+def _emit_case(args: argparse.Namespace) -> dict[str, Any]:
+    """Run one case, append its JSONL row, print a one-line summary, return it."""
     row = run_case(args)
     write_row(args.out, row)
-    summary = write_summary(args.out)
     q = ", ".join(f"{k}={v:.4g}" for k, v in row["quality"].items())
     print(f"[{row['case_id']}] fit={row['fit_seconds']:.3f}s "
           f"predict={row['predict_seconds']:.3f}s  {q}")
     if row.get("transfer_bytes"):
         print(f"  transfer_bytes: {row['transfer_bytes']}")
+    return row
+
+
+def main(argv: list[str] | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    args = apply_quick(build_parser().parse_args(argv))
+    if args.size:
+        args.n_train, args.n_test, args.n_features = _SIZES[args.size]
+        if args.quick:  # quick shrinks rows but keep the preset's feature width
+            args.n_train, args.n_test = 2_000, 1_000
+
+    # Threshold sweep: one case (one JSONL row) per threshold. Only the cuda
+    # backend reads the value; numpy/rust ignore the knob but still record the
+    # requested threshold per row so sweep rows stay distinguishable.
+    if args.scan_min_cells_sweep:
+        rows = [
+            _emit_case(_with_scan(args, thresh))
+            for thresh in args.scan_min_cells_sweep
+        ]
+        summary = write_summary(args.out)
+        print(f"  -> {args.out}  (summary: {summary})")
+        return rows
+
+    row = _emit_case(args)
+    summary = write_summary(args.out)
     print(f"  -> {args.out}  (summary: {summary})")
     return row
+
+
+def _with_scan(args: argparse.Namespace, thresh: int) -> argparse.Namespace:
+    """Set the per-case scan threshold on ``args`` (mutates and returns it)."""
+    args.cuda_scan_min_cells = thresh
+    return args
 
 
 if __name__ == "__main__":

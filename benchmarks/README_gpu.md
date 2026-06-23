@@ -127,6 +127,7 @@ Each JSONL row should include:
   "num_leaves": 31,
   "leaf_model": "embedded_linear",
   "encoder": "identity",
+  "cuda_scan_min_cells": null,
   "fit_seconds": 0.0,
   "predict_seconds": 0.0,
   "peak_rss_bytes": 0,
@@ -137,6 +138,11 @@ Each JSONL row should include:
   "env": {}
 }
 ```
+
+`cuda_scan_min_cells` records the adaptive-scan threshold *requested* for the run
+(`null` = backend default); for the `cuda` backend the *effective* threshold also
+appears as `transfer_bytes.scan_min_cells` (the value the backend actually used),
+alongside the `n_small_scans` / `n_gpu_scans` path counts it produced.
 
 ## Commands (implemented)
 
@@ -150,12 +156,24 @@ python -m benchmarks.gpu_profile --task binary --size medium --backend cuda --ma
 python -m benchmarks.gpu_profile --task multiclass --n-classes 5 --size medium --backend cuda --out artifacts/gpu_bench/dev/cases.jsonl
 ```
 
+Sweep the CUDA adaptive-scan threshold (`_GPU_SCAN_MIN_CELLS`, default `32768`) to
+find the per-GPU crossover — one JSONL row per threshold (`0` forces every node
+onto the GPU scan, `very_large` forces the host scan):
+
+```bash
+python -m benchmarks.gpu_profile --task multiclass --n-classes 5 --size large --backend cuda \
+  --scan-min-cells-sweep 0 8192 32768 131072 very_large --out artifacts/gpu_bench/dev/scan_sweep.jsonl
+```
+
 `--size {small,medium,large,stress}` overrides `--n-train/--n-test/--n-features`;
 other knobs: `--leaf-model`, `--encoder` (any encoder name, incl. learned
 `torch_periodic_plr`), `--device {cpu,cuda,auto}` for learned-encoder pretraining
 (v1.5.0; torch encoders only), `--num-leaves`, `--max-leaf-emb-dim`,
-`--n-estimators`, `--quick`, and `--parity` (also fits a numpy twin and records
-`parity_max_abs_diff`). `numpy`/`rust` backends run on CPU; `cuda` needs a GPU.
+`--n-estimators`, `--cuda-scan-min-cells N` (one-off CUDA scan-threshold override,
+an int or `very_large`; sets `REPLEAFGBM_CUDA_SCAN_MIN_CELLS` around the fit),
+`--scan-min-cells-sweep N ...` (the sweep above), `--quick`, and `--parity` (also
+fits a numpy twin and records `parity_max_abs_diff`). `numpy`/`rust` backends run
+on CPU and ignore the scan-threshold knobs; `cuda` needs a GPU.
 
 On the GPU, the Colab loop runs the `gpu_profile` matrix automatically, writes a
 backend-comparison suite, and pulls everything back:
@@ -171,8 +189,12 @@ bash scripts/colab_gpu_test.sh --gpu T4
 
 - **Done:** `CudaSplitBackend` private transfer counters — binned / rows /
   grad-hess H2D bytes, full-histogram D2H (small scans), categorical-slice D2H,
-  and winner-scalar D2H — surfaced via `get_transfer_stats()` and recorded in the
-  JSONL `transfer_bytes` field.
+  and winner-scalar D2H — plus the small/large scan-path counts
+  (`n_small_scans` / `n_gpu_scans`) and the effective adaptive-scan threshold
+  (`scan_min_cells`), surfaced via `get_transfer_stats()` and recorded in the
+  JSONL `transfer_bytes` field. The threshold is tunable per run via the
+  `REPLEAFGBM_CUDA_SCAN_MIN_CELLS` env var (`--cuda-scan-min-cells` /
+  `--scan-min-cells-sweep`), for crossover measurement without a kernel change.
 - Add optional timers around `Splitter.__init__`, `TreeGrower.grow`,
   backend histogram build, backend split scan, `Splitter.partition`,
   `fit_leaves`, eval tree application, and prediction (populates the
