@@ -118,7 +118,8 @@ def logloss(y, p):
 
 
 def run_dataset(name: str, max_rows: int, seeds: list[int],
-                robust: bool = False) -> tuple[dict, str, int, int]:
+                robust: bool = False,
+                gate_margin_sweep: bool = False) -> tuple[dict, str, int, int]:
     X_all, y_all, task = load_dataset(name)
     X_all, cats = clean_features(X_all)
     score = rmse if task == "regression" else logloss
@@ -195,6 +196,13 @@ def run_dataset(name: str, max_rows: int, seeds: list[int],
             ("RepLeaf constant (es)", dict(leaf_model="constant")),
             ("RepLeaf embedded_linear identity (es)",
              dict(leaf_model="embedded_linear", encoder="identity")),
+            # Per-leaf adaptive constant<->embedded_linear gate (weighted-LOO)
+            # at the default margin, plus the in-sample baseline arm that drops
+            # the leverage correction (docs/proposals/adaptive-leaf-model.md).
+            ("RepLeaf adaptive identity (es)",
+             dict(leaf_model="adaptive", encoder="identity")),
+            ("RepLeaf adaptive_insample identity (es)",
+             dict(leaf_model="adaptive", encoder="identity", leaf_gate="insample")),
             # max_leaf_emb_dim raised to keep PLR unprojected — projection
             # degrades accuracy (experiments/results/plr_projection_gap.md).
             ("RepLeaf embedded_linear plr (es)",
@@ -229,6 +237,12 @@ def run_dataset(name: str, max_rows: int, seeds: list[int],
                  dict(leaf_model="constant", objective="huber")),
                 ("RepLeaf constant quantile(0.5) (es)",
                  dict(leaf_model="constant", objective="quantile")),
+            ]
+        if gate_margin_sweep:  # sensitivity around the 0.01 default
+            repleaf_configs += [
+                (f"RepLeaf adaptive m={m} identity (es)",
+                 dict(leaf_model="adaptive", encoder="identity", leaf_gate_margin=m))
+                for m in (0.0, 0.05)
             ]
         for label, kwargs in repleaf_configs:
             model = native_cls(
@@ -265,6 +279,13 @@ def main() -> None:
     parser.add_argument("--robust", action="store_true",
                         help="also fit constant-leaf huber/quantile objectives on "
                              "the regression datasets (reference numbers)")
+    parser.add_argument("--gate-margin-sweep", action="store_true",
+                        help="also fit adaptive leaves at leaf_gate_margin in "
+                             "{0.0, 0.05} (sensitivity around the 0.01 default)")
+    parser.add_argument("--out", type=str, default=None,
+                        help="output markdown path; default is the canonical "
+                             "experiments/results/real_data_validation.md (pass a "
+                             "dated path to avoid clobbering its curated analysis)")
     args = parser.parse_args()
     seeds = list(range(args.seeds))
     warnings.filterwarnings("ignore", category=FutureWarning)
@@ -289,7 +310,8 @@ def main() -> None:
     for name in args.datasets:
         print(f"=== dataset: {name} ===", flush=True)
         rows, task, n_used, n_cats = run_dataset(name, args.max_rows, seeds,
-                                                  robust=args.robust)
+                                                  robust=args.robust,
+                                                  gate_margin_sweep=args.gate_margin_sweep)
         ordered = sorted(rows.values(), key=lambda r: np.mean(r.test))
         metric_name = "rmse" if task == "regression" else "logloss"
         for r in ordered:
@@ -319,7 +341,8 @@ def main() -> None:
             line += f" {np.mean(r.fit_s):.1f} |"
             out_lines.append(line)
 
-    out_path = (Path(__file__).resolve().parents[1] / "experiments" / "results"
+    out_path = (Path(args.out) if args.out else
+                Path(__file__).resolve().parents[1] / "experiments" / "results"
                 / "real_data_validation.md")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(out_lines) + "\n")

@@ -249,6 +249,11 @@ def _repleaf_configs(learned_encoders: bool) -> list[tuple[str, dict]]:
         ("RepLeaf constant", dict(leaf_model="constant")),
         ("RepLeaf embedded_linear", dict(leaf_model="embedded_linear",
                                          encoder="identity")),
+        # Per-leaf adaptive constant<->embedded_linear gate (weighted-LOO) and
+        # its in-sample baseline (docs/proposals/adaptive-leaf-model.md).
+        ("RepLeaf adaptive", dict(leaf_model="adaptive", encoder="identity")),
+        ("RepLeaf adaptive_insample",
+         dict(leaf_model="adaptive", encoder="identity", leaf_gate="insample")),
     ]
     if learned_encoders:
         try:
@@ -409,6 +414,10 @@ def main() -> None:
         help="also benchmark the learned encoders torch_periodic_plr / torch_mlp "
              "(needs the [torch] extra; slower — supervised pretraining per fit)",
     )
+    parser.add_argument("--out", type=str, default=None,
+                        help="output markdown path; default is the canonical "
+                             "experiments/results/openml_benchmark.md (pass a "
+                             "dated path to avoid clobbering it)")
     args = parser.parse_args()
     seeds = list(range(args.seeds))
     warnings.filterwarnings("ignore", category=FutureWarning)
@@ -484,7 +493,8 @@ def main() -> None:
         for label, ranks in sorted(acc.items(), key=lambda kv: np.mean(kv[1])):
             out.append(f"| {label} | {np.mean(ranks):.2f} | {len(ranks)} |")
 
-    out_path = (Path(__file__).resolve().parents[1] / "experiments" / "results"
+    out_path = (Path(args.out) if args.out else
+                Path(__file__).resolve().parents[1] / "experiments" / "results"
                 / "openml_benchmark.md")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(out) + "\n")
