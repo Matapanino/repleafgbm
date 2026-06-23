@@ -1,9 +1,13 @@
 """Tests for leaf model fitting: ridge recovery and constant fallback."""
 
+import json
+
 import numpy as np
 import pytest
 
+from repleafgbm import RepLeafRegressor
 from repleafgbm.core.leaf_models import (
+    AdaptiveLeafModel,
     ConstantLeafModel,
     EmbeddedLinearLeafModel,
     LeafValues,
@@ -272,3 +276,296 @@ def test_predict_linear_serial_parallel_bitwise(clip):
          for i in range(0, n, step)]
     )
     np.testing.assert_array_equal(full, serial)
+
+
+# --------------------------------------------------------------------------- #
+# AdaptiveLeafModel: per-leaf weighted-LOO constant<->embedded_linear gate
+# --------------------------------------------------------------------------- #
+def test_adaptive_keeps_linear_on_clean_target():
+    """A noiseless linear leaf generalizes perfectly, so the gate keeps the
+    linear fit and produces exactly the embedded-linear weights."""
+    rng = np.random.default_rng(20)
+    Z = rng.normal(size=(300, 4))
+    residual = 1.0 + 2.0 * Z[:, 0] - 0.5 * Z[:, 2]  # noiseless linear in Z
+    g, h = -residual, np.ones(300)
+    rows = [np.arange(300)]
+    lv_a = AdaptiveLeafModel(
+        l2=1e-6, min_samples_linear=10, leaf_gate_margin=0.01
+    ).fit_leaves(rows, g, h, Z)
+    lv_e = EmbeddedLinearLeafModel(l2=1e-6, min_samples_linear=10).fit_leaves(
+        rows, g, h, Z
+    )
+    assert np.any(lv_a.weights[0] != 0.0)  # linear fit kept
+    np.testing.assert_allclose(lv_a.weights[0], lv_e.weights[0], rtol=1e-9, atol=1e-12)
+
+
+def test_adaptive_demotes_noise_to_constant():
+    """A pure-noise leaf above the size threshold: the linear fit does not beat
+    the constant in weighted LOO, so the gate demotes it to a constant whose
+    bias is the Newton value -g_sum/(h_sum+l2)."""
+    rng = np.random.default_rng(21)
+    Z = rng.normal(size=(120, 8))
+    g, h = -rng.normal(size=120), np.ones(120)  # no linear structure in Z
+    lv = AdaptiveLeafModel(
+        l2=1.0, min_samples_linear=10, leaf_gate_margin=0.01
+    ).fit_leaves([np.arange(120)], g, h, Z)
+    assert np.all(lv.weights[0] == 0.0)
+    assert np.isinf(lv.z_min[0]).all() and np.isinf(lv.z_max[0]).all()
+    assert lv.bias[0] == pytest.approx(-g.sum() / (h.sum() + 1.0))
+
+
+def test_adaptive_demoted_leaf_matches_embedded_constant(monkeypatch):
+    """A gated-to-constant leaf must equal the embedded-linear constant fallback
+    bitwise (same Newton bias, zero weights, infinite guard). Forcing the NumPy
+    path (both compute the bias by the same bincount) makes it exact; a large
+    margin (>=1) demotes every leaf."""
+    import repleafgbm.core.leaf_models as lm
+
+    monkeypatch.setattr(lm, "_native", None)
+    rng = np.random.default_rng(22)
+    Z = rng.normal(size=(120, 8))
+    g, h = -rng.normal(size=120), np.abs(rng.normal(1.0, 0.2, 120)) + 0.1
+    rows = [np.arange(120)]
+    # margin >= 1 => E_lin < (1-margin)*E_const < 0 is never true => always demote.
+    lv_a = AdaptiveLeafModel(
+        l2=1.0, min_samples_linear=10, leaf_gate_margin=5.0
+    ).fit_leaves(rows, g, h, Z)
+    # An unreachable min_samples_linear forces the embedded model constant.
+    lv_c = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=10_000).fit_leaves(
+        rows, g, h, Z
+    )
+    np.testing.assert_array_equal(lv_a.bias, lv_c.bias)
+    np.testing.assert_array_equal(lv_a.weights, lv_c.weights)
+    np.testing.assert_array_equal(lv_a.z_min, lv_c.z_min)
+    np.testing.assert_array_equal(lv_a.z_max, lv_c.z_max)
+
+
+def test_adaptive_margin_brackets():
+    """``leaf_gate_margin`` brackets the verdict: 0 keeps a clearly-helpful
+    linear leaf; a margin >= 1 forces constant unconditionally."""
+    rng = np.random.default_rng(23)
+    Z = rng.normal(size=(300, 3))
+    residual = 2.0 * Z[:, 0] - Z[:, 1] + 0.3 * rng.normal(size=300)  # mostly linear
+    g, h = -residual, np.ones(300)
+    rows = [np.arange(300)]
+    keep = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=10, leaf_gate_margin=0.0
+    ).fit_leaves(rows, g, h, Z)
+    drop = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=10, leaf_gate_margin=10.0
+    ).fit_leaves(rows, g, h, Z)
+    assert np.any(keep.weights[0] != 0.0)
+    assert np.all(drop.weights[0] == 0.0)
+
+
+def test_adaptive_loo_demotes_what_insample_keeps_on_noise():
+    """The leverage correction is what earns its keep: on a pure-noise leaf the
+    linear fit lowers in-sample error (overfit) but not held-out error, so the
+    LOO gate demotes it while the in-sample baseline keeps it."""
+    rng = np.random.default_rng(24)
+    Z = rng.normal(size=(60, 10))
+    g, h = -rng.normal(size=60), np.ones(60)
+    rows = [np.arange(60)]
+    loo = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=12, leaf_gate="loo", leaf_gate_margin=0.0
+    ).fit_leaves(rows, g, h, Z)
+    insample = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=12, leaf_gate="insample", leaf_gate_margin=0.0
+    ).fit_leaves(rows, g, h, Z)
+    assert np.all(loo.weights[0] == 0.0)  # LOO: noise -> constant
+    assert np.any(insample.weights[0] != 0.0)  # in-sample overfit -> linear
+
+
+def test_adaptive_mixed_verdicts_in_one_tree():
+    """One tree, one clean-linear leaf and one pure-noise leaf: the gate keeps
+    the first and demotes the second."""
+    rng = np.random.default_rng(25)
+    Z = rng.normal(size=(400, 6))
+    clean, noise = np.arange(200), np.arange(200, 400)
+    residual = np.empty(400)
+    residual[clean] = 3.0 * Z[clean, 0] - 1.5 * Z[clean, 2]
+    residual[noise] = rng.normal(size=200)
+    g, h = -residual, np.ones(400)
+    lv = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=20, leaf_gate_margin=0.01
+    ).fit_leaves([clean, noise], g, h, Z)
+    assert np.any(lv.weights[0] != 0.0)
+    assert np.all(lv.weights[1] == 0.0)
+
+
+def test_adaptive_gate_multioutput():
+    """The multi-output vector-leaf path gates one verdict per leaf (summed over
+    outputs): a clean-linear leaf is kept, a noise leaf demoted."""
+    from repleafgbm.core.multioutput import fit_vector_leaves
+
+    rng = np.random.default_rng(29)
+    Z = rng.normal(size=(400, 5))
+    clean, noise = np.arange(200), np.arange(200, 400)
+    signal = np.column_stack([2.0 * Z[:, 0] - Z[:, 3], Z[:, 1] + 0.5 * Z[:, 4]])
+    grad = np.empty((400, 2))
+    grad[clean] = -signal[clean]
+    grad[noise] = -rng.normal(size=(200, 2))
+    hess = np.ones((400, 2))
+    adaptive = AdaptiveLeafModel(l2=1e-3, min_samples_linear=20, leaf_gate_margin=0.01)
+    lv = fit_vector_leaves(adaptive, [clean, noise], grad, hess, Z, l2=1e-3)
+    assert np.any(lv.weights[0] != 0.0)  # clean leaf kept linear (shape (emb, K))
+    assert np.all(lv.weights[1] == 0.0)  # noise leaf demoted
+
+
+def test_adaptive_gate_multioutput_loo_vs_insample():
+    """The vector-leaf gate's leverage correction matters too: on a pure-noise
+    multi-output leaf the LOO gate demotes while the in-sample baseline keeps."""
+    from repleafgbm.core.multioutput import fit_vector_leaves
+
+    rng = np.random.default_rng(40)
+    Z = rng.normal(size=(60, 10))
+    grad = -rng.normal(size=(60, 2))  # noise, no Z structure
+    hess = np.ones((60, 2))
+    rows = [np.arange(60)]
+    loo = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=12, leaf_gate="loo", leaf_gate_margin=0.0
+    )
+    insample = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=12, leaf_gate="insample", leaf_gate_margin=0.0
+    )
+    lv_loo = fit_vector_leaves(loo, rows, grad, hess, Z, l2=1e-3)
+    lv_ins = fit_vector_leaves(insample, rows, grad, hess, Z, l2=1e-3)
+    assert np.all(lv_loo.weights[0] == 0.0)  # LOO: noise -> constant
+    assert np.any(lv_ins.weights[0] != 0.0)  # in-sample overfit -> linear
+
+
+def test_adaptive_is_deterministic():
+    """Same inputs -> identical leaf parameters (the gate adds no randomness)."""
+    rng = np.random.default_rng(28)
+    Z = rng.normal(size=(300, 5))
+    residual = Z @ rng.normal(size=5) + 0.5 * rng.normal(size=300)
+    g, h = -residual, np.abs(rng.normal(1.0, 0.2, 300)) + 0.1
+    rows = [np.arange(150), np.arange(150, 300)]
+    model = AdaptiveLeafModel(l2=1.0, min_samples_linear=20, leaf_gate_margin=0.01)
+    a = model.fit_leaves(rows, g, h, Z)
+    b = model.fit_leaves(rows, g, h, Z)
+    np.testing.assert_array_equal(a.weights, b.weights)
+    np.testing.assert_array_equal(a.bias, b.bias)
+
+
+def test_adaptive_gate_stable_across_backends(monkeypatch):
+    """Away from the margin boundary, the native and NumPy paths must agree on
+    the *set* of linear leaves (the stats are allclose, the verdict identical).
+    Uses well-separated clean-linear / noise / clean-linear leaves."""
+    pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
+    import repleafgbm.core.leaf_models as lm
+
+    rng = np.random.default_rng(27)
+    n, d = 1500, 16
+    Z = rng.normal(size=(n, d))
+    beta = rng.normal(size=d)
+    residual = np.empty(n)
+    residual[:500] = Z[:500] @ beta + 0.01 * rng.normal(size=500)
+    residual[500:1000] = rng.normal(size=500)
+    residual[1000:] = Z[1000:] @ beta + 0.01 * rng.normal(size=500)
+    g, h = -residual, np.abs(rng.normal(1.0, 0.2, n)) + 0.1
+    leaf_rows = [np.arange(0, 500), np.arange(500, 1000), np.arange(1000, 1500)]
+    model = AdaptiveLeafModel(l2=1.0, min_samples_linear=20, leaf_gate_margin=0.05)
+
+    lv_native = model.fit_leaves(leaf_rows, g, h, Z)
+    monkeypatch.setattr(lm, "_native", None)
+    lv_numpy = model.fit_leaves(leaf_rows, g, h, Z)
+
+    mask_native = np.abs(lv_native.weights).sum(axis=1) > 0
+    mask_numpy = np.abs(lv_numpy.weights).sum(axis=1) > 0
+    np.testing.assert_array_equal(mask_native, mask_numpy)
+    np.testing.assert_array_equal(mask_native, [True, False, True])
+
+
+def test_adaptive_save_load_round_trip(tmp_path):
+    """A fitted ``leaf_model="adaptive"`` model with mixed verdicts round-trips:
+    predictions are exact and the gate params reload (no serialization bump)."""
+    rng = np.random.default_rng(26)
+    X = rng.normal(size=(400, 6))
+    y = 2.0 * X[:, 0] + np.sin(2.0 * X[:, 1]) + 0.1 * rng.normal(size=400)
+    model = RepLeafRegressor(
+        n_estimators=25,
+        leaf_model="adaptive",
+        leaf_gate_margin=0.02,
+        encoder="identity",
+        random_state=0,
+    ).fit(X, y)
+    rownorm = np.concatenate([
+        np.abs(lv.weights).reshape(lv.weights.shape[0], -1).sum(axis=1)
+        for lv in model.booster_.leaf_values_
+    ])
+    assert (rownorm > 0).any() and (rownorm == 0).any()  # mixed verdicts present
+
+    path = tmp_path / "adaptive_model"
+    model.save_model(path)
+    loaded = RepLeafRegressor.load_model(path)
+    np.testing.assert_array_equal(model.predict(X), loaded.predict(X))
+    assert loaded.get_params()["leaf_gate_margin"] == 0.02
+    assert loaded.get_params()["leaf_gate"] == "loo"
+    # No serialization format bump: a demoted leaf is the existing leaf-array
+    # encoding, so an adaptive model stamps the *same* minimum format version as
+    # the equivalent embedded_linear model (RepLeafGBM stamps the lowest version
+    # its features require, not a global max).
+    from repleafgbm.core.serialization import FORMAT_VERSION
+
+    config = json.loads((path / "model_config.json").read_text())
+    embedded = RepLeafRegressor(
+        n_estimators=25, leaf_model="embedded_linear", encoder="identity",
+        random_state=0,
+    ).fit(X, y)
+    embedded_path = tmp_path / "embedded_model"
+    embedded.save_model(embedded_path)
+    embedded_config = json.loads((embedded_path / "model_config.json").read_text())
+    assert config["format_version"] == embedded_config["format_version"]
+    assert config["format_version"] <= FORMAT_VERSION
+
+
+def test_adaptive_rejects_invalid_gate_params():
+    """Gate params are validated at construction, so an invalid value surfaces
+    both directly and at estimator ``fit`` (via ``make_leaf_model``)."""
+    with pytest.raises(ValueError, match="leaf_gate_margin"):
+        AdaptiveLeafModel(leaf_gate_margin=-0.1)
+    with pytest.raises(ValueError, match="leaf_gate"):
+        AdaptiveLeafModel(leaf_gate="bogus")
+    rng = np.random.default_rng(31)
+    X, y = rng.normal(size=(60, 4)), rng.normal(size=60)
+    with pytest.raises(ValueError, match="leaf_gate"):
+        RepLeafRegressor(leaf_model="adaptive", leaf_gate="nope").fit(X, y)
+
+
+def test_adaptive_handles_near_zero_hessian():
+    """Logistic confident-region rows drive h = p(1-p) -> ~0; the LOO gate must
+    stay finite (no NaN/inf) whether some or all rows have near-zero Hessian
+    (the leverage clamp keeps the leave-one-out division bounded)."""
+    rng = np.random.default_rng(50)
+    Z = rng.normal(size=(80, 6))
+    g = rng.normal(0, 1e-3, 80)
+    mixed = np.where(np.arange(80) < 40, 0.25, 1e-12)
+    for h in (mixed, np.full(80, 1e-12)):
+        lv = AdaptiveLeafModel(
+            l2=1.0, min_samples_linear=20, leaf_gate_margin=0.01
+        ).fit_leaves([np.arange(80)], g, h, Z)
+        assert np.isfinite(lv.bias).all()
+        assert np.isfinite(lv.weights).all()
+
+
+def test_adaptive_multiclass_per_class_verdict():
+    """``fit_leaves_multiclass`` applies the gate per (class, leaf): a
+    clean-linear class keeps its linear leaves while noise classes are demoted to
+    constant."""
+    rng = np.random.default_rng(51)
+    n, K, d = 600, 3, 6
+    Z = np.ascontiguousarray(rng.normal(size=(n, d)))
+    grad = np.empty((n, K))
+    grad[:, 0] = -(Z @ rng.normal(size=d))  # class 0: linear signal -> keep
+    grad[:, 1] = -rng.normal(size=n)  # class 1: noise -> demote
+    grad[:, 2] = -rng.normal(size=n)  # class 2: noise -> demote
+    hess = np.ascontiguousarray(np.abs(rng.normal(1.0, 0.2, (n, K))) + 0.1)
+    parts = np.array_split(np.arange(n), 5)
+    rows_per_class = [[np.sort(p).astype(np.int64) for p in parts] for _ in range(K)]
+    out = AdaptiveLeafModel(
+        l2=1e-3, min_samples_linear=20, leaf_gate_margin=0.01
+    ).fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+    linear = [int((np.abs(out[k].weights).sum(axis=1) > 0).sum()) for k in range(K)]
+    assert linear[0] > 0  # clean-linear class keeps linear leaves
+    assert linear[1] == 0 and linear[2] == 0  # noise classes demoted

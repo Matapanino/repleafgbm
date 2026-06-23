@@ -24,7 +24,7 @@ import numpy as np
 from repleafgbm.backends import make_split_backend
 from repleafgbm.backends.base import BaseSplitBackend
 from repleafgbm.core.booster import BoosterParams, weight_grad_hess
-from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues
+from repleafgbm.core.leaf_models import BaseLeafModel, LeafValues, _loo_leverages
 from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import MultiOutputObjective
 from repleafgbm.core.prediction import predict_raw_multioutput
@@ -72,6 +72,11 @@ def fit_vector_leaves(
     z_max = np.full((n_leaves, emb_dim), np.inf, dtype=np.float64)
     min_samples_linear = getattr(leaf_model, "min_samples_linear", 10)
     min_n = max(min_samples_linear, emb_dim + 2)
+    # Per-leaf LOO gate (AdaptiveLeafModel): one verdict per leaf, summed over
+    # outputs (the leverage is shared because the Gram/row-weights are shared).
+    # ``None`` for constant/embedded_linear leaves leaves the gate off.
+    gate_margin = getattr(leaf_model, "leaf_gate_margin", None)
+    gate_insample = getattr(leaf_model, "leaf_gate", "loo") == "insample"
 
     for i, rows in enumerate(leaf_rows):
         if rows.shape[0] < min_n:
@@ -98,6 +103,18 @@ def fit_vector_leaves(
             continue
         if not np.all(np.isfinite(W)):
             continue
+        if gate_margin is not None:
+            # Weighted-LOO gate, summed over outputs with the shared leverage.
+            H, H0 = _loo_leverages(Zc, w, A)
+            resid = Zc @ W + (t_mean[None, :] - t)  # (n_l, K): fitted - target
+            if gate_insample:
+                e_lin = float(np.sum(w[:, None] * resid * resid))
+            else:
+                e_lin = float(np.sum(w[:, None] * (resid / (1.0 - H)[:, None]) ** 2))
+            resid0 = t_mean[None, :] - t
+            e_const = float(np.sum(w[:, None] * (resid0 / (1.0 - H0)[:, None]) ** 2))
+            if e_lin >= (1.0 - gate_margin) * e_const:
+                continue  # gate keeps the constant fallback for this leaf
         weights[i] = W
         bias[i] = t_mean - W.T @ z_mean
         z_min[i] = Zl.min(axis=0)

@@ -197,6 +197,29 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         self.l2 = l2
         self.min_samples_linear = min_samples_linear
 
+    def _make_gate(
+        self,
+        Z: np.ndarray,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        order: np.ndarray,
+        offsets: np.ndarray,
+        leaf_class: np.ndarray | None,
+    ) -> _LeafGate | None:
+        """Build the per-leaf generalization gate, or ``None`` when gating is off.
+
+        :class:`EmbeddedLinearLeafModel` has no ``leaf_gate_margin``, so this
+        returns ``None`` and every finite linear fit is kept (behavior
+        unchanged). :class:`AdaptiveLeafModel` sets the attribute and gets a real
+        gate. ``grad``/``hess`` are 1-D (scalar/native paths) or
+        ``(n_rows, n_classes)`` with ``leaf_class`` set (pooled-multiclass path).
+        """
+        margin = getattr(self, "leaf_gate_margin", None)
+        if margin is None:
+            return None
+        insample = getattr(self, "leaf_gate", "loo") == "insample"
+        return _LeafGate(Z, grad, hess, order, offsets, leaf_class, margin, insample)
+
     def fit_leaves(
         self,
         leaf_rows: list[np.ndarray],
@@ -246,7 +269,8 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
                 linear.astype(np.int64),
             )
             return self._leafvalues_from_native_stats(
-                g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, n_leaves, emb_dim
+                g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, n_leaves, emb_dim,
+                gate=self._make_gate(Z, grad, hess, order, offsets, None),
             )
 
         # NumPy fallback: per-leaf BLAS Gram (native unavailable, or embeddings
@@ -279,7 +303,8 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
             z_min[i] = Zl.min(axis=0)
             z_max[i] = Zl.max(axis=0)
         return self._solve_and_assemble(
-            A, rhs, bias, weights, z_mean, t_mean, z_min, z_max, linear, emb_dim
+            A, rhs, bias, weights, z_mean, t_mean, z_min, z_max, linear, emb_dim,
+            gate=self._make_gate(Z, grad, hess, order, offsets, None),
         )
 
     def _leafvalues_from_native_stats(
@@ -294,6 +319,7 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         linear: np.ndarray,
         n_leaves: int,
         emb_dim: int,
+        gate: _LeafGate | None = None,
     ) -> LeafValues:
         """Assemble :class:`LeafValues` from the fused native statistics.
 
@@ -315,7 +341,8 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         z_min[linear] = zmn
         z_max[linear] = zmx
         return self._solve_and_assemble(
-            A, rhs, bias, weights, z_mean, t_mean, z_min, z_max, linear, emb_dim
+            A, rhs, bias, weights, z_mean, t_mean, z_min, z_max, linear, emb_dim,
+            gate=gate,
         )
 
     def _solve_and_assemble(
@@ -330,6 +357,7 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         z_max: np.ndarray,
         linear: np.ndarray,
         emb_dim: int,
+        gate: _LeafGate | None = None,
     ) -> LeafValues:
         """Batched ridge solve + per-leaf assembly shared by every fit path."""
         k = linear.size
@@ -350,8 +378,11 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
                     w[j] = np.nan  # handled by the finite check below
 
         ok = np.isfinite(w).all(axis=1)
+        # The adaptive gate (if any) demotes finite linear fits that fail the
+        # weighted-LOO generalization test; ``A`` is the regularized matrix M.
+        keep = ok if gate is None else gate.keep_mask(linear, ok, A, w, z_mean, t_mean)
         for j, i in enumerate(linear):
-            if ok[j]:
+            if keep[j]:
                 weights[i] = w[j]
                 bias[i] = t_mean[j] - w[j] @ z_mean[j]
             else:  # constant fallback: Newton bias kept, guard disabled
@@ -417,7 +448,8 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
             leaf_class,
         )
         pooled = self._leafvalues_from_native_stats(
-            g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, total_leaves, emb_dim
+            g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, total_leaves, emb_dim,
+            gate=self._make_gate(Z, grad, hess, order, offsets, leaf_class),
         )
         # Split the pooled per-leaf parameters back into per-class LeafValues.
         out: list[LeafValues] = []
@@ -434,6 +466,65 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
             )
             start += nl
         return out
+
+
+class AdaptiveLeafModel(EmbeddedLinearLeafModel):
+    """Embedded-linear leaves with a per-leaf generalization gate.
+
+    Fits the same ridge-regularized linear leaf as
+    :class:`EmbeddedLinearLeafModel`, then keeps each leaf's linear model only if
+    it beats a plain constant leaf in weighted leave-one-out (LOO) error;
+    otherwise the leaf falls back to a constant (its weight row is zeroed and the
+    Newton bias kept — exactly the existing singular-solve fallback). This takes
+    the embedded-linear gain on leaves where it generalizes and demotes the
+    noise-absorbing leaves that degrade binary tasks
+    (experiments/results/binary_leaf_gain.md): the constant-vs-linear choice is
+    made per leaf instead of globally.
+
+    The gate runs *after* the existing ``min_samples_linear`` size pre-filter, so
+    sub-threshold leaves are already constant before it is consulted, and it
+    consumes only host-side statistics — the native (Rust) stats path is
+    unchanged, and a gated-to-constant leaf serializes/predicts like any other
+    constant leaf (no format change).
+
+    The leave-one-out test assumes a ridge-regularized leaf (``l2 > 0``); with
+    ``l2 = 0`` a rank-deficient leaf takes the existing singular-solve constant
+    fallback before the gate is consulted, so the gate stays well-posed without a
+    special case.
+
+    Args:
+        l2: Ridge penalty on the weight vector (intercept unpenalized).
+        min_samples_linear: Size pre-filter (as in
+            :class:`EmbeddedLinearLeafModel`).
+        leaf_gate_margin: A leaf keeps its linear fit only if
+            ``E_lin < (1 - leaf_gate_margin) * E_const`` in weighted LOO. ``0``
+            keeps any non-worse linear fit; larger values demand a larger
+            held-out improvement. Conservative toward linear (small default) so
+            regression gains are preserved. Must be ``>= 0``.
+        leaf_gate: ``"loo"`` (default; leverage-corrected held-out error) or
+            ``"insample"`` (drops the leverage correction — a deliberately weak
+            baseline used to show the LOO correction earns its keep).
+    """
+
+    name = "adaptive"
+    uses_embeddings = True
+
+    def __init__(
+        self,
+        l2: float = 1.0,
+        min_samples_linear: int = 10,
+        leaf_gate_margin: float = 0.01,
+        leaf_gate: str = "loo",
+    ) -> None:
+        super().__init__(l2=l2, min_samples_linear=min_samples_linear)
+        if leaf_gate_margin < 0:
+            raise ValueError(f"leaf_gate_margin must be >= 0, got {leaf_gate_margin}")
+        if leaf_gate not in ("loo", "insample"):
+            raise ValueError(
+                f"leaf_gate must be 'loo' or 'insample', got {leaf_gate!r}"
+            )
+        self.leaf_gate_margin = leaf_gate_margin
+        self.leaf_gate = leaf_gate
 
 
 def _newton_constant(g: np.ndarray, h: np.ndarray, l2: float) -> float:
@@ -471,16 +562,161 @@ def _fit_weighted_ridge(
     return b, w
 
 
-def make_leaf_model(name: str, l2: float, min_samples_linear: int) -> BaseLeafModel:
+#: Per-row LOO leverages are clamped to ``1 - _LOO_LEVERAGE_CAP`` so the
+#: leave-one-out division ``r / (1 - H)`` stays finite for high-leverage rows: a
+#: degenerate leverage then yields a large-but-finite error, making the leaf fail
+#: the gate and fall back to constant — the safe direction.
+_LOO_LEVERAGE_CAP = 1e-6
+
+
+def _loo_leverages(
+    z_tilde: np.ndarray, weights: np.ndarray, M: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Weighted-ridge leave-one-out leverages for one leaf.
+
+    ``weights`` are the per-row Hessian weights ``h_i``; ``M = A_c + l2 I`` is the
+    centered matrix the ridge weights solve against; ``z_tilde`` are the
+    h-weighted-centered embeddings. Returns ``(H, H0)`` clamped to
+    ``<= 1 - _LOO_LEVERAGE_CAP``::
+
+        H_i  = h_i (z_tilde_i^T M^-1 z_tilde_i) + h_i / sum_h   (linear-model hat)
+        H0_i = h_i / sum_h                                      (constant-only hat)
+
+    The ``h_i / sum_h`` term is the unpenalized intercept's leverage (centering is
+    a rank-1 h-weighted-mean smoother).
+    """
+    h_sum = weights.sum()
+    sol = np.linalg.solve(M, z_tilde.T)  # (d, n): M^-1 z_tilde_i for every row
+    quad = np.einsum("ij,ji->i", z_tilde, sol)  # z_tilde_i^T M^-1 z_tilde_i
+    cap = 1.0 - _LOO_LEVERAGE_CAP
+    H = np.minimum(weights * quad + weights / h_sum, cap)
+    H0 = np.minimum(weights / h_sum, cap)
+    return H, H0
+
+
+def _loo_keep_linear(
+    Zl: np.ndarray,
+    gl: np.ndarray,
+    hl: np.ndarray,
+    w: np.ndarray,
+    z_mean: np.ndarray,
+    t_mean: float,
+    M: np.ndarray,
+    margin: float,
+    insample: bool,
+) -> bool:
+    """Whether a leaf's linear fit beats the constant fit in weighted LOO.
+
+    Compares the linear model's weighted leave-one-out error against the
+    constant-only (intercept) weighted LOO error and returns ``True`` (keep the
+    linear fit) iff ``E_lin < (1 - margin) * E_const``. ``insample=True`` drops
+    the leverage correction (a deliberately weak baseline gate). The comparison
+    is strict, so an exact tie keeps the constant — the conservative default.
+    """
+    z_tilde = Zl - z_mean
+    t = -gl / hl
+    H, H0 = _loo_leverages(z_tilde, hl, M)
+    resid = z_tilde @ w + (t_mean - t)  # fitted f_i - t_i
+    if insample:
+        e_lin = float(np.sum(hl * resid * resid))
+    else:
+        e_lin = float(np.sum(hl * (resid / (1.0 - H)) ** 2))
+    # Constant baseline: the intercept-only weighted-LOO error. (A demoted leaf
+    # actually ships the l2-regularized Newton bias -g_sum/(h_sum+l2); the
+    # O(l2/h_sum) gap only makes the constant look marginally better, i.e. it
+    # biases the comparison toward demotion — the safe direction.)
+    resid0 = t_mean - t
+    e_const = float(np.sum(hl * (resid0 / (1.0 - H0)) ** 2))
+    return e_lin < (1.0 - margin) * e_const
+
+
+@dataclass
+class _LeafGate:
+    """Per-leaf generalization gate context for :class:`AdaptiveLeafModel`.
+
+    Carries the per-row data needed to evaluate the weighted-ridge LOO gate after
+    the batched ridge solve. ``grad``/``hess`` are 1-D (scalar/native paths) or
+    ``(n_rows, n_classes)`` with ``leaf_class`` set (pooled-multiclass path), in
+    which case leaf ``i`` reads column ``leaf_class[i]``.
+    """
+
+    Z: np.ndarray
+    grad: np.ndarray
+    hess: np.ndarray
+    order: np.ndarray
+    offsets: np.ndarray
+    leaf_class: np.ndarray | None
+    margin: float
+    insample: bool
+
+    def keep_mask(
+        self,
+        linear: np.ndarray,
+        ok: np.ndarray,
+        M_batch: np.ndarray,
+        w: np.ndarray,
+        z_mean: np.ndarray,
+        t_mean: np.ndarray,
+    ) -> np.ndarray:
+        """Refine the finite-solve mask ``ok`` with the per-leaf LOO verdict.
+
+        ``M_batch[j]`` is the regularized matrix ``A_c + l2 I`` already solved for
+        leaf ``linear[j]``; only leaves with ``ok[j]`` (a finite linear fit) are
+        evaluated.
+        """
+        keep = ok.copy()
+        for j, i in enumerate(linear):
+            if not ok[j]:
+                continue
+            rows = self.order[self.offsets[i] : self.offsets[i + 1]]
+            Zl = self.Z[rows]
+            if self.leaf_class is None:
+                gl = self.grad[rows]
+                hl = self.hess[rows]
+            else:
+                c = self.leaf_class[i]
+                gl = self.grad[rows, c]
+                hl = self.hess[rows, c]
+            keep[j] = _loo_keep_linear(
+                Zl,
+                gl,
+                hl,
+                w[j],
+                z_mean[j],
+                float(t_mean[j]),
+                M_batch[j],
+                self.margin,
+                self.insample,
+            )
+        return keep
+
+
+def make_leaf_model(
+    name: str,
+    l2: float,
+    min_samples_linear: int,
+    leaf_gate_margin: float = 0.01,
+    leaf_gate: str = "loo",
+) -> BaseLeafModel:
     """Factory for the ``leaf_model`` parameter.
 
     ``raw_linear`` reuses the embedded-linear machinery; the model wrapper is
     responsible for supplying standardized raw numerical features as Z.
+    ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit
+    (``leaf_gate_margin``/``leaf_gate`` are ignored by the other models).
     """
     if name == "constant":
         return ConstantLeafModel(l2=l2)
     if name in ("embedded_linear", "raw_linear"):
         return EmbeddedLinearLeafModel(l2=l2, min_samples_linear=min_samples_linear)
+    if name == "adaptive":
+        return AdaptiveLeafModel(
+            l2=l2,
+            min_samples_linear=min_samples_linear,
+            leaf_gate_margin=leaf_gate_margin,
+            leaf_gate=leaf_gate,
+        )
     raise ValueError(
-        f"Unknown leaf_model {name!r}. Available: 'constant', 'embedded_linear', 'raw_linear'"
+        f"Unknown leaf_model {name!r}. Available: 'constant', 'embedded_linear', "
+        "'raw_linear', 'adaptive'"
     )
