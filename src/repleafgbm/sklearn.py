@@ -63,12 +63,27 @@ class BaseRepLeafModel(BaseEstimator):
             features route as ordered thresholds, not subset splits, and
             multi-output targets are unsupported).
         min_samples_leaf: Minimum rows per leaf for a split to be valid.
-        leaf_model: "constant", "embedded_linear", or "raw_linear". Defaults to
-            "embedded_linear"; on unknown real-world tabular data the OpenML
-            benchmark (docs/roadmap.md, Phase 25) found "constant" the honest
-            practical choice — embedded leaves help mainly on smooth/periodic
-            structure. The default is kept for backwards compatibility and may
-            change only in a major release.
+        leaf_model: "constant", "embedded_linear", "raw_linear", or "adaptive".
+            Defaults to "embedded_linear"; on unknown real-world tabular data the
+            OpenML benchmark (docs/roadmap.md, Phase 25) found "constant" the
+            honest practical choice — embedded leaves help mainly on
+            smooth/periodic structure. "adaptive" (experimental, opt-in) chooses
+            constant vs embedded_linear *per leaf* via a weighted leave-one-out
+            test (``leaf_gate_margin``), keeping the linear fit only where it
+            generalizes and falling back to constant elsewhere. In multi-seed
+            real-data benchmarks it tracked the better of the two within seed
+            noise — a robust per-leaf hedge, not a statistically separated
+            accuracy gain (it is per-leaf model *selection*, not jointly-trained
+            leaf embeddings). The default is kept for backwards compatibility and
+            may change only in a major release.
+        leaf_gate_margin: For leaf_model="adaptive" only (inert otherwise). A
+            leaf keeps its linear fit only if its weighted leave-one-out error
+            beats the constant leaf's by this relative margin: 0.0 keeps any
+            non-worse linear fit, larger values demand a larger held-out
+            improvement. Must be >= 0. Default 0.01.
+        leaf_gate: For leaf_model="adaptive" only. "loo" (default,
+            leverage-corrected held-out error) or "insample" (drops the leverage
+            correction — a deliberately weak baseline for diagnostics).
         encoder: Encoder name ("identity", "plr") or a BaseEncoder instance.
             Ignored for leaf_model="constant"; for "raw_linear" a standardizing
             identity encoder is always used.
@@ -183,6 +198,8 @@ class BaseRepLeafModel(BaseEstimator):
         grow_policy: str = "leafwise",
         min_samples_leaf: int = 20,
         leaf_model: str = "embedded_linear",
+        leaf_gate_margin: float = 0.01,
+        leaf_gate: str = "loo",
         encoder: str | BaseEncoder = "identity",
         encoder_params: dict | None = None,
         freeze_encoder: bool = True,
@@ -207,6 +224,8 @@ class BaseRepLeafModel(BaseEstimator):
         self.grow_policy = grow_policy
         self.min_samples_leaf = min_samples_leaf
         self.leaf_model = leaf_model
+        self.leaf_gate_margin = leaf_gate_margin
+        self.leaf_gate = leaf_gate
         self.encoder = encoder
         self.encoder_params = encoder_params
         self.freeze_encoder = freeze_encoder
@@ -267,7 +286,11 @@ class BaseRepLeafModel(BaseEstimator):
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
 
         leaf_model = make_leaf_model(
-            self.leaf_model, l2=self.l2_leaf, min_samples_linear=2 * self.min_samples_leaf
+            self.leaf_model,
+            l2=self.l2_leaf,
+            min_samples_linear=2 * self.min_samples_leaf,
+            leaf_gate_margin=self.leaf_gate_margin,
+            leaf_gate=self.leaf_gate,
         )
         with timed(profiler, "encoder"):
             self.encoder_ = (
