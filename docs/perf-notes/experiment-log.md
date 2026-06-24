@@ -132,3 +132,23 @@ accuracy regress / API change → REJECT; a scaffold for a future win may HOLD.
   BLAS/float32 branch); the float32 allclose assertion made scale-relative (the
   deviation is ~1e-6 of the prediction range, a fixed atol failed near zero).
 - Commit: impl (leaf_models.py gate + test update). Evidence: `artifacts/gpu_bench/e03_gate/`.
+
+### 006 — Cholesky solve for the SPD leaf Gram (E27/H8)   [REJECT]   2026-06-25
+- Surface: `core/leaf_models.py::_solve_and_assemble` (emb>128 BLAS path)   Backend: local
+- Hypothesis: the ridge Gram is SPD; `scipy.linalg.solve(assume_a="pos")` (Cholesky)
+  halves the solve FLOPs vs `np.linalg.solve` (LU).
+- Evidence (micro-bench, k=31 leaves, emb=160 SPD): batched LU `np.linalg.solve`
+  **4.50 ms** vs per-leaf scipy assume_a=pos **5.64 ms** (allclose=True). scipy has
+  no batched API → the per-leaf Python loop is *slower* than the existing batched
+  LU; and the solve is a small part of leaf_fit (GEMM ~8× at emb=160).
+- Decision: **REJECT** — slower in practice (batched LU beats a per-matrix Cholesky
+  loop) and the solve isn't the bottleneck. Post-E03 it only affects emb>128 anyway.
+
+### Campaign wrap (2026-06-25) — ~30-hypothesis backlog
+Triaged ~30 hypotheses (E01–E30 + cuda-researcher H1–H13, `experiment-backlog.md`).
+**Shipped 2:** E01 float32 (1.18× wide), **E03 gate 64→128 (1.65× @emb=128 — headline)**.
+**Rejected w/ evidence:** iter001 forest-routing, E27 Cholesky, E12 eval(=F-update),
+E18/E26 preprocessing(cold-start), E09 sibling-subtraction(shipped), E11 uint16(done).
+**Held/queued:** node-batched CUDA scan (designed, Colab), forest-fused predictor,
+uint8 bins, quantized-grad histogram, native-float32-wide. **Lower-ROI TODO** (post-E03,
+emb>128 or small phases): E04/E14/E15/E16/E19. Meta-lesson: re-measure tuned gates.
