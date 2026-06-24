@@ -34,3 +34,11 @@ short — long prose defeats the purpose.
 - What rule we learned: an isolated ceiling micro-bench is the right tool when the real win is blocked by an API/numeric decision — it sizes the prize without touching product code; and check thread-sensitivity before blaming OMP=1.
 - Next mutation candidates: promote float32 to an API-gated proposal; consider a native-rust wide-emb float32 Gram (could beat NumPy float32 too).
 - Should this affect the harness/prompt/code?: harness — log BLAS thread config per row for BLAS-bound phases (future harness iter). Code — gated by human API approval.
+
+### 003 — node-batched split scan   2026-06-24
+- What we tried: de-risk the headline CUDA split_scan lever without a local GPU.
+- What happened: validated the batched-scan math bitwise locally; found the real cost is a grower frontier-batch interface, not the kernel; wrote a grounded design + Colab A/B plan instead of blind CUDA.
+- Why it likely happened: the win is launch-count amortisation (per-node scan is launch-bound), so the math is unchanged (stacking on M) — the architecture (presenting M nodes) is where the work and review risk live.
+- What rule we learned: when a lever is GPU-gated, validate the deterministic math locally and design the interface; never ship a CUDA kernel you cannot iterate on a GPU.
+- Next mutation candidates: implement during a GPU-in-the-loop session (depthwise level batch first); core-reviewer signs off the frontier-batch interface before the kernel.
+- Should this affect the harness/prompt/code?: code — queued, human/GPU gated. cuda_overnight_loop --mode ab already supports the device-on/off A/B it needs.

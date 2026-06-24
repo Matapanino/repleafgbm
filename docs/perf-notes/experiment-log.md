@@ -69,3 +69,22 @@ accuracy regress / API change → REJECT; a scaffold for a future win may HOLD.
   `leaf_linear_stats`). Recommend promoting to a `docs/proposals/` spec
   (research-proposer) once the user approves the API direction.
 - Commit: uncommitted (no product change). Top "promote to proposal" candidate.
+
+### 003 — node-batched CUDA split scan   [DESIGNED + math-validated; kernel queued]   2026-06-24
+- Surface: `backends/cuda_backend.py` + `BaseSplitBackend` + grower (proposed)   Backend: cuda (Colab-gated)
+- Hypothesis: batching the per-node numeric scan across the frontier into ONE
+  kernel launch amortises the launch-bound per-node cost (the measured GPU
+  bottleneck) and finally beats the host scan on wide/multiclass.
+- Evidence:
+  - `split_scan` is 48–85% of CUDA fit (85% mc K=5); per-node on-device scan is
+    launch-bound and loses to host (settled, `rejected-ideas.md`).
+  - Target math validated locally: `scratchpad/batched_scan_parity.py` stacks M
+    nodes on an M axis over the real `_numeric_split_table` →
+    **BITWISE PARITY: PASS** (feature/bin/gain match the per-node loop exactly).
+    The CUDA kernel changes only launch count, not the result.
+- Decision: **DESIGNED + math-validated; CUDA kernel + grower wiring queued for a
+  GPU-in-the-loop session.** No local GPU → blind CUDA is rejected by the loop
+  rules. Full design + interface + Colab A/B plan in
+  `docs/perf-notes/research-node-batched-split-scan.md`. Architectural (grower
+  frontier-batch) → needs core-reviewer sign-off on the interface first.
+- Commit: design note only (no product change). Queued for Colab T4 A/B.

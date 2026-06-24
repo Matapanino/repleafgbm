@@ -36,3 +36,19 @@ Cadence: GEPA reflection each iteration; harness iteration every 5 product iters
   rel deviation ~1e-6, thread-robust. Blocked by public-API param (human-gated) +
   allclose tolerance decision. Top promote-to-proposal candidate. Evidence:
   `artifacts/gpu_bench/exp2_probe/` + scratchpad `f32_leaf_ceiling.py`.
+- [iter 003] node-batched CUDA split scan → DESIGNED + math-validated (bitwise
+  parity of batched-vs-per-node scan, `scratchpad/batched_scan_parity.py`); CUDA
+  kernel + grower frontier-batch wiring queued for a GPU-in-the-loop session
+  (no local GPU → no blind kernel). Design:
+  `docs/perf-notes/research-node-batched-split-scan.md`.
+
+## Morning checkpoint — for the user
+
+- **Shipped (committed on the branch):** loop infra (4 agents, orchestrator,
+  ledgers, schema, `perf_loop.sh`); baseline; 3 evidence-backed iterations.
+- **Needs your decision:** (iter 002) float32 wide-emb leaf-fit is a strong lever
+  (~30% of wide-emb fit) but needs a **public opt-in param** — approve turning it
+  into a `docs/proposals/` spec? It is human-gated by design (§8).
+- **Queued for the next Colab T4 pass:** (iter 003) node-batched split scan —
+  ready to implement during a GPU-in-the-loop session; A/B harness already exists.
+- **No regressions:** no product code changed; baseline suite stays green.
