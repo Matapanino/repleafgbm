@@ -42,3 +42,11 @@ short — long prose defeats the purpose.
 - What rule we learned: when a lever is GPU-gated, validate the deterministic math locally and design the interface; never ship a CUDA kernel you cannot iterate on a GPU.
 - Next mutation candidates: implement during a GPU-in-the-loop session (depthwise level batch first); core-reviewer signs off the frontier-batch interface before the kernel.
 - Should this affect the harness/prompt/code?: code — queued, human/GPU gated. cuda_overnight_loop --mode ab already supports the device-on/off A/B it needs.
+
+### 004 — float32 leaf-fit shipped (opt-in)   2026-06-25
+- What we tried: implement the iter-002 float32 lever default-off behind a public param, measured via the C-extended A/B.
+- What happened: 1.18× whole-fit (−15.2%) on wide 50k×200, 5/5 signal, narrow flat, quality-equivalent, default bitwise-green (414 passed). ACCEPT.
+- Why it likely happened: float32 halves only the two GEMM reductions; the float64 solve/centering/gather (~40% of leaf_fit) are untouched, so 15% not the projected 30%.
+- What rule we learned: project a precision win from the *reduction* fraction of a phase, not the whole phase; an isolated ceiling bench (equal-size synthetic leaves) over-states the real, imbalanced-leaf win.
+- Next mutation candidates: a native-Rust wide-emb float32 Gram (could beat NumPy float32 + cut the per-leaf Python loop); revisit whether the solve/gather can shrink.
+- Should this affect the harness/prompt/code?: harness C (precision A/B passthrough) proved its worth; keep. No default change.

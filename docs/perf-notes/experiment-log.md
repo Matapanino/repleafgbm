@@ -88,3 +88,22 @@ accuracy regress / API change → REJECT; a scaffold for a future win may HOLD.
   `docs/perf-notes/research-node-batched-split-scan.md`. Architectural (grower
   frontier-batch) → needs core-reviewer sign-off on the interface first.
 - Commit: design note only (no product change). Queued for Colab T4 A/B.
+
+### 004 — float32 wide-emb leaf-fit (`leaf_fit_precision="float32_gram"`)   [ACCEPT — opt-in, default-off]   2026-06-25
+- Surface: `core/leaf_models.py` (BLAS Gram path), `sklearn.py` (param)   Backend: rust/local
+- Change: public MINOR param `leaf_fit_precision="float64"`(default)|`"float32_gram"`;
+  float32 confined to the two wide-emb (emb>64) reductions `Zl.T@hZ` and `g@Zl`;
+  centering + solve + everything else stay float64; default path byte-identical.
+- Measure (C-extended orchestrator `--mode ab`, rust, 50k×200f, emb=256, 50 trees, 5 reps interleaved):
+  - **Wide: float64 10.821s → float32 9.160s = 1.18× (−15.2%), B wins 5/5,
+    signal=True, rel_spread 2.5–3.4%.**
+  - Narrow control (50k×30f, emb≤64): 0.3%, no signal → wide-only confirmed.
+  - Quality-equivalent: tests assert preds rtol 1e-5 + |Δr2|<5e-3 (smoke Δr2=4.5e-10).
+  - Default float64 stays bitwise: `test_rust_backend.py` 16 passed; full suite 414 passed.
+- Decision: **ACCEPT**, shipped **default-off** (opt-in). Clears the gate (≥1.10×,
+  signal, spread<10%, quality-equivalent, narrow flat). NOTE: real whole-fit win
+  is **~15%**, below the proposal's optimistic ~25–30% — float32 only narrows the
+  two GEMM reductions; the float64 solve/centering/gather inside leaf_fit are
+  unaffected (they're ~40% of the phase). Still a clean, safe, opt-in win.
+- Commit: impl (leaf_models.py + sklearn.py + tests/test_leaf_fit_precision.py).
+  Proposal: dbe280f. Evidence: `artifacts/gpu_bench/exp2_float32_ab/`.

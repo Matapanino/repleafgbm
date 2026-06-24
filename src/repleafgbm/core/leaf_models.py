@@ -38,6 +38,13 @@ except ImportError:  # pragma: no cover - depends on optional extension
 #: (--backend rust; see experiments/results/2026-06-19-leaf-fit-rayon.md).
 _NATIVE_STATS_MAX_DIM = 64
 
+#: Valid ``leaf_fit_precision`` values. ``"float64"`` (default) is the
+#: bitwise-parity path; ``"float32_gram"`` accumulates only the wide-embedding
+#: (emb>64) per-leaf Gram + gradient projection in float32 (≈2x faster) while the
+#: solve stays float64 — opt-in, allclose-not-bitwise
+#: (docs/proposals/float32-wide-embedding-leaf-fit.md).
+_LEAF_FIT_PRECISIONS = ("float64", "float32_gram")
+
 #: Per-tree leaf parameters: output = bias[leaf] + Z @ weights[leaf].
 #: For constant leaves, the weight row is all zeros (weights may have zero
 #: columns when the whole tree is constant-leaf).
@@ -193,9 +200,20 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
     name = "embedded_linear"
     uses_embeddings = True
 
-    def __init__(self, l2: float = 1.0, min_samples_linear: int = 10) -> None:
+    def __init__(
+        self,
+        l2: float = 1.0,
+        min_samples_linear: int = 10,
+        leaf_fit_precision: str = "float64",
+    ) -> None:
+        if leaf_fit_precision not in _LEAF_FIT_PRECISIONS:
+            raise ValueError(
+                f"leaf_fit_precision must be one of {_LEAF_FIT_PRECISIONS}, "
+                f"got {leaf_fit_precision!r}"
+            )
         self.l2 = l2
         self.min_samples_linear = min_samples_linear
+        self.leaf_fit_precision = leaf_fit_precision
 
     def _make_gate(
         self,
@@ -290,6 +308,15 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         rhs = np.empty((k, emb_dim), dtype=np.float64)
         z_mean = np.empty((k, emb_dim), dtype=np.float64)
         t_mean = np.empty(k, dtype=np.float64)
+        # Opt-in: accumulate ONLY the two large reductions (the weighted Gram and
+        # the gradient projection) in float32 (~2x SIMD throughput); the float64
+        # ``A``/``rhs`` containers upcast on assignment, and the cancellation-prone
+        # centering + the solve stay float64. The float64 default branch below is
+        # byte-identical to before (bitwise NumPy<->Rust parity must hold).
+        use_f32 = self.leaf_fit_precision == "float32_gram"
+        if use_f32:
+            Z32, hZ32, g32 = (Z_seg.astype(np.float32),
+                              hZ_seg.astype(np.float32), g_seg.astype(np.float32))
         for j, i in enumerate(linear):
             sl = slice(offsets[i], offsets[i + 1])
             Zl = Z_seg[sl]
@@ -297,9 +324,15 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
             s_hz = hZ.sum(axis=0)
             z_mean[j] = s_hz / h_sum[i]
             t_mean[j] = -g_sum[i] / h_sum[i]
-            A[j] = Zl.T @ hZ
+            if use_f32:
+                A[j] = Z32[sl].T @ hZ32[sl]
+            else:
+                A[j] = Zl.T @ hZ
             A[j] -= np.outer(z_mean[j], s_hz)
-            rhs[j] = -(g_seg[sl] @ Zl) - t_mean[j] * s_hz
+            if use_f32:
+                rhs[j] = -(g32[sl] @ Z32[sl]) - t_mean[j] * s_hz
+            else:
+                rhs[j] = -(g_seg[sl] @ Zl) - t_mean[j] * s_hz
             z_min[i] = Zl.min(axis=0)
             z_max[i] = Zl.max(axis=0)
         return self._solve_and_assemble(
@@ -515,8 +548,10 @@ class AdaptiveLeafModel(EmbeddedLinearLeafModel):
         min_samples_linear: int = 10,
         leaf_gate_margin: float = 0.01,
         leaf_gate: str = "loo",
+        leaf_fit_precision: str = "float64",
     ) -> None:
-        super().__init__(l2=l2, min_samples_linear=min_samples_linear)
+        super().__init__(l2=l2, min_samples_linear=min_samples_linear,
+                         leaf_fit_precision=leaf_fit_precision)
         if leaf_gate_margin < 0:
             raise ValueError(f"leaf_gate_margin must be >= 0, got {leaf_gate_margin}")
         if leaf_gate not in ("loo", "insample"):
@@ -697,6 +732,7 @@ def make_leaf_model(
     min_samples_linear: int,
     leaf_gate_margin: float = 0.01,
     leaf_gate: str = "loo",
+    leaf_fit_precision: str = "float64",
 ) -> BaseLeafModel:
     """Factory for the ``leaf_model`` parameter.
 
@@ -704,17 +740,28 @@ def make_leaf_model(
     responsible for supplying standardized raw numerical features as Z.
     ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit
     (``leaf_gate_margin``/``leaf_gate`` are ignored by the other models).
+    ``leaf_fit_precision`` only affects the wide-embedding (emb>64) BLAS leaf-fit
+    of the linear models; it is inert for ``constant``.
     """
+    if leaf_fit_precision not in _LEAF_FIT_PRECISIONS:
+        raise ValueError(
+            f"leaf_fit_precision must be one of {_LEAF_FIT_PRECISIONS}, "
+            f"got {leaf_fit_precision!r}"
+        )
     if name == "constant":
         return ConstantLeafModel(l2=l2)
     if name in ("embedded_linear", "raw_linear"):
-        return EmbeddedLinearLeafModel(l2=l2, min_samples_linear=min_samples_linear)
+        return EmbeddedLinearLeafModel(
+            l2=l2, min_samples_linear=min_samples_linear,
+            leaf_fit_precision=leaf_fit_precision,
+        )
     if name == "adaptive":
         return AdaptiveLeafModel(
             l2=l2,
             min_samples_linear=min_samples_linear,
             leaf_gate_margin=leaf_gate_margin,
             leaf_gate=leaf_gate,
+            leaf_fit_precision=leaf_fit_precision,
         )
     raise ValueError(
         f"Unknown leaf_model {name!r}. Available: 'constant', 'embedded_linear', "

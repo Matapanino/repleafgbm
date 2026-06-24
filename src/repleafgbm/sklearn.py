@@ -84,6 +84,15 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_gate: For leaf_model="adaptive" only. "loo" (default,
             leverage-corrected held-out error) or "insample" (drops the leverage
             correction — a deliberately weak baseline for diagnostics).
+        leaf_fit_precision: "float64" (default) or "float32_gram". A perf knob for
+            the linear leaf models on **wide embeddings** (emb_dim > 64, the BLAS
+            leaf-fit path): "float32_gram" accumulates only the per-leaf Gram and
+            gradient projection in float32 (~2x faster on that phase, ~25-30%
+            faster wide-emb fit) while the solve stays float64. Inert for
+            "constant" and for narrow embeddings (the native path). Trade-off:
+            "float32_gram" is allclose-not-bitwise and not guaranteed
+            reproducible across BLAS vendors/platforms; "float64" is the
+            reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.
         encoder: Encoder name ("identity", "plr") or a BaseEncoder instance.
             Ignored for leaf_model="constant"; for "raw_linear" a standardizing
             identity encoder is always used.
@@ -200,6 +209,7 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_model: str = "embedded_linear",
         leaf_gate_margin: float = 0.01,
         leaf_gate: str = "loo",
+        leaf_fit_precision: str = "float64",
         encoder: str | BaseEncoder = "identity",
         encoder_params: dict | None = None,
         freeze_encoder: bool = True,
@@ -226,6 +236,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.leaf_model = leaf_model
         self.leaf_gate_margin = leaf_gate_margin
         self.leaf_gate = leaf_gate
+        self.leaf_fit_precision = leaf_fit_precision
         self.encoder = encoder
         self.encoder_params = encoder_params
         self.freeze_encoder = freeze_encoder
@@ -291,6 +302,7 @@ class BaseRepLeafModel(BaseEstimator):
             min_samples_linear=2 * self.min_samples_leaf,
             leaf_gate_margin=self.leaf_gate_margin,
             leaf_gate=self.leaf_gate,
+            leaf_fit_precision=self.leaf_fit_precision,
         )
         with timed(profiler, "encoder"):
             self.encoder_ = (
