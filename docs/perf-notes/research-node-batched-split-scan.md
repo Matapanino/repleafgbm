@@ -44,11 +44,21 @@ chooses ONE shared `(feature, bin)` for the whole level by **summing** node gain
    the adaptive-threshold gate, now applied to `M·F·B` cells. Only M winners
    (M×32 bytes) cross D2H.
 3. **Grower wiring** (the real cost — architectural, keep readable): present a
-   *frontier batch* to the backend. Natural fits, in priority order:
-   - **depthwise** (`grow_policy="depthwise"`): the whole level is a batch.
-   - **leafwise**: batch the current frontier (all splittable leaves awaiting a
-     best-split) before the priority-queue pop.
-   Symmetric already scans a level at once (different objective) — leave it.
+   *frontier batch* to the backend. **CORRECTION (core-reviewer, 2026-06-25):**
+   depthwise already gathers a whole level's **histograms**, but the split
+   **scan** is *per-node-eager* — `_grow_depthwise` calls `find_best_split` one
+   node at a time inside `_make_candidate` (`tree.py:532-552`), exactly like
+   leafwise; the `frontier` deque holds candidates whose split is already
+   computed. So node-batching is **not** free wiring even in depthwise: it needs
+   a real `tree.py` refactor — defer the scan out of `_make_candidate`, collect
+   the level's sibling histograms, call `find_best_split_batched` once, then build
+   candidates. That grower refactor (on the readable hot path) is the substantive,
+   reviewable work; the `BaseSplitBackend` method itself is the easy part.
+   - **v1: depthwise** (level = the batch unit, after the refactor above).
+   - **leafwise:** batch the priority-queue frontier — deferred (tangles with the
+     pop ordering + the adaptive host/GPU crossover).
+   - **symmetric** already scans a level at once but with a *different*
+     (shared-rule, summed-gain) objective (`find_best_level_split`) — leave it.
 
 ## Validation plan
 
