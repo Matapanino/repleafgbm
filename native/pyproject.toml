@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "repleafgbm-native"
-version = "0.2.0"
+version = "0.3.0"
 description = "Optional Rust split-search kernels for RepLeafGBM (BaseSplitBackend implementation)."
 requires-python = ">=3.10"
 license = { text = "MIT" }
