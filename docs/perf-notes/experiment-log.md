@@ -159,6 +159,35 @@ shipped gate/float32 changes don't regress the CUDA path; reports under
   exists, so it was NOT in this run. It needs the grower frontier-batch refactor
   + kernel (core-reviewer-gated) as a focused GPU-in-the-loop session, not a batch run.
 
+### 007 — node-batched CUDA split scan (E21 / iter 003 design)   [ACCEPT — opt-in, Colab T4-validated]   2026-06-25
+- Surface: `backends/base.py` + `core/splitter.py` + `core/tree.py` (Stage 1, host,
+  bitwise) + `backends/cuda_backend.py` (Stage 2, device kernel)   Backend: cuda
+- Change: `find_best_split_batched` — the depthwise grower scans a whole level's M
+  frontier histograms in ONE call. Host default loops per-node (bitwise-identical
+  tree, proven local); CUDA vectorizes the per-node CuPy scan over a leading M axis
+  (no RawKernel — lifts the proven `find_best_split` path). Gated
+  `REPLEAFGBM_CUDA_BATCHED_SCAN` (default OFF, opt-in); host path untouched.
+- Validation:
+  - **Local (Stage 1):** batched == per-node loop bitwise (numpy+rust, numeric +
+    categorical + tie-break); forced-batched depthwise tree byte-identical to FIFO
+    (`tests/test_batched_scan.py`, 7 passed; full suite 421).
+  - **Colab T4 (Stage 2):** parity **35 passed** (device batched == NumPy reference,
+    numeric + categorical; gate-off loops per-node; e2e quality-equivalent).
+  - **A/B (T4, depthwise, 5 reps interleaved, `experiments/results/2026-06-25-batched-scan-ab.md`):**
+
+    | case | shape | fit off→on | fit× | scan off→on | scan× | \|Δq\| |
+    |---|---|---|---|---|---|---|
+    | wide | 50k×200 | 14.59→3.73s | **3.91×** | 11.61→1.29s | **9.01×** | 0.0 |
+    | narrow | 100k×30 | 4.96→2.60s | **1.91×** | 2.80→0.56s | **4.95×** | 0.0 |
+    | multiclass | 50k×200 | 14.25→4.41s | **3.23×** | 11.16→1.62s | **6.87×** | 0.0 |
+- Decision: **ACCEPT** (opt-in). split_scan 5–9×, whole depthwise fit 1.9–3.9×,
+  **quality identical** (Δ=0 — no near-tied flips occurred, though the allclose-not-
+  bitwise caveat stands in general). NOTE: **narrow wins too** — batching amortizes
+  the launch that made the per-node device scan a loser ([[gpu-cuda-bottleneck-split-scan]]
+  predicted exactly this). Follow-up worth a beat: flip the gate default ON for
+  cuda+depthwise (the MO device-scan precedent defaults on; CUDA is already allclose).
+- Commit: Stage 1 aae7332, Stage 2 f73d6e9 + this A/B script/report.
+
 ### Campaign wrap (2026-06-25) — ~30-hypothesis backlog
 Triaged ~30 hypotheses (E01–E30 + cuda-researcher H1–H13, `experiment-backlog.md`).
 **Shipped 2:** E01 float32 (1.18× wide), **E03 gate 64→128 (1.65× @emb=128 — headline)**.

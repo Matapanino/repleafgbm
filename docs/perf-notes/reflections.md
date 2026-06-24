@@ -58,3 +58,11 @@ short — long prose defeats the purpose.
 - What rule we learned: re-measure "tuned" gates/constants before building around them — an under-explored gate can hide a bigger, simpler win than the fancy optimization (float32) you were about to ship. Always test the cheap 1-line knob first.
 - Next mutation candidates: H8 Cholesky solve (assume_a='pos') for emb>128 BLAS; native float32 at emb>128; revisit whether the gate should be adaptive to core count.
 - Should this affect the harness/prompt/code?: code shipped (1-line + test fix). Memory note rust-leaf-fit-rayon (gate=64) now stale → update.
+
+### 007 — node-batched CUDA scan shipped + validated   2026-06-25
+- What we tried: implement the headline GPU lever (node-batched split scan) staged — host contract+grower (local, bitwise) then CUDA device scan (Colab).
+- What happened: parity 35/35 on T4; A/B split_scan 5-9×, whole depthwise fit 1.9-3.9×, quality identical; narrow wins too (1.9×).
+- Why it likely happened: the per-node device scan was launch-bound; batching M frontier nodes into one CuPy reduction amortizes the launch — and the device scan is plain CuPy (no RawKernel), so an M-axis lift was low-risk to write blind.
+- What rule we learned: stage GPU work — prove the host contract + grower refactor BITWISE locally, then the device path is a thin, low-risk M-axis vectorization; "no blind CUDA" doesn't mean "no CUDA", it means "validate the deterministic structure first."
+- Next mutation candidates: flip the gate default ON for cuda+depthwise (MO precedent); leafwise frontier-batching; batched build_histograms to feed it.
+- Should this affect the harness/prompt/code?: scripts/colab_batched_ab.py is a reusable depthwise A/B harness; keep. Design note → mark implemented.

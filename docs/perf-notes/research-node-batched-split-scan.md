@@ -1,7 +1,12 @@
 # Design — node-batched CUDA split scan (the GPU split_scan lever)
 
-Status: **DESIGNED + math-validated locally; CUDA kernel queued for a GPU-in-the-loop
-session.** (2026-06-24, iter 003). No local GPU → no blind CUDA kernel shipped.
+Status: **IMPLEMENTED + Colab T4-validated (opt-in)** (2026-06-25, iter 007).
+Stage 1 (host contract + level-sync depthwise grower, bitwise) commit aae7332;
+Stage 2 (CUDA device scan, `REPLEAFGBM_CUDA_BATCHED_SCAN`, default off) commit
+f73d6e9. T4 A/B: split_scan 5–9×, whole depthwise fit 1.9–3.9×, quality identical
+(`experiments/results/2026-06-25-batched-scan-ab.md`). NB: the CUDA path turned out
+to be a plain CuPy M-axis vectorization of `find_best_split` — no hand-written
+RawKernel needed (the original "grid over M×F kernel" idea below was unnecessary).
 
 ## Why
 

@@ -73,7 +73,10 @@ Pre-investigated this session (cheap probes, before the backlog):
 
 ## Tier 5 — CUDA (Colab T4-gated; design/queue locally, validate on GPU)
 
-- **E21 `G` HOLD** — node-batched split scan (designed; proposal written). Queued.
+- **E21 `G` SHIPPED** (iter 007) — node-batched split scan. Colab T4: split_scan
+  5–9×, whole depthwise fit 1.9–3.9×, quality identical, parity 35/35. Opt-in
+  (`REPLEAFGBM_CUDA_BATCHED_SCAN`). The CUDA path was a plain CuPy M-axis lift (no
+  RawKernel). narrow wins too (batching amortizes the launch).
 - **E22 `G` TODO** — class-batched multiclass CUDA histogram (mc split_scan ~85%). Design
   locally; kernel on Colab.
 - **E23 `G` TODO** — float32 device embeddings / binned upload (halve H2D). Design locally.
