@@ -653,3 +653,98 @@ def test_multioutput_scan_counters(monkeypatch):
     s = cu.get_transfer_stats()
     assert s["n_gpu_scans"] == 1 and s["winner_d2h_bytes"] == 32
     assert s["hist_d2h_bytes"] == 0 and s["n_small_scans"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Node-batched depthwise scan (REPLEAFGBM_CUDA_BATCHED_SCAN; Stage 2)
+# --------------------------------------------------------------------------- #
+def _force_batched_gpu(cu):
+    """Force the on-device batched scan even for a small batch (test-only)."""
+    cu._batched_scan = True
+    cu._scan_min_cells = 0
+    return cu
+
+
+def test_batched_scan_device_matches_reference(node_data):
+    """Device batched scan agrees with the NumPy per-node reference (allclose)."""
+    binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
+    np_b = NumPySplitBackend()
+    cu = _force_batched_gpu(CudaSplitBackend())
+    subsets = [rows[:800], rows[400:1400], rows[600:], rows[::2]]
+    ref = [
+        np_b.find_best_split(
+            np_b.build_histograms(binned, r, grad, hess, n_bins_max),
+            n_bins_pf, 20, 1.0,
+        )
+        for r in subsets
+    ]
+    hists_cu = [cu.build_histograms(binned, r, grad, hess, n_bins_max) for r in subsets]
+    got = cu.find_best_split_batched(hists_cu, n_bins_pf, 20, 1.0)
+    assert len(got) == len(ref)
+    for a, b in zip(got, ref):
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert a.feature == b.feature and a.bin == b.bin
+            np.testing.assert_allclose(a.gain, b.gain, rtol=1e-6, atol=1e-9)
+            assert a.n_left == b.n_left and a.n_right == b.n_right
+
+
+def test_batched_scan_with_categoricals_matches_reference(node_data):
+    """Batched scan with a categorical feature (host subset scan per node)."""
+    binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
+    cat_mask = np.zeros(8, dtype=bool)
+    cat_mask[3] = True
+    np_b = NumPySplitBackend()
+    cu = _force_batched_gpu(CudaSplitBackend())
+    subsets = [rows[:900], rows[300:], rows[::2]]
+    ref = [
+        np_b.find_best_split(
+            np_b.build_histograms(binned, r, grad, hess, n_bins_max),
+            n_bins_pf, 20, 1.0, cat_mask,
+        )
+        for r in subsets
+    ]
+    hists_cu = [cu.build_histograms(binned, r, grad, hess, n_bins_max) for r in subsets]
+    got = cu.find_best_split_batched(hists_cu, n_bins_pf, 20, 1.0, cat_mask)
+    for a, b in zip(got, ref):
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert a.feature == b.feature and a.bin == b.bin
+            np.testing.assert_allclose(a.gain, b.gain, rtol=1e-6, atol=1e-9)
+
+
+def test_batched_scan_gate_off_loops_per_node(node_data):
+    """Gate off (default) → the base per-node loop, exactly."""
+    binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
+    cu = CudaSplitBackend()  # default: _batched_scan False, supports_batched_scan False
+    assert cu.supports_batched_scan is False
+    hists = [cu.build_histograms(binned, rows[:1000], grad, hess, n_bins_max)]
+    loop = [cu.find_best_split(hists[0], n_bins_pf, 20, 1.0)]
+    batched = cu.find_best_split_batched(hists, n_bins_pf, 20, 1.0)
+    assert len(batched) == 1
+    a, b = batched[0], loop[0]
+    assert (a is None) == (b is None)
+    if a is not None:
+        assert a.feature == b.feature and a.bin == b.bin
+
+
+def test_depthwise_batched_e2e_quality_matches(monkeypatch):
+    """Depthwise cuda fit: batched device scan vs per-node is quality-equivalent."""
+    from sklearn.metrics import r2_score
+
+    from repleafgbm import RepLeafRegressor
+
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(4000, 12))
+    y = 2 * X[:, 0] + np.sin(X[:, 1]) - 1.5 * (X[:, 2] > 0) + rng.normal(scale=0.1, size=4000)
+    common = dict(
+        grow_policy="depthwise", max_depth=5, num_leaves=63, n_estimators=20,
+        leaf_model="constant", split_backend="cuda", random_state=0,
+    )
+    monkeypatch.delenv("REPLEAFGBM_CUDA_BATCHED_SCAN", raising=False)
+    off = RepLeafRegressor(**common).fit(X, y)
+    monkeypatch.setenv("REPLEAFGBM_CUDA_BATCHED_SCAN", "1")
+    on = RepLeafRegressor(**common).fit(X, y)
+    # Near-tied splits can flip on-device (allclose, not bitwise): assert
+    # quality-equivalence, not identical trees.
+    assert abs(r2_score(y, off.predict(X)) - r2_score(y, on.predict(X))) < 5e-3
