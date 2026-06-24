@@ -178,6 +178,51 @@ class BaseSplitBackend(ABC):
 
         return _ref(_as_host(hist), n_bins_per_feature, min_samples_leaf, l2)
 
+    # ----------------------------------------------------------------- #
+    # Node-batched split search — optional fast path.
+    #
+    # Depthwise growth expands a whole level at once; scanning each node's
+    # histogram in a separate call is launch-bound on a device backend. A backend
+    # that sets ``supports_batched_scan = True`` is handed the level's M node
+    # histograms together so it can find all M best splits in one kernel launch
+    # (the CUDA override). The default loops :meth:`find_best_split` per node, so
+    # the result is byte-for-byte the per-node path — NumPy/Rust are unchanged and
+    # the grower's batched path is bitwise-identical to the per-node one.
+    # ----------------------------------------------------------------- #
+    #: Whether the grower may hand this backend a level's histograms as a batch.
+    #: Default off → the grower keeps the per-node path; the CUDA backend flips it
+    #: on only when its env gate is set (REPLEAFGBM_CUDA_BATCHED_SCAN).
+    supports_batched_scan: bool = False
+
+    def find_best_split_batched(
+        self,
+        hists,
+        n_bins_per_feature: np.ndarray,
+        min_samples_leaf: int,
+        l2: float,
+        categorical_mask: np.ndarray | None = None,
+        cat_smooth: float = 10.0,
+        min_data_per_group: int = 100,
+        max_cat_threshold: int = 32,
+    ) -> list[SplitCandidate | None]:
+        """Best split for each of M node histograms (one per frontier node).
+
+        ``hists`` is an iterable of M per-node histograms in the
+        :meth:`find_best_split` layout. Returns an M-length list of
+        ``SplitCandidate | None`` in input order. This default loops
+        :meth:`find_best_split`, so it is exactly the per-node scan; a device
+        backend overrides it to scan the batch in one kernel launch (the result
+        must stay allclose + quality-equivalent, not necessarily bitwise — near-tied
+        splits can flip via low-bit device reductions; see ADR 0005).
+        """
+        return [
+            self.find_best_split(
+                h, n_bins_per_feature, min_samples_leaf, l2,
+                categorical_mask, cat_smooth, min_data_per_group, max_cat_threshold,
+            )
+            for h in hists
+        ]
+
     def partition_rows(
         self,
         binned: np.ndarray,
