@@ -33,10 +33,13 @@ except ImportError:  # pragma: no cover - depends on optional extension
 #: Above this embedding width the BLAS-based NumPy path beats the native fused
 #: pass, so wider embeddings fall back to BLAS. The native helper is rayon
 #: leaf-parallel (parallelizing across leaves — the right axis for the small
-#: per-leaf Gram matrices, which thread poorly inside BLAS), which pushes the
-#: crossover out to ~64 at OMP_NUM_THREADS=1. Tuned with benchmarks/gpu_profile.py
-#: (--backend rust; see experiments/results/2026-06-19-leaf-fit-rayon.md).
-_NATIVE_STATS_MAX_DIM = 64
+#: per-leaf Gram matrices, which thread poorly inside BLAS). The 32→64 move
+#: (2026-06-19) only validated the default emb=64; a 2026-06-25 crossover sweep
+#: (8-core arm64) showed native still wins to ~200 single-thread and ~128
+#: multi-threaded BLAS (crossover ~256), output allclose ~1e-14, so the gate is
+#: raised to a conservative 128 — well below the measured crossover and a win
+#: under both threading regimes (docs/perf-notes/experiment-log.md iter 005).
+_NATIVE_STATS_MAX_DIM = 128
 
 #: Valid ``leaf_fit_precision`` values. ``"float64"`` (default) is the
 #: bitwise-parity path; ``"float32_gram"`` accumulates only the wide-embedding

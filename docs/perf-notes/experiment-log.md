@@ -107,3 +107,28 @@ accuracy regress / API change → REJECT; a scaffold for a future win may HOLD.
   unaffected (they're ~40% of the phase). Still a clean, safe, opt-in win.
 - Commit: impl (leaf_models.py + sklearn.py + tests/test_leaf_fit_precision.py).
   Proposal: dbe280f. Evidence: `artifacts/gpu_bench/exp2_float32_ab/`.
+
+### 005 — raise `_NATIVE_STATS_MAX_DIM` 64 → 128 (native leaf-fit past emb=64)   [ACCEPT — default, float64]   2026-06-25
+- Surface: `core/leaf_models.py` (1-line gate constant)   Backend: rust/local
+- Hypothesis: the 64 gate is over-conservative — the rayon native `leaf_linear_stats`
+  may still beat the per-leaf BLAS Gram well past emb=64.
+- Evidence (`scratchpad/e03_gate_crossover.py`, 8-core arm64, 50k rows, imbalanced leaves):
+  - **Crossover sweep, multi-threaded BLAS:** native/BLAS = 0.76× @64, 0.76× @128,
+    **1.10× @256** (BLAS wins), 1.20× @384 → real crossover ~256, NOT 64.
+  - Single-thread (OMP=1): native wins through ≥200 (0.58×). Δw ~1e-14 (allclose).
+  - The 2026-06-19 report only validated the default emb=64 when it moved 32→64;
+    it never probed 96–256. **Same hardware** — so 64 was simply under-explored.
+  - **e2e A/B (orchestrator, rust, 50k×128f, emb=128, 50 trees, 5 reps, OMP=1):**
+    gate64(BLAS) fit 5.939s / leaf_fit 3.960s → gate128(native) fit **3.595s**
+    (**1.65×, −39.5%**) / leaf_fit 1.577s (**2.51×, −60.2%**); **quality r2 identical
+    |Δ|=0.0**; spread 1.0%. (Multi-threaded est. ~1.19× fit.)
+- Decision: **ACCEPT**. Raise gate to a **conservative 128** (native wins under
+  BOTH threading regimes on this hw, well below the ~256 multi-threaded crossover);
+  float64 precision (Δw~1e-14, not a numerical-caveat change like E01), deterministic
+  (native is bitwise serial=parallel), quality-identical. Default-path improvement
+  (no opt-in). Full suite 414 passed; ruff clean. **Complementary to E01**: float32
+  (`float32_gram`) now applies only to the BLAS path at emb>128.
+- Follow-up: test `WIDE` bumped 80→160 (must exceed the new gate to exercise the
+  BLAS/float32 branch); the float32 allclose assertion made scale-relative (the
+  deviation is ~1e-6 of the prediction range, a fixed atol failed near zero).
+- Commit: impl (leaf_models.py gate + test update). Evidence: `artifacts/gpu_bench/e03_gate/`.

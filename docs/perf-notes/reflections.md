@@ -50,3 +50,11 @@ short — long prose defeats the purpose.
 - What rule we learned: project a precision win from the *reduction* fraction of a phase, not the whole phase; an isolated ceiling bench (equal-size synthetic leaves) over-states the real, imbalanced-leaf win.
 - Next mutation candidates: a native-Rust wide-emb float32 Gram (could beat NumPy float32 + cut the per-leaf Python loop); revisit whether the solve/gather can shrink.
 - Should this affect the harness/prompt/code?: harness C (precision A/B passthrough) proved its worth; keep. No default change.
+
+### 005 — native gate was over-conservative (64 → 128)   2026-06-25
+- What we tried: re-measure the _NATIVE_STATS_MAX_DIM=64 native-vs-BLAS crossover instead of trusting it.
+- What happened: native wins to ~128 multi-threaded (crossover ~256) and ≥200 single-thread on the SAME hardware the gate was set on; e2e 1.65× fit at emb=128, quality identical. Bigger + cleaner than the float32 win (E01) it partly supersedes.
+- Why it likely happened: the 2026-06-19 gate move (32→64) validated only the *default* emb=64 and never probed wider — a tuned-but-under-explored constant, not a measured crossover.
+- What rule we learned: re-measure "tuned" gates/constants before building around them — an under-explored gate can hide a bigger, simpler win than the fancy optimization (float32) you were about to ship. Always test the cheap 1-line knob first.
+- Next mutation candidates: H8 Cholesky solve (assume_a='pos') for emb>128 BLAS; native float32 at emb>128; revisit whether the gate should be adaptive to core count.
+- Should this affect the harness/prompt/code?: code shipped (1-line + test fix). Memory note rust-leaf-fit-rayon (gate=64) now stale → update.

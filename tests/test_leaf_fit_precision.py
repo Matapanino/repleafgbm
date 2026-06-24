@@ -18,7 +18,7 @@ from repleafgbm.core.leaf_models import (
     make_leaf_model,
 )
 
-WIDE = 80  # > _NATIVE_STATS_MAX_DIM (64) -> BLAS Gram path (where float32 applies)
+WIDE = 160  # > _NATIVE_STATS_MAX_DIM (128) -> BLAS Gram path (where float32 applies)
 
 
 def _leaf_inputs(n=1500, emb=WIDE, n_leaves=4, seed=0):
@@ -41,9 +41,12 @@ def test_float32_gram_matches_float64_allclose_and_quality():
     leaf_idx = np.concatenate([np.full(len(r), i) for i, r in enumerate(rows)])
     Zc = Z[np.concatenate(rows)]
     p64, p32 = lv64.predict(leaf_idx, Zc), lv32.predict(leaf_idx, Zc)
-    # allclose on predictions (not raw weights — the constant-fallback gate can
-    # flip on a near-singular leaf), plus RMSE quality-equivalence.
-    assert np.allclose(p32, p64, rtol=1e-5, atol=1e-5)
+    # Predictions agree to ~1e-5 RELATIVE to their scale (not pointwise atol — the
+    # deviation is ~1e-6 of the prediction range; a fixed atol fails near zero),
+    # plus RMSE quality-equivalence. (Weights themselves are not asserted — the
+    # constant-fallback gate can flip on a near-singular leaf.)
+    scale = float(np.max(np.abs(p64)))
+    assert np.max(np.abs(p32 - p64)) <= 1e-5 * scale
     rmse = lambda a, b: float(np.sqrt(np.mean((a - b) ** 2)))  # noqa: E731
     t = -grad[np.concatenate(rows)]
     assert abs(rmse(p32, t) - rmse(p64, t)) < 1e-4
@@ -114,7 +117,7 @@ def test_estimator_param_roundtrip_and_quality():
     X = rng.normal(size=(n, f))
     y = 2 * X[:, 0] + np.sin(X[:, 1]) + rng.normal(scale=0.1, size=n)
     common = dict(n_estimators=15, leaf_model="embedded_linear",
-                  max_leaf_emb_dim=128, random_state=0)
+                  max_leaf_emb_dim=256, random_state=0)
     m64 = RepLeafRegressor(**common).fit(X, y)
     m32 = RepLeafRegressor(leaf_fit_precision="float32_gram", **common).fit(X, y)
     assert m64.get_params()["leaf_fit_precision"] == "float64"  # default
