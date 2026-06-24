@@ -43,3 +43,11 @@ the discipline below; product-code changes never appear here.
   `benchmarks/results/latest.jsonl` (run_id of the dry-run).
 - Old vs new harness cross-check: n/a (additive; gpu_profile schema reused verbatim).
 - Commit: first harness commit on `perf/cuda-overnight-loop-20260624` (see `git log`).
+
+## Future harness-iter candidates (not yet actioned)
+
+- **Record BLAS thread config per row.** iter 002 found wide-emb leaf_fit is
+  BLAS-bound; the share is thread-sensitive in principle. Empirically multi ≈
+  single here (small per-leaf GEMMs), but the harness should log
+  `OMP_NUM_THREADS` / BLAS vendor in `env` so BLAS-bound deltas stay attributable.
+  Additive to `gpu_profile.collect_env`; bump `harness_version`; re-baseline.

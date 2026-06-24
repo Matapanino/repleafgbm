@@ -45,3 +45,27 @@ accuracy regress / API change → REJECT; a scaffold for a future win may HOLD.
     fuse constant/scalar-linear/vector/multiclass variants + clip + lr. Too large
     for an overnight accept; documented as a dedicated-PR scaffold.
 - Commit: uncommitted (no product change). Evidence in `artifacts/predict_bench/exp1_baseline/`.
+
+### 002 — float32 embedding/Gram leaf-fit option   [HOLD → human-gated proposal]   2026-06-24
+- Surface: `core/leaf_models.py` wide-emb BLAS fallback (lines ~287-308)   Backend: rust/local
+- Hypothesis: a float32 leaf-cache halves wide-embedding leaf_fit (BLAS Gram).
+- Evidence:
+  - Phase probe (`artifacts/gpu_bench/exp2_probe/`, rust, regression, 50k×200f,
+    identity emb=200>64 → BLAS path, 50 trees): **leaf_fit = 69.2% of fit**
+    (7.98s / 11.5s); histogram 9%, eval 7%, split_scan 3%.
+  - Isolated ceiling micro-bench (scratchpad `f32_leaf_ceiling.py`, emb=200,
+    float32 Gram accumulation + **float64 solve**): **1.94x** single-thread
+    (−48.5%) / **1.64x** multi-thread (−39.1%) on leaf_fit; weight deviation vs
+    float64 **rel 1.2e-6** (allclose, NOT bitwise).
+  - Thread check: multi-threaded BLAS (11.67s) ≈ single-threaded (10.49s) for
+    float64 — the per-leaf small-GEMM Python loop does not benefit from BLAS
+    threads, so the OMP=1 leaf_fit share is real-world-representative (not an
+    artifact). → ~30% of TOTAL wide-emb fit is addressable.
+- Decision: **HOLD**. Strong, robust lever but blocked by: (1) opt-in needs a
+  public constructor param → an API change, which is **human-approval-gated**
+  (plan §8); (2) numerics are allclose ~1e-6 not bitwise → existing NumPy↔Rust
+  parity tests must stay float64, the float32 path needs its own allclose test +
+  a tolerance decision; (3) only helps emb>64 (narrow already uses native rayon
+  `leaf_linear_stats`). Recommend promoting to a `docs/proposals/` spec
+  (research-proposer) once the user approves the API direction.
+- Commit: uncommitted (no product change). Top "promote to proposal" candidate.

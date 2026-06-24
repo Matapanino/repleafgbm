@@ -31,3 +31,8 @@ Cadence: GEPA reflection each iteration; harness iteration every 5 product iters
   already fused; batchable overhead <3%) + HOLD forest-fused single-kernel as a
   dedicated-PR scaffold. Evidence: `artifacts/predict_bench/exp1_baseline/`.
   Pivoting the night to FIT levers (more headroom).
+- [iter 002] float32 wide-emb leaf-fit → HOLD (strong evidence). leaf_fit=69% of
+  wide-emb fit; float32 Gram+float64 solve = 1.6-1.9x leaf_fit (~30% total fit) at
+  rel deviation ~1e-6, thread-robust. Blocked by public-API param (human-gated) +
+  allclose tolerance decision. Top promote-to-proposal candidate. Evidence:
+  `artifacts/gpu_bench/exp2_probe/` + scratchpad `f32_leaf_ceiling.py`.
