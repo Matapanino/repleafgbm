@@ -66,3 +66,11 @@ short — long prose defeats the purpose.
 - What rule we learned: stage GPU work — prove the host contract + grower refactor BITWISE locally, then the device path is a thin, low-risk M-axis vectorization; "no blind CUDA" doesn't mean "no CUDA", it means "validate the deterministic structure first."
 - Next mutation candidates: flip the gate default ON for cuda+depthwise (MO precedent); leafwise frontier-batching; batched build_histograms to feed it.
 - Should this affect the harness/prompt/code?: scripts/colab_batched_ab.py is a reusable depthwise A/B harness; keep. Design note → mark implemented.
+
+### 008 — flip batched-scan default ON   2026-06-25
+- What we tried: ship the iter-007 node-batched CUDA scan as the cuda+depthwise default (1-line resolver flip + kill switch + tests + docs), mirroring the MO device-scan default-on precedent.
+- What happened: local green (421 passed / 96 CUDA-skip / ruff clean); Colab re-val queued. Surgical surface — the grower/dispatch already read `supports_batched_scan`, so only the resolver default + test intent changed.
+- Why it likely happened: iter 007 staged the work so the default is a pure policy flip on a validated, allclose-by-contract path; the adaptive `_scan_min_cells` crossover means the flip can't regress tiny frontiers (they still fall to the host loop).
+- What rule we learned: when last session shipped a validated opt-in behind an env gate, flipping its default is a cheap, high-confidence iteration — but still a deliberate default change (core-reviewer + a re-validation), not a silent edit.
+- Next mutation candidates: size Task B (leafwise split_scan share under the default grow_policy) on the same Colab run; iter-009 E15 float32 vector leaves (local).
+- Should this affect the harness/prompt/code?: docs paid the iter-007 doc debt (cuda.md/ADR never documented the batched scan). No harness/prompt change.

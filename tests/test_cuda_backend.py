@@ -713,10 +713,18 @@ def test_batched_scan_with_categoricals_matches_reference(node_data):
             np.testing.assert_allclose(a.gain, b.gain, rtol=1e-6, atol=1e-9)
 
 
-def test_batched_scan_gate_off_loops_per_node(node_data):
-    """Gate off (default) → the base per-node loop, exactly."""
+def test_batched_scan_on_by_default(node_data, monkeypatch):
+    """Default (env unset) → batched scan on; the grower takes the device path."""
+    monkeypatch.delenv("REPLEAFGBM_CUDA_BATCHED_SCAN", raising=False)
+    cu = CudaSplitBackend()  # default: _batched_scan True, supports_batched_scan True
+    assert cu.supports_batched_scan is True
+
+
+def test_batched_scan_kill_switch_loops_per_node(node_data, monkeypatch):
+    """Kill switch (REPLEAFGBM_CUDA_BATCHED_SCAN=0) → the base per-node loop, exactly."""
+    monkeypatch.setenv("REPLEAFGBM_CUDA_BATCHED_SCAN", "0")
     binned, rows, grad, hess, n_bins_max, n_bins_pf = node_data
-    cu = CudaSplitBackend()  # default: _batched_scan False, supports_batched_scan False
+    cu = CudaSplitBackend()  # env=0 → _batched_scan False, supports_batched_scan False
     assert cu.supports_batched_scan is False
     hists = [cu.build_histograms(binned, rows[:1000], grad, hess, n_bins_max)]
     loop = [cu.find_best_split(hists[0], n_bins_pf, 20, 1.0)]
@@ -741,9 +749,10 @@ def test_depthwise_batched_e2e_quality_matches(monkeypatch):
         grow_policy="depthwise", max_depth=5, num_leaves=63, n_estimators=20,
         leaf_model="constant", split_backend="cuda", random_state=0,
     )
-    monkeypatch.delenv("REPLEAFGBM_CUDA_BATCHED_SCAN", raising=False)
+    # off = explicit kill switch (per-node loop); on = the new default (env unset).
+    monkeypatch.setenv("REPLEAFGBM_CUDA_BATCHED_SCAN", "0")
     off = RepLeafRegressor(**common).fit(X, y)
-    monkeypatch.setenv("REPLEAFGBM_CUDA_BATCHED_SCAN", "1")
+    monkeypatch.delenv("REPLEAFGBM_CUDA_BATCHED_SCAN", raising=False)
     on = RepLeafRegressor(**common).fit(X, y)
     # Near-tied splits can flip on-device (allclose, not bitwise): assert
     # quality-equivalence, not identical trees.

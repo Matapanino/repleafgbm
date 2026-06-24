@@ -196,3 +196,13 @@ E18/E26 preprocessing(cold-start), E09 sibling-subtraction(shipped), E11 uint16(
 **Held/queued:** node-batched CUDA scan (designed, Colab), forest-fused predictor,
 uint8 bins, quantized-grad histogram, native-float32-wide. **Lower-ROI TODO** (post-E03,
 emb>128 or small phases): E04/E14/E15/E16/E19. Meta-lesson: re-measure tuned gates.
+
+## Session 2026-06-25 (iter 008+) — ship validated wins as defaults; broaden a local lever
+
+### 008 — flip `REPLEAFGBM_CUDA_BATCHED_SCAN` default → ON (cuda+depthwise)   [ACCEPT — default change; Colab re-val queued]   2026-06-25
+- Surface: `backends/cuda_backend.py` (`_resolve_batched_scan` default), `backends/base.py` (comment), `tests/test_cuda_backend.py` (kill-switch + default-on tests), docs (`cuda.md`, `CHANGELOG`, ADR 0005)   Backend: cuda
+- Hypothesis: the node-batched depthwise scan (iter 007: T4 1.9–3.9× fit / 5–9× split_scan, quality-identical, parity 35/35) should be the cuda+depthwise default, mirroring the MO device-scan precedent (`REPLEAFGBM_CUDA_MO_DEVICE_SCAN`, default ON) — CUDA is already allclose + quality-equivalent by contract.
+- Change: `_resolve_batched_scan` unset/empty → **True** (was False); a falsy value (`0/false/no/off`) is now the kill switch → per-node host loop. 1 logic line + comments/docstrings + tests (gate-off test → `test_batched_scan_on_by_default` + `test_batched_scan_kill_switch_loops_per_node`) + docs. Host NumPy/Rust path untouched; the dispatch guard (`grad.ndim==1 ∧ supports_batched_scan`, `tree.py:281`) and the adaptive `_scan_min_cells` crossover are unchanged, so only cuda+depthwise+scalar (non-tiny frontiers) changes behavior.
+- Measure: evidence = iter 007 T4 A/B (wide 3.91× / narrow 1.91× / mc 3.23× fit; quality Δ=0). Local: ruff clean; `pytest tests/ -q` **421 passed / 96 skipped** (CUDA self-skip, no GPU) / 0 failed. Colab re-validation (default-on vs `=0` kill-switch, ≥5 reps interleaved) queued for the GPU session.
+- Decision: **ACCEPT** (deliberate default change) — gated on core-reviewer sign-off + the Colab re-val above before it counts as shipped. Zero new risk: identical code path to iter 007, default-resolved on; kill switch preserved; host bitwise untouched. SemVer MINOR (new default on an optional GPU sub-feature; no public API / model-format change).
+- Commit: queued (separate). Re-val report → `experiments/results/2026-06-25-batched-scan-default-on.md`.

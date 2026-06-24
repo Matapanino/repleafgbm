@@ -171,23 +171,27 @@ def _resolve_mo_device_scan() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
-# Private opt-in for the node-batched depthwise scan (default OFF). Set
-# REPLEAFGBM_CUDA_BATCHED_SCAN to a truthy value to let the depthwise grower hand
-# each level's frontier histograms here for one batched device scan (amortizing
-# the per-node launch). Off → the per-node path (base default loop), i.e. today's
-# behavior. Not part of the public API; read once at construction.
+# Private kill switch for the node-batched depthwise scan (default on). The
+# depthwise grower hands each level's frontier histograms here for one batched
+# device scan (amortizing the per-node launch — T4-validated at split_scan 5-9x,
+# depthwise fit 1.9-3.9x, quality-equivalent). Set REPLEAFGBM_CUDA_BATCHED_SCAN to
+# a falsy value to fall back to the per-node path (base default loop), i.e. the
+# pre-batched behavior — a gate for a narrow-case regression. Not part of the
+# public API; read once at construction.
 _BATCHED_SCAN_ENV = "REPLEAFGBM_CUDA_BATCHED_SCAN"
 
 
 def _resolve_batched_scan() -> bool:
-    """Whether depthwise node-batched scan runs on-device. Default False (opt-in).
+    """Whether depthwise node-batched scan runs on-device. Default True.
 
-    Reads ``REPLEAFGBM_CUDA_BATCHED_SCAN``. Unset/empty → False. A truthy value
-    (anything other than ``0``/``false``/``no``/``off``) → on.
+    Reads ``REPLEAFGBM_CUDA_BATCHED_SCAN``. Unset/empty → True (the batched device
+    path — one kernel launch per level instead of per node). A falsy value
+    (``0``/``false``/``no``/``off``, case-insensitive) → the per-node host loop
+    (the pre-batched behavior). Any other value keeps the batched path on.
     """
     raw = os.environ.get(_BATCHED_SCAN_ENV)
     if raw is None or not raw.strip():
-        return False
+        return True
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
@@ -235,8 +239,8 @@ class CudaSplitBackend(BaseSplitBackend):
         # the base host stack + host scan (pre-device behavior). See
         # _resolve_mo_device_scan / build_histograms_multioutput below.
         self._mo_device_scan = _resolve_mo_device_scan()
-        # Node-batched depthwise scan opt-in (default OFF), resolved once. On → the
-        # grower hands each level's frontier histograms to find_best_split_batched
+        # Node-batched depthwise scan (default ON, kill switch), resolved once. On →
+        # the grower hands each level's frontier histograms to find_best_split_batched
         # for one device scan; the instance attr tells the grower to take that path
         # (shadows the base-class default of False). See _resolve_batched_scan.
         self._batched_scan = _resolve_batched_scan()

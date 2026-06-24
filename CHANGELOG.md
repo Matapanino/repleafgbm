@@ -5,6 +5,20 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [Unreleased]
+
+### Added
+- **Node-batched CUDA depthwise split scan** (`split_backend="cuda"`,
+  `grow_policy="depthwise"`, scalar targets) — the grower scans a whole level's M
+  frontier histograms in one device kernel launch instead of one call per node,
+  amortizing the launch that dominates the GPU scan. **On by default**; set the
+  private `REPLEAFGBM_CUDA_BATCHED_SCAN=0` as a kill switch. The host NumPy/Rust
+  path is bitwise-identical (the batched scan loops the per-node scan there); only
+  the device launch count changes. T4: split_scan 5–9x, whole depthwise fit
+  1.9–3.9x, quality-equivalent
+  (`experiments/results/2026-06-25-batched-scan-ab.md`). No public API or
+  model-format change.
+
 ## [1.8.0] - 2026-06-24
 
 Performance + tree-growth release. The CPU training and prediction paths are

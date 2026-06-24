@@ -190,8 +190,8 @@ class BaseSplitBackend(ABC):
     # the grower's batched path is bitwise-identical to the per-node one.
     # ----------------------------------------------------------------- #
     #: Whether the grower may hand this backend a level's histograms as a batch.
-    #: Default off → the grower keeps the per-node path; the CUDA backend flips it
-    #: on only when its env gate is set (REPLEAFGBM_CUDA_BATCHED_SCAN).
+    #: Default off → the grower keeps the per-node path (NumPy/Rust). The CUDA
+    #: backend sets it on by default (kill switch REPLEAFGBM_CUDA_BATCHED_SCAN=0).
     supports_batched_scan: bool = False
 
     def find_best_split_batched(

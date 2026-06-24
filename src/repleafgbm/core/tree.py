@@ -359,7 +359,7 @@ class TreeGrower:
         On a device backend this batches M nodes into one kernel launch; on the
         host the batched scan loops the per-node scan, so the produced tree is
         **bitwise-identical** to :meth:`_grow_depthwise` (asserted in
-        tests/test_grow_policy.py). Used only when the backend opts in
+        tests/test_batched_scan.py). Used only when the backend opts in
         (``supports_batched_scan``) for scalar targets.
         """
         store = self._new_store()
