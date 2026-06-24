@@ -5,6 +5,70 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.8.0] - 2026-06-24
+
+Performance + tree-growth release. The CPU training and prediction paths are
+substantially faster — Rust now owns histogram construction, leaf statistics, row
+partitioning, and tree routing — and a new `grow_policy` adds depthwise and
+symmetric (oblivious) growth alongside the leafwise default. No public API break,
+no leaf-math change, model format unchanged (still v6); existing models load and
+predict identically. The optional `repleafgbm-native` extension is bumped
+0.1.0 → 0.3.0 (new `partition_rows` and `apply_tree` symbols plus the rayon
+histogram/leaf and fused predict kernels); it stays optional and feature-detected,
+so pure-NumPy installs are unaffected and older extensions fall back gracefully.
+
+### Added
+- **`grow_policy` {leafwise, depthwise, symmetric}** (#27, ADR 0006) — choose how
+  each tree expands. `leafwise` (default) is the unchanged best-gain-first heap;
+  `depthwise` is XGBoost-style level-order growth to `max_depth`; `symmetric` is
+  CatBoost-style oblivious growth (one shared split per level, chosen by the
+  summed per-node Newton gain). `depthwise`/`symmetric` require `max_depth >= 1`;
+  `symmetric` is numeric/scalar-only in v0. The level scan is host-side NumPy
+  shared by both backends, so NumPy↔Rust parity is automatic with no model-format
+  bump. Default stays `leafwise` pending a real-data comparison
+  (`experiments/results/2026-06-23-grow-policy-verdict.md`).
+- **`leaf_model="adaptive"`** (#28, experimental) — a per-leaf gate that keeps the
+  embedded-linear ridge leaf only when it beats a constant leaf in weighted
+  leave-one-out error, else falls back to a constant. Default stays
+  `embedded_linear`; host-side only, no format bump. Experimental: the real-data
+  gain is within seed noise (a robust per-leaf hedge, not a separated accuracy win).
+- **`benchmarks/predict_profile.py`** (#31) — decomposes `predict` into routing
+  (`Tree.apply`) vs leaf-eval (`LeafValues.predict`) across rows/trees/classes/
+  leaf_model plus a categorical/missing case, with a CPU-safe smoke test. The
+  evidence that grounded the native router below
+  (`experiments/results/2026-06-24-prediction-traversal-bench.md`).
+
+### Performance
+- **Native tree routing** — `apply_tree` (#32): `Tree.apply` now routes per row in
+  Rust (one rayon pass of root→leaf descents) when the extension is built, with
+  the NumPy path as fallback. Numeric, missing-value direction (incl. external
+  `default_left=False`), and categorical subset splits, at exact leaf-id parity.
+  Routing 7.8–13.0× faster; end-to-end predict 3.3–9.6× (largest for constant
+  leaves and multiclass; embedded_linear is Amdahl-capped by the already-native
+  leaf-eval). `experiments/results/2026-06-24-native-routing-apply-tree.md`.
+- **Native row partitioning** — `partition_rows` (#30): a fused single-pass Rust
+  kernel replaces NumPy's multi-pass boolean-index partition; multiclass fit −12%
+  (medium 100k×100) / −9% (large 500k×200), index-identical.
+- **Multiclass leaf pooling + fused predict kernel** (#26) — cross-K leaf pooling
+  for one parallel leaf-fit pass and a fused `predict_linear`: multiclass fit −17%
+  and prediction/eval −85%, bitwise-identical.
+- **Rayon leaf-fit** (#24) — leaf-parallel `leaf_linear_stats` (across leaves, not
+  threading BLAS) with the native fast-path gate widened to emb=64: pooled fit
+  −25.8% on medium emb=64.
+- **Thread-pool binning** (#25) — feature-parallel binning: fit +24% (large) /
+  +16–18% (medium).
+- **Rayon histogram** (#23) — feature-parallel, feature-major `build_histograms`:
+  2.2× single-output / 1.7× multiclass, bitwise-identical to the serial scan.
+- **CUDA split-scan profiling harness** — a private `REPLEAFGBM_CUDA_SCAN_MIN_CELLS`
+  override and benchmark scan-threshold sweeps; the default threshold is unchanged.
+
+### Internal
+- `repleafgbm-native` 0.1.0 → 0.3.0: adds `partition_rows`, `apply_tree`, the rayon
+  feature-parallel `build_histograms`, leaf-parallel `leaf_linear_stats` /
+  `leaf_linear_stats_mc`, and the fused `predict_linear`. Optional and
+  feature-detected — pure-NumPy installs and older extensions fall back to the
+  NumPy reference paths.
+
 ## [1.7.0] - 2026-06-19
 
 ### Added
