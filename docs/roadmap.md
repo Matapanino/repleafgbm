@@ -512,8 +512,13 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
   training updates — embedded_linear ~2.6x over NumPy (2.9x vs the
   pre-batching baseline), wide-PLR ~1.5x; parity vs the centered reference
   implementation tested at rtol 1e-9
-- Open: row partitioning in Rust, parallel (rayon) histograms, native Gram
-  for wide embeddings, compiled predictor
+- ✅ Subsequent perf passes: rayon feature-major histograms, feature-parallel
+  binning, multiclass leaf pooling + fused scalar linear prediction, and native
+  `partition_rows` (native 0.2.0 / PR #30). The row partition kernel is
+  index-identical to NumPy and reduced medium/large multiclass fit by 9-12% in
+  the PR #30 benchmark.
+- Open: native Gram/vector-leaf fast paths, compiled `Tree.apply` / forest
+  predictor, and broader multi-output backend scans.
 
 ## v3 — GPU and scale
 

@@ -22,19 +22,18 @@ The Rust kernels live in `native/` (pyo3 + maturin; `pip install ./native`)
 and are selected automatically via `split_backend="auto"` when installed.
 They mirror the NumPy backend's tie-breaking and accumulation-order
 semantics: histograms are bitwise-identical and end-to-end predictions agree
-to float noise (tested). Phase 11 added a third compiled kernel,
-`leaf_linear_stats` — a fused single-pass computation of the per-leaf
-normal-equation statistics, used for embeddings up to 32 dims (wider ones
-keep the BLAS path) — plus clip-free training-score updates (exact: training
-rows are inside their own leaf's guard range). Measured on 20k rows x 20
-features x 100 trees: constant-leaf training ~3.5x over NumPy
-(LightGBM-parity wall time), embedded_linear ~2.6x, wide-PLR ~1.5x.
-Tree-growing logic (`core/tree.py`) must never depend on backend
-internals.
+to float noise (tested). Subsequent native kernels cover `leaf_linear_stats`
+for embeddings up to 64 dims, scalar fused linear prediction, and
+`partition_rows` for numeric and categorical row routing. The PR #30
+`partition_rows` kernel is index-identical to the NumPy reference and reduced
+medium/large multiclass Rust fit by 9-12%. Tree-growing logic
+(`core/tree.py`) must never depend on backend internals.
 
 The experimental CUDA backend (`split_backend="cuda"`, ADR 0005) is a third
-compute backend: a CuPy `RawKernel` builds histograms on an NVIDIA GPU while
-the split scan delegates to the NumPy reference. It is **explicit-only**
+compute backend: a CuPy `RawKernel` builds histograms on an NVIDIA GPU, caches
+the binned matrix on device, and runs the large numeric split scan on device
+with an adaptive host fallback for small scans. Categorical and multi-output
+scans still use host logic. It is **explicit-only**
 ("auto" never selects it) and its parity is **allclose, not bitwise** — GPU
 atomic-add summation order is not fixed, so histograms agree to float noise
 (`rtol=1e-6` end-to-end) rather than being bitwise-identical, and are not

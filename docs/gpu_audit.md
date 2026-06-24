@@ -3,11 +3,11 @@
 ## Executive Summary
 
 - Current GPU utilization is partial and intentionally narrow. `split_backend="cuda"` accelerates scalar split search: the binned raw-feature matrix is cached on the GPU, per-node histograms are built by a CuPy RawKernel, large numeric split scans run on the GPU, and only the winning split scalars cross back. This preserves the core design: raw-feature routing plus representation-conditioned leaves.
-- The largest remaining bottleneck is not a single kernel. End-to-end fit still spends substantial time in CPU orchestration: feature binning, row partitioning, tree growth, categorical split handling, leaf-model fitting, prediction traversal, objective/eval loops, and sklearn/pandas preprocessing.
+- The largest remaining bottleneck is not a single kernel. End-to-end fit still spends substantial time in CPU orchestration: feature binning, tree growth, categorical split handling, leaf-model fitting, prediction traversal, objective/eval loops, and sklearn/pandas preprocessing. Row partitioning is now native on the Rust path, but the NumPy reference and host row-array orchestration still exist.
 - The highest-priority performance issue in the existing CUDA path is avoidable per-node host work and transfer: `CudaSplitBackend.build_histograms` uploads `rows`, `grad[rows]`, and `hess[rows]` for every node. `binned` is resident, but gradients and Hessians are not.
 - The most important CPU bottlenecks outside CUDA are prediction path traversal (`Tree.apply` per tree), multi-output split search falling back to host (`Splitter.build_histograms` calls `_as_host` per output), and per-leaf ridge/statistics for embedded leaves.
 - Do not GPU-accelerate everything immediately. Sparse input is rejected by the sklearn layer, pandas/category preprocessing is not a GPU target, small numeric histograms already use the faster host scan path, and low-dimensional leaf statistics already have a Rust fast path.
-- Recommended first patch: add a GPU benchmark/profiling harness and then cache full `grad`/`hess` device buffers inside `CudaSplitBackend`, so per-node CUDA histogram builds transfer only row indices instead of row indices plus gathered gradient/Hessian vectors. This is low API risk and directly targets the current CUDA boundary.
+- Historical first patch: add the GPU benchmark/profiling harness and measure the CUDA `grad`/`hess` cache idea. The harness shipped; the cache was measured and deferred because transfer bytes fell but wall-clock did not. Current CPU evidence points to compiled prediction as the next low-risk Rust target before another CUDA rewrite.
 
 ## Current Execution Map
 
@@ -23,7 +23,7 @@
 | Scalar numeric split scan | `backends/numpy_backend.py::find_best_split`, `cuda_backend.py::find_best_split` | NumPy/Rust CPU; CUDA GPU only when `n_features * n_bins_max >= 32768` | Small CUDA histograms copy back to host; large scans return one packed winner | Adaptive path is correct: small scans do not amortize GPU launch/sync overhead. |
 | Categorical split scan | `NumPySplitBackend._best_categorical_split`, CUDA delegates per feature slice | CPU host | CUDA copies categorical histogram slices with `cp.asnumpy(hist_d[f])` | Parity-critical branchy/stable-sort logic stays host. Good short-term choice. |
 | Multi-output histogram/scan | `core/splitter.py::build_histograms`, `numpy_backend.py::find_best_split_multioutput` | Histograms can be built by backend per output; stacked and scanned on CPU | CUDA histograms are copied to host with `_as_host` before `np.stack` | Multi-output loses B2 residency and GPU scan benefits. |
-| Tree growth / row partition | `core/tree.py::TreeGrower.grow`, `core/splitter.py::partition` | CPU Python heap, NumPy masks | CUDA histograms can stay device-resident, but rows remain host arrays | This is the main orchestration bottleneck after histogram acceleration. |
+| Tree growth / row partition | `core/tree.py::TreeGrower.grow`, `core/splitter.py::partition` | CPU Python heap; NumPy masks on the reference path; Rust `partition_rows` on the native path | CUDA histograms can stay device-resident, but rows remain host arrays | Partition is no longer the leading Rust bottleneck after PR #30; tree growth orchestration remains host-side. |
 | Leaf assignment | `Tree.apply`, training `leaf_rows` lists | CPU vectorized loop over levels / trees | No GPU or Rust predictor path | Prediction repeats tree traversal for each tree. |
 | Constant leaf fitting | `ConstantLeafModel.fit_leaves` | CPU Python list comprehension | None | Simple and low compute, but avoidable Python loop for many leaves/trees. |
 | Embedded linear leaf fitting | `EmbeddedLinearLeafModel.fit_leaves`, `native::leaf_linear_stats` | CPU NumPy/BLAS; optional Rust stats for `emb_dim <= 32`; solve on CPU | `Z`, `grad`, `hess`, leaf rows are host arrays | Rust accelerates stats, but wide embeddings and solves remain CPU. |
@@ -31,7 +31,7 @@
 | Objective / loss | `core/objectives.py` | CPU NumPy vectorized | No GPU state | Multiclass softmax materializes `(n_rows, n_classes)` grad/hess on host. |
 | Early stopping / eval loop | `core/booster.py`, `multiclass.py`, `multioutput.py` | CPU; one new tree applied per eval round | Eval `Tree.apply` CPU and metrics CPU | Incremental raw-score cache is good; traversal remains costly. |
 | Prediction | `core/prediction.py`, `Tree.apply`, `LeafValues.predict` | CPU loop over trees; NumPy `einsum` for leaf outputs | No compiled predictor | Likely dominant for large `n_trees` and multiclass. |
-| Rust backend | `native/src/lib.rs`, `backends/rust_backend.py` | Native CPU, currently single-threaded loops | Python wrapper forces contiguous host NumPy arrays | Good target for threading and predictor kernels before CUDA rewrites. |
+| Rust backend | `native/src/lib.rs`, `backends/rust_backend.py` | Native CPU kernels for histogram, split scan, leaf stats/predict helpers, and row partitioning | Python wrapper forces contiguous host NumPy arrays | Good target for compiled predictor and vector-leaf kernels before CUDA rewrites. |
 
 ## Bottleneck Analysis
 
@@ -51,7 +51,7 @@
 ### Histogram Construction
 
 - NumPy backend uses three `np.bincount` calls over a flattened `(row, feature)` index and repeats `grad`/`hess` per feature, causing large temporary memory.
-- Rust backend avoids the NumPy temporaries but is single-threaded and CPU-bound.
+- Rust backend avoids the NumPy temporaries and parallelizes the feature-major histogram path, but the kernel is still memory-bandwidth bound.
 - CUDA backend is the best-developed GPU surface. It caches `binned` on device and gathers bins on device, but still gathers `grad[rows]` and `hess[rows]` on the CPU and uploads them for each node.
 - Expected scaling: GPU helps most for large `n_rows`, wide `n_features`, high `max_bins`, and larger trees. It helps less for narrow datasets and small histograms.
 
@@ -105,16 +105,16 @@
 
 - `core/histogram.py`: per-feature bin threshold and bin assignment loops.
 - `data/preprocessing.py`: per-column categorical/frequency list comprehensions.
-- `core/tree.py`: heap-based growth, row partitioning, per-level categorical membership, final leaf row collection.
+- `core/tree.py`: heap-based growth, per-level categorical membership, final leaf row collection, and generic `Tree.apply` traversal.
 - `core/booster.py` / `multiclass.py` / `multioutput.py`: per-round, per-leaf, per-class loops.
 - `core/leaf_models.py` / `core/multioutput.py`: per-leaf stats/solve loops and fallback loops.
 - `core/prediction.py`: per-tree prediction loops.
-- `native/src/lib.rs`: native loops are compiled but single-threaded.
+- `native/src/lib.rs`: native loops cover histogram, split scan, leaf stats/predict helpers, and row partitioning; remaining hot candidates include compiled tree traversal and vector-leaf paths.
 
 ### Rust Native Backend Boundary
 
 - `RustSplitBackend` requires contiguous `uint16`, `int64`, and `float64` host arrays; wrappers use `np.ascontiguousarray`, which may copy.
-- Rust kernels currently implement histogram, split scan, and narrow embedded-leaf stats. They do not implement binning, partitioning, prediction, vector leaves, or parallel histograms.
+- Rust kernels currently implement histogram, split scan, embedded-leaf stats, scalar linear prediction, and row partitioning. They do not implement native binning, `Tree.apply` / forest traversal, vector leaves, or multi-output backend scans.
 - Rust is the best next step for CPU-bound branchy code because it preserves API compatibility and avoids CUDA-only behavior.
 
 ## Data Movement Analysis
@@ -168,12 +168,12 @@ Avoidable transfer: `grad[rows]` and `hess[rows]` should be gathered on device f
    - Tests: smoke run locally without CUDA; full run via Colab.
    - Benchmark: compare numpy/rust/cuda on small/medium/large grids.
 
-2. Cache full `grad`/`hess` device buffers in `CudaSplitBackend`.
+2. Cache full `grad`/`hess` device buffers in `CudaSplitBackend` (measured and deferred).
    - Target: `src/repleafgbm/backends/cuda_backend.py::build_histograms`, RawKernel signature.
    - Problem: per-node CPU gather and H2D upload of `grad[rows]` and `hess[rows]`.
    - Why GPU is underused: the kernel gathers `binned` on device but not gradients/Hessians.
    - Direction: cache contiguous full `grad` and `hess` arrays on device keyed by `(id, shape, strides?)`; kernel reads `grad[row]` and `hess[row]`.
-   - Effect: reduces per-node transfer by about `16 * n_selected_rows` bytes and removes CPU fancy-index gather.
+   - Effect: reduced transfer bytes in the follow-up experiment, but did not improve wall-clock enough to remain a near-term speed lever.
    - Difficulty: low to medium.
    - API risk: none if implemented inside backend.
    - Tests: existing CUDA parity tests plus weighted, multiclass, and class-view cases.
@@ -202,12 +202,12 @@ Avoidable transfer: `grad[rows]` and `hess[rows]` should be gathered on device f
 
 ### Phase 2: Medium-size Improvements
 
-1. Rust-native binning and partitioning.
+1. Rust-native binning and partition follow-up.
    - Target: `core/histogram.py`, `core/splitter.py::partition`, `native/src/lib.rs`.
-   - Problem: feature-loop CPU binning and per-node CPU partition masks.
+   - Problem: feature-loop CPU binning remains; per-node partition masks remain only on the NumPy reference path.
    - Why GPU is underused: CUDA receives already-binned host data and host row arrays.
-   - Direction: add optional native functions for bin assignment and split partition; keep thresholds and metadata unchanged.
-   - Effect: speeds CPU and CUDA paths without changing public API.
+   - Direction: keep the landed `partition_rows` kernel; consider native bin assignment only with fresh evidence.
+   - Effect: speeds CPU and CUDA paths without changing public API when the remaining host work is material.
    - Difficulty: medium.
    - API risk: none.
    - Tests: exact bin parity, categorical/missing parity, partition parity.
@@ -222,7 +222,7 @@ Avoidable transfer: `grad[rows]` and `hess[rows]` should be gathered on device f
    - Difficulty: medium.
    - API risk: low if internal fallback remains.
    - Tests: exact leaf-id parity for numeric/categorical/missing, prediction parity, serialization compatibility.
-   - Benchmark: predict time vs `n_trees`, `n_rows`, `n_classes`.
+   - Benchmark: predict time vs `n_trees`, `n_rows`, `n_classes`. Shipped as `benchmarks/predict_profile.py`, which decomposes predict into routing (`Tree.apply`) vs leaf-eval (`LeafValues.predict`) so the routing share bounds this target's payoff; see `experiments/results/2026-06-24-prediction-traversal-bench.md`.
 
 3. Multi-output CUDA/Rust split scan.
    - Target: `core/splitter.py::build_histograms`, `find_best_split_multioutput`.
@@ -355,17 +355,17 @@ python -m benchmarks.gpu_profile --task multiclass --n-classes 5 --size medium -
 - `experiments/results/<date>-cuda-benchmark.md`
 - Optional Nsight Systems trace for one representative wide run.
 
-## Recommended First Patch
+## Historical First Patch
 
 ### Patch Scope
 
 1. Add `benchmarks/gpu_profile.py` and extend the Colab remote runner to execute selected benchmark cases and write JSONL plus a markdown summary.
 2. Add private transfer counters to `CudaSplitBackend` for binned upload, rows upload, grad/hess upload, histogram copy-back, categorical slice copy-back, and winner copy-back.
-3. In a separate implementation patch after the benchmark harness lands, cache full `grad`/`hess` buffers on device and modify the CUDA histogram kernel to gather them by row on device.
+3. The later cache experiment reduced H2D bytes but was deferred after wall-clock results did not move materially.
 
 ### Why This First
 
-- It targets the clearest remaining CUDA inefficiency without changing public APIs or the RepLeafGBM thesis.
+- It targeted the clearest CUDA transfer inefficiency without changing public APIs or the RepLeafGBM thesis. Later phase evidence shifted the near-term recommendation toward CPU/Rust prediction traversal.
 - It gives evidence before larger Rust/CUDA work.
 - It is compatible with the current Colab validation model.
 
@@ -392,25 +392,25 @@ python -m benchmarks.gpu_profile --task multiclass --n-classes 5 --size medium -
 
 ## Detailed Improvement Proposals
 
-### 1. Device-cache Gradients And Hessians
+### 1. Device-cache Gradients And Hessians (deferred)
 
 - Improvement target file/function: `src/repleafgbm/backends/cuda_backend.py::build_histograms`, `_BUILD_HIST_SRC`.
 - Current problem: every node uploads `grad[rows]` and `hess[rows]` after CPU-side fancy indexing.
 - Why GPU is not fully used: the device kernel already gathers `binned[row, feature]`, but gradient/Hessian values are gathered on host.
 - Improvement direction: cache full contiguous `grad` and `hess` device buffers per round/tree; change kernel inputs from `g_sel/h_sel` to full `grad/hess`.
-- Expected effect: less host CPU gather, lower H2D transfer, better wide and deep-tree fit time.
+- Expected effect: less host CPU gather and lower H2D transfer; benchmarked wall-clock impact was neutral, so this is not the next speed lever.
 - Implementation difficulty: low to medium.
 - API break risk: none if backend-internal.
 - Test direction: CUDA histogram parity, weighted gradients, multiclass class-column views, no stale cache across rounds.
 - Benchmark direction: per-node transfer bytes and end-to-end narrow/wide runs.
 
-### 2. Native Binning And Partition Kernels
+### 2. Native Binning And Partition Follow-up
 
 - Improvement target file/function: `core/histogram.py`, `core/splitter.py::partition`, `native/src/lib.rs`.
-- Current problem: binning and partitioning are CPU NumPy/Python feature/node loops.
+- Current problem: binning is still a CPU NumPy feature loop; partitioning is solved for `split_backend="rust"` but remains as the NumPy reference fallback.
 - Why GPU is not fully used: CUDA starts after host binning and still consumes host row arrays.
-- Improvement direction: add Rust functions for `bin_features` and `partition_rows`; keep NumPy reference path.
-- Expected effect: faster CPU baseline and CUDA end-to-end because less host orchestration remains.
+- Improvement direction: keep `partition_rows`; consider Rust `bin_features` only if post-PR phase profiles make binning a leading phase.
+- Expected effect: faster CPU baseline and CUDA end-to-end only when the remaining host orchestration is material.
 - Implementation difficulty: medium.
 - API break risk: none.
 - Test direction: exact parity for missing, categorical, high-cardinality fallback, thresholds.
@@ -426,7 +426,7 @@ python -m benchmarks.gpu_profile --task multiclass --n-classes 5 --size medium -
 - Implementation difficulty: medium.
 - API break risk: none.
 - Test direction: leaf IDs and predictions identical for numeric, categorical subset, missing default-left, saved/load models.
-- Benchmark direction: predict throughput vs rows, trees, classes, leaf model.
+- Benchmark direction: predict throughput vs rows, trees, classes, leaf model — measured by `benchmarks/predict_profile.py` (routing vs leaf-eval decomposition).
 
 ### 4. Multi-output Backend Scan
 
@@ -499,4 +499,3 @@ python -m benchmarks.gpu_profile --task multiclass --n-classes 5 --size medium -
 - API break risk: none.
 - Test direction: docs review.
 - Benchmark direction: none.
-
