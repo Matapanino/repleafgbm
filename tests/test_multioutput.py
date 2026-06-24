@@ -107,6 +107,48 @@ def test_categorical_multioutput():
     assert pred.shape == (100, 2)
 
 
+def test_backend_multioutput_defaults_match_reference():
+    """The BaseSplitBackend multi-output defaults reproduce the historical host
+    stack + free-function scan exactly, so NumPy/Rust multi-output is unchanged.
+
+    Locks the refactor that moved the splitter's per-output ``np.stack`` and the
+    direct ``find_best_split_multioutput`` call behind the backend so a device
+    backend (CUDA) can override them. Bitwise here (all NumPy).
+    """
+    from repleafgbm.backends.numpy_backend import (
+        NumPySplitBackend,
+    )
+    from repleafgbm.backends.numpy_backend import (
+        find_best_split_multioutput as ref_scan,
+    )
+
+    rng = np.random.default_rng(100)
+    n, F, n_bins_max, K = 500, 5, 17, 3
+    binned = rng.integers(0, 16, size=(n, F)).astype(np.uint16)
+    binned[rng.random((n, F)) < 0.05] = 16  # missing bin
+    rows = np.sort(rng.choice(n, size=300, replace=False)).astype(np.int64)
+    grad = rng.normal(size=(n, K))
+    hess = np.abs(rng.normal(size=(n, K))) + 0.1
+    n_bins_pf = np.full(F, 16, dtype=np.int64)
+
+    b = NumPySplitBackend()
+    hist = b.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    expected = np.stack(
+        [b.build_histograms(binned, rows, grad[:, k], hess[:, k], n_bins_max)
+         for k in range(K)],
+        axis=-1,
+    )
+    np.testing.assert_array_equal(hist, expected)
+    assert hist.shape == (F, n_bins_max, 3, K)
+
+    s_default = b.find_best_split_multioutput(hist, n_bins_pf, 20, 1.0)
+    s_ref = ref_scan(hist, n_bins_pf, 20, 1.0)
+    assert (s_default is None) == (s_ref is None)
+    assert (s_default.feature, s_default.bin) == (s_ref.feature, s_ref.bin)
+    assert s_default.gain == s_ref.gain  # bitwise: same host code path
+    assert (s_default.n_left, s_default.n_right) == (s_ref.n_left, s_ref.n_right)
+
+
 def test_single_output_unchanged():
     """1-D y keeps the scalar Booster (no behavior change)."""
     X, Y = make_multioutput(300, seed=5)

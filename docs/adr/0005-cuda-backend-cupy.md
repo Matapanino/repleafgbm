@@ -112,16 +112,39 @@ tested locally or in CI.
 
   This needs **no core change**: the grower already treats the histogram opaquely
   (only subtraction + indexing + pass to `find_best_split`), so CuPy duck-types
-  through it; the one ripple is `Splitter.build_histograms`'s multi-output
-  `np.stack`, which now brings each per-output histogram to host first
-  (`_as_host`, a no-op for NumPy/Rust). Parity stays **allclose, not bitwise**:
-  the device argmax matches `np.argmax`'s lowest-index tie-break, and genuine
-  ties are measure-zero with continuous gradients, so the selected split agrees
-  with the reference (verified by `tests/test_cuda_backend.py`, both scan paths).
-  Held to host for parity: the categorical subset scan (stable sort / both-end
-  prefix), which gets only its few feature slices copied back; and the
-  multi-output scan (`find_best_split_multioutput` is a NumPy path — keeps
-  Phase-A GPU histograms but not B2 residency).
+  through it. Parity stays **allclose, not bitwise**, but with a subtlety worth
+  recording: when a node is scanned on the **host** (the adaptive default for
+  narrow histograms) the chosen split — and thus the tree — is identical to the
+  reference and only leaf values carry the histogram's low-bit float noise, so
+  predictions agree to `rtol=1e-6`. When the numeric scan runs **on-device** its
+  gains are reduced with CuPy whose low bits also differ, so on a *near-tied* node
+  the lowest-index argmax can select a different — but equally good — split,
+  leaving the trees structurally different and predictions allclose except on the
+  few rows a flipped split reroutes. Those flips are quality-neutral (the gains
+  were tied), so model quality matches even when the exact tree does not. (An
+  earlier draft of this ADR claimed genuine ties are measure-zero so the selected
+  split always agrees with the reference; that holds for the host scan but not the
+  on-device scan, whose CuPy reductions perturb the gains.) Verified by
+  `tests/test_cuda_backend.py`: `rtol=1e-6` on the host-scan path,
+  quality-equivalence (RMSE + bulk-agreement) on the device path. Held to host for
+  parity: only the categorical subset scan (stable sort / both-end prefix), which
+  gets just its few feature slices copied back.
+
+- **Multi-output (shared-routing) trees get the same B2 residency** (added
+  2026-06-24). Previously the K per-output histograms were built on the GPU,
+  copied to the host, `np.stack`ed, and scanned by the NumPy
+  `find_best_split_multioutput` — losing residency. Now optional
+  `BaseSplitBackend.build_histograms_multioutput` / `find_best_split_multioutput`
+  carry the stack + scan, with **host defaults that reproduce that exact prior
+  behavior** (so NumPy/Rust stay bitwise-unchanged), and `CudaSplitBackend`
+  overrides them to keep the `(F, bins, 3, K)` stack resident and run the
+  summed-gain scan on-device, returning only the winning split. It is node-local
+  (multi-output is one shared tree, so the K histograms already co-locate at a
+  node) — the grower is untouched. The `REPLEAFGBM_CUDA_MO_DEVICE_SCAN` env var
+  (read once at construction, private) forces the host fallback as a kill switch,
+  and the same `_scan_min_cells` crossover sends narrow nodes to the host. On a
+  T4: ~2.95x wide-200f fit (device scan off→on) and ~5.3x vs NumPy; see
+  `experiments/results/2026-06-24-cuda-parity.md`.
 
 ## Validation
 

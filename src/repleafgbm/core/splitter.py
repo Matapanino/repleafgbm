@@ -10,24 +10,10 @@ from __future__ import annotations
 import numpy as np
 
 from repleafgbm.backends import numpy_backend as _nb
-from repleafgbm.backends.base import BaseSplitBackend, SplitCandidate
-from repleafgbm.backends.numpy_backend import (
-    NumPySplitBackend,
-    find_best_split_multioutput,
-)
+from repleafgbm.backends.base import BaseSplitBackend, SplitCandidate, _as_host
+from repleafgbm.backends.numpy_backend import NumPySplitBackend
 from repleafgbm.core.histogram import bin_features, compute_bin_thresholds
 from repleafgbm.core.profiling import PhaseProfiler, timed
-
-
-def _as_host(hist):
-    """Return a NumPy view of a (possibly device-resident) histogram.
-
-    The CUDA backend returns resident CuPy device arrays; the multi-output stack
-    and scan run on the host. CuPy arrays expose ``.get()`` (a host copy);
-    NumPy/Rust arrays have no ``.get`` and pass through unchanged.
-    """
-    getter = getattr(hist, "get", None)
-    return getter() if callable(getter) else hist
 
 
 class Splitter:
@@ -106,35 +92,23 @@ class Splitter:
         multi-output regression grad/hess are ``(n_rows, n_outputs)`` and the
         per-output scalar histograms are stacked into
         ``(n_features, n_bins_max, 3, n_outputs)`` — sibling subtraction stays
-        valid (it is linear in the stacked array), and the same compiled or
-        NumPy ``build_histograms`` kernel is reused per output.
+        valid (it is linear in the stacked array). The backend owns the stack
+        (``build_histograms_multioutput``): the host default reuses the scalar
+        kernel per output, while a device backend (CUDA) keeps it resident.
         """
         with timed(self._profiler, "histogram"):
             if grad.ndim == 1:
                 return self.backend.build_histograms(
                     self.binned, rows, grad, hess, self.n_bins_max
                 )
-            # Multi-output: the per-output histograms are stacked and scanned on
-            # the host (find_best_split_multioutput is a NumPy path). A device
-            # backend (CUDA) returns resident arrays, so bring each to the host
-            # before np.stack, which rejects CuPy inputs; _as_host is a no-op for
-            # NumPy/Rust.
-            return np.stack(
-                [
-                    _as_host(
-                        self.backend.build_histograms(
-                            self.binned, rows, grad[:, k], hess[:, k], self.n_bins_max
-                        )
-                    )
-                    for k in range(grad.shape[1])
-                ],
-                axis=-1,
+            return self.backend.build_histograms_multioutput(
+                self.binned, rows, grad, hess, self.n_bins_max
             )
 
     def find_best_split(self, hist: np.ndarray) -> SplitCandidate | None:
         with timed(self._profiler, "split_scan"):
             if hist.ndim == 4:  # multi-output: shared-routing numerical scan
-                return find_best_split_multioutput(
+                return self.backend.find_best_split_multioutput(
                     hist, self.n_bins_per_feature, self.min_samples_leaf, self.l2
                 )
             return self.backend.find_best_split(
