@@ -20,4 +20,11 @@ waste a night re-testing settled null results.
 
 ## Loop-rejected (this branch)
 
-_(append REJECT verdicts here with the killing measurement)_
+- **Forest-batched routing (standalone)** — REJECT 2026-06-24 (iter 001). Routing
+  is already per-tree native (`apply_tree`); batching only removes per-call pyo3 +
+  marshalling overhead, a fraction of the 4–7% `overhead_seconds`, while adding a
+  whole forest API + concatenated-forest representation + parity surface. Evidence:
+  `artifacts/predict_bench/exp1_baseline/` (200 trees: constant overhead 4–7%,
+  embedded_linear overhead 10–16% but routing only 28–41%). NOTE: the full
+  **forest-fused predictor** (route+leaf-eval+accumulate in one kernel) is HELD,
+  not rejected — it could capture the overhead but is a large, layer-coupling change.

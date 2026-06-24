@@ -26,4 +26,8 @@ Cadence: GEPA reflection each iteration; harness iteration every 5 product iters
 
 ## Running notes
 
-- [setup] scaffolding + orchestrator created; infra commit pending.
+- [setup] scaffolding + orchestrator created; infra committed (5de1ca8 fleet, 640618a harness).
+- [iter 001] forest-batched predictor → REJECT (routing already native, leaf-eval
+  already fused; batchable overhead <3%) + HOLD forest-fused single-kernel as a
+  dedicated-PR scaffold. Evidence: `artifacts/predict_bench/exp1_baseline/`.
+  Pivoting the night to FIT levers (more headroom).
