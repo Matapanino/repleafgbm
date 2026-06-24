@@ -141,6 +141,11 @@ def build_estimator(task: str, args: argparse.Namespace, backend: str) -> Any:
     device = getattr(args, "device", None)
     if device and str(args.encoder).startswith("torch"):
         common["encoder_params"] = {"device": device}
+    # Opt-in float32 wide-embedding leaf-fit (forwarded only when requested, so
+    # the harness still works against an estimator that predates the param).
+    precision = getattr(args, "leaf_fit_precision", None)
+    if precision:
+        common["leaf_fit_precision"] = precision
     # Multi-output uses the regressor too: a 2-D y auto-routes to the
     # shared-routing MultiOutputBooster inside the regressor wrapper.
     if task in ("regression", "multioutput"):
@@ -249,6 +254,41 @@ def _version(dist: str) -> str | None:
         return None
 
 
+# Thread-pool env vars that gate BLAS/OpenMP parallelism. The wide-embedding
+# leaf-fit phase is BLAS-bound, so a float64-vs-float32 delta is only
+# attributable when the thread config is logged alongside it (see
+# docs/perf-notes/harness-log.md).
+_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
+)
+
+
+def _blas_vendor() -> str | None:
+    """Best-effort NumPy BLAS backend name (openblas/mkl/accelerate/...).
+
+    Dependency-free: tries the NumPy 1.25+ ``__config__.show(mode='dicts')`` API
+    first, then the legacy ``*_opt_info`` dicts. Returns ``None`` if unknown.
+    """
+    cfg = getattr(np, "__config__", None)
+    if cfg is None:
+        return None
+    show = getattr(cfg, "show", None)
+    if callable(show):
+        try:
+            built = show(mode="dicts").get("Build Dependencies", {})
+            name = built.get("blas", {}).get("name")
+            if name:
+                return str(name)
+        except (TypeError, AttributeError, KeyError):
+            pass
+    for attr in ("blas_opt_info", "blas_ilp64_opt_info", "openblas_info"):
+        info = getattr(cfg, attr, None)
+        if isinstance(info, dict) and info.get("libraries"):
+            return str(info["libraries"][0])
+    return None
+
+
 def collect_env(backend: str) -> dict[str, Any]:
     sha = _git("rev-parse", "HEAD")
     dirty = _git("status", "--porcelain")
@@ -257,6 +297,8 @@ def collect_env(backend: str) -> dict[str, Any]:
         "git_dirty": bool(dirty) if dirty is not None else None,
         "python": platform.python_version(),
         "platform": platform.platform(),
+        "threads": {v: os.environ.get(v) for v in _THREAD_ENV_VARS},
+        "blas": _blas_vendor(),
         "packages": {
             p: _version(p)
             for p in ("numpy", "cupy", "scikit-learn", "repleafgbm",
@@ -419,6 +461,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-bins", type=int, default=256)
     p.add_argument("--num-leaves", type=int, default=31)
     p.add_argument("--max-leaf-emb-dim", type=int, default=64)
+    p.add_argument("--leaf-fit-precision", default=None,
+                   choices=["float64", "float32_gram"],
+                   help="opt-in wide-embedding (emb>64) leaf-fit Gram precision; "
+                        "default None leaves the estimator default (float64)")
     p.add_argument(
         "--cuda-scan-min-cells", type=_parse_threshold, default=None, metavar="N",
         help="override the CUDA adaptive split-scan threshold for this run via "

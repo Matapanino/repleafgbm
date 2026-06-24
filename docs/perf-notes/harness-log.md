@@ -44,10 +44,21 @@ the discipline below; product-code changes never appear here.
 - Old vs new harness cross-check: n/a (additive; gpu_profile schema reused verbatim).
 - Commit: first harness commit on `perf/cuda-overnight-loop-20260624` (see `git log`).
 
-## Future harness-iter candidates (not yet actioned)
-
-- **Record BLAS thread config per row.** iter 002 found wide-emb leaf_fit is
-  BLAS-bound; the share is thread-sensitive in principle. Empirically multi ≈
-  single here (small per-leaf GEMMs), but the harness should log
-  `OMP_NUM_THREADS` / BLAS vendor in `env` so BLAS-bound deltas stay attributable.
-  Additive to `gpu_profile.collect_env`; bump `harness_version`; re-baseline.
+### cuda_overnight_loop/0.2.0  2026-06-25
+- Pre-change harness commit: 5823446
+- Change: (1) `gpu_profile.collect_env` now logs `env.threads` (OMP/OPENBLAS/MKL/
+  VECLIB/NUMEXPR num-threads) + `env.blas` (numpy BLAS vendor); (2)
+  `gpu_profile.build_estimator` + `--leaf-fit-precision` forward the opt-in
+  precision when set; (3) `cuda_overnight_loop` forwards shared estimator knobs
+  (`--n-features/--max-leaf-emb-dim/--leaf-model/--n-estimators/--n-train/--n-test`)
+  in both modes + per-variant `--precision-a/--precision-b` for the float32 A/B.
+- Why (measurement objective): the float32 wide-emb leaf-fit win lives in a
+  BLAS-bound phase; logging thread config makes the A/B attributable, and the knob
+  passthrough lets that A/B run through the orchestrator's median+spread+signal
+  instead of a hand-rolled shell loop. Pure measurement enablement; no product code.
+- Baseline re-measured: `bash scripts/perf_loop.sh --quick` → `latest.jsonl` rows
+  now carry `env.threads`/`env.blas`, `harness_version=cuda_overnight_loop/0.2.0`.
+- Old vs new harness cross-check: rust `regression_20f_bins256` fit_p50
+  0.1.0=0.0436s vs 0.2.0=0.0439s (+0.7%, within noise) — additive change does not
+  shift measurements.
+- Commit: second harness commit on `perf/cuda-overnight-loop-20260624` (see `git log`).

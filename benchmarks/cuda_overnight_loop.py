@@ -57,7 +57,7 @@ from benchmarks import gpu_profile  # noqa: E402
 
 # Bump when the aggregation/schema of THIS orchestrator changes (provenance for
 # every row). Product-code changes never bump it; harness-optimizer owns it.
-HARNESS_VERSION = "cuda_overnight_loop/0.1.0"
+HARNESS_VERSION = "cuda_overnight_loop/0.2.0"
 DEFAULT_RESULTS = ROOT / "benchmarks" / "results" / "latest.jsonl"
 
 
@@ -259,7 +259,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--variant-b", default="rust")
     p.add_argument("--env-a", nargs="*", metavar="K=V")
     p.add_argument("--env-b", nargs="*", metavar="K=V")
+    # per-variant constructor knob (e.g. float32 leaf-fit is a param, not an env)
+    p.add_argument("--precision-a", default=None,
+                   choices=["float64", "float32_gram"])
+    p.add_argument("--precision-b", default=None,
+                   choices=["float64", "float32_gram"])
+    # shared estimator knobs forwarded to every case in BOTH modes (None = keep
+    # the size preset / gpu_profile default). Lets the wide-embedding float32 A/B
+    # run through the orchestrator instead of a hand-rolled shell loop.
+    p.add_argument("--n-features", type=int, default=None)
+    p.add_argument("--max-leaf-emb-dim", type=int, default=None)
+    p.add_argument("--leaf-model", default=None)
+    p.add_argument("--n-estimators", type=int, default=None)
+    p.add_argument("--n-train", type=int, default=None)
+    p.add_argument("--n-test", type=int, default=None)
     return p
+
+
+# Shared gpu_profile attribute overrides built from the CLI (only non-None ones).
+_SHARED_KNOBS = ("n_features", "max_leaf_emb_dim", "leaf_model",
+                 "n_estimators", "n_train", "n_test")
+
+
+def _shared_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    return {k: getattr(args, k) for k in _SHARED_KNOBS
+            if getattr(args, k) is not None}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -271,13 +295,15 @@ def main(argv: list[str] | None = None) -> int:
         args.reps = min(args.reps, 3)
         args.backends = [b for b in args.backends if b != "cuda"] or ["numpy"]
 
+    ov = _shared_overrides(args)
+
     if args.mode == "matrix":
         backends = _available_backends(args.backends)
         sizes = [None] if args.quick else args.sizes
         for task in args.tasks:
             for size in sizes:
                 for backend in backends:
-                    case = _case_args(task, size, backend, quick=args.quick)
+                    case = _case_args(task, size, backend, quick=args.quick, **ov)
                     t0 = time.perf_counter()
                     row = measure_case(case, args.reps, warmup=warmup)
                     row["run_id"] = run_id
@@ -295,12 +321,15 @@ def main(argv: list[str] | None = None) -> int:
     if len(backends) < 2 and "cuda" in (args.variant_a, args.variant_b):
         print("[abort] A/B needs both variants; cuda unavailable locally")
         return 1
-    args_a = _case_args(args.task, args.size, args.variant_a, quick=args.quick)
-    args_b = _case_args(args.task, args.size, args.variant_b, quick=args.quick)
+    ov_a = {**ov, **({"leaf_fit_precision": args.precision_a} if args.precision_a else {})}
+    ov_b = {**ov, **({"leaf_fit_precision": args.precision_b} if args.precision_b else {})}
+    args_a = _case_args(args.task, args.size, args.variant_a, quick=args.quick, **ov_a)
+    args_b = _case_args(args.task, args.size, args.variant_b, quick=args.quick, **ov_b)
     verdict = run_ab(args_a, args_b, _parse_env_kv(args.env_a),
                      _parse_env_kv(args.env_b), args.reps)
     verdict.update(run_id=run_id, task=args.task, size=args.size,
                    variant_a=args.variant_a, variant_b=args.variant_b,
+                   precision_a=args.precision_a, precision_b=args.precision_b,
                    env_a=_parse_env_kv(args.env_a), env_b=_parse_env_kv(args.env_b))
     _write(args.out, verdict)
     print(f"A/B {args.variant_a} vs {args.variant_b} ({args.task}/{args.size}): "
