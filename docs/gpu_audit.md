@@ -57,9 +57,8 @@
 
 ### Leaf Assignment And Partitioning
 
-- `TreeGrower.grow` stores row arrays for every active leaf and partitions rows on CPU with boolean masks.
-- `Tree.apply` routes all rows with a while loop over tree depth and a Python loop over categorical nodes at each level.
-- These paths are memory-bandwidth and branch-heavy. A Rust native partition/predictor is likely a better first compiled target than a CUDA tree traversal.
+- `TreeGrower.grow` stores row arrays for every active leaf. Row partitioning now has a native Rust kernel behind `split_backend="rust"` (`partition_rows`, native 0.2.0): a fused single pass replaces the NumPy multi-pass boolean masks (~4.5-5x per node, -9 to -12% end-to-end multiclass fit at medium/large; `benchmarks/partition_microbench.py`). The NumPy backend keeps the boolean-mask reference at exact (index-identical) parity.
+- `Tree.apply` still routes all rows with a while loop over tree depth and a Python loop over categorical nodes at each level. These paths are memory-bandwidth and branch-heavy; a native predictor is the remaining compiled target here, ahead of a CUDA tree traversal.
 
 ### Representation / Embedding Construction
 

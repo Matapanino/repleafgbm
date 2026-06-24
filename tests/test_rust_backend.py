@@ -13,6 +13,7 @@ from repleafgbm.backends import (
     RustSplitBackend,
     make_split_backend,
 )
+from repleafgbm.backends.base import SplitCandidate
 
 pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
 
@@ -171,3 +172,119 @@ def test_make_split_backend_auto_prefers_rust():
     # something else; it still raises ValueError, not the cuda ImportError.
     with pytest.raises(ValueError, match="split_backend"):
         make_split_backend("metal")
+
+
+# --------------------------------------------------------------------------- #
+# partition_rows parity: the Rust kernel must reproduce the NumPy reference's
+# left/right rows EXACTLY (integer index routing, so assert_array_equal — not
+# allclose), including the input row order.
+# --------------------------------------------------------------------------- #
+
+
+def _np_partition_ref(binned, rows, split, missing_bin):
+    """Independent NumPy oracle (the pre-refactor partition logic)."""
+    b = binned[rows, split.feature]
+    if split.left_categories is not None:
+        go_left = np.isin(b, split.left_categories) | (b == missing_bin)
+    else:
+        go_left = (b <= split.bin) | (b == missing_bin)
+    return rows[go_left], rows[~go_left]
+
+
+def _assert_partition_parity(binned, rows, split, missing_bin):
+    exp_l, exp_r = _np_partition_ref(binned, rows, split, missing_bin)
+    np_l, np_r = NumPySplitBackend().partition_rows(binned, rows, split, missing_bin)
+    rs_l, rs_r = RustSplitBackend().partition_rows(binned, rows, split, missing_bin)
+    for got_l, got_r in ((np_l, np_r), (rs_l, rs_r)):
+        np.testing.assert_array_equal(got_l, exp_l)  # exact index + order
+        np.testing.assert_array_equal(got_r, exp_r)
+        assert got_l.shape[0] + got_r.shape[0] == rows.shape[0]  # disjoint cover
+
+
+def test_partition_parity_numeric(node_data):
+    binned, rows, *_ = node_data
+    missing_bin = 32  # node_data uses n_bins_per_feature == 32 everywhere
+    for feature in (0, 3, 7):
+        for bin_ in (0, 5, 16, 31):
+            split = SplitCandidate(feature, bin_, 0.0, 0, 0)
+            _assert_partition_parity(binned, rows, split, missing_bin)
+
+
+def test_partition_parity_categorical(node_data):
+    binned, rows, *_ = node_data
+    missing_bin = 32
+    for cats in (
+        np.array([1, 4, 7, 9, 15], dtype=np.int64),
+        np.array([0, 31], dtype=np.int64),          # boundary codes
+        np.array([3, 30, 31], dtype=np.int64),       # 30/31 may be absent from node
+    ):
+        split = SplitCandidate(2, -1, 0.0, 0, 0, left_categories=cats)
+        _assert_partition_parity(binned, rows, split, missing_bin)
+
+
+def test_partition_native_edges():
+    """Native kernel over degenerate partitions (empty/all-left/all-right)."""
+    missing_bin = 5
+    binned = np.array([[0], [1], [2], [3], [4], [5]] * 6, dtype=np.uint16)  # bin 5 == missing
+    rows = np.arange(binned.shape[0], dtype=np.int64)
+
+    # all-left: every non-missing bin (0..4) <= 4, missing(5) also left
+    _assert_partition_parity(binned, rows, SplitCandidate(0, 4, 0.0, 0, 0), missing_bin)
+    # singleton categorical subset: only code 2 (and missing) go left
+    _assert_partition_parity(
+        binned, rows, SplitCandidate(0, -1, 0.0, 0, 0, left_categories=np.array([2], np.int64)),
+        missing_bin,
+    )
+    # all-right: no missing present, bins 1..4 all > 0
+    nm = np.array([[1], [2], [3], [4]] * 9, dtype=np.uint16)
+    nm_rows = np.arange(nm.shape[0], dtype=np.int64)
+    _assert_partition_parity(nm, nm_rows, SplitCandidate(0, 0, 0.0, 0, 0), missing_bin)
+    # empty rows -> two empty arrays
+    empty = np.array([], dtype=np.int64)
+    gl, gr = RustSplitBackend().partition_rows(
+        binned, empty, SplitCandidate(0, 4, 0.0, 0, 0), missing_bin
+    )
+    assert gl.shape[0] == 0 and gr.shape[0] == 0
+
+
+def test_partition_node_sizes(node_data):
+    """Native kernel stays exact across tiny and large node row counts (the
+    kernel handles every size — there is no min-rows fallback gate)."""
+    binned, rows, *_ = node_data
+    missing_bin = 32
+    split = SplitCandidate(1, 12, 0.0, 0, 0)
+    for size in (1, 8, 64, 500, rows.shape[0]):
+        _assert_partition_parity(binned, rows[:size], split, missing_bin)
+
+
+def test_partition_rows_dtype_robustness(node_data):
+    """Non-int64 / non-contiguous row arrays are normalized before the FFI call."""
+    binned, rows, *_ = node_data
+    missing_bin = 32
+    split = SplitCandidate(4, 20, 0.0, 0, 0)
+    rs = RustSplitBackend()
+    for variant in (rows.astype(np.int32), rows[::2]):  # both > gate -> native path
+        exp_l, exp_r = _np_partition_ref(binned, variant, split, missing_bin)
+        got_l, got_r = rs.partition_rows(binned, variant, split, missing_bin)
+        np.testing.assert_array_equal(got_l, exp_l)
+        np.testing.assert_array_equal(got_r, exp_r)
+
+
+def test_partition_older_native_fallback(node_data, monkeypatch):
+    """A new RustSplitBackend against an older repleafgbm_native (no
+    partition_rows symbol) gracefully falls back to the NumPy default."""
+    import types
+
+    binned, rows, *_ = node_data
+    missing_bin = 32
+    split = SplitCandidate(0, 10, 0.0, 0, 0)
+    rs = RustSplitBackend()
+    stub = types.SimpleNamespace(
+        build_histograms=rs._native.build_histograms,
+        find_best_split=rs._native.find_best_split,
+    )  # no partition_rows attribute
+    monkeypatch.setattr(rs, "_native", stub)
+    exp_l, exp_r = _np_partition_ref(binned, rows, split, missing_bin)
+    got_l, got_r = rs.partition_rows(binned, rows, split, missing_bin)
+    np.testing.assert_array_equal(got_l, exp_l)
+    np.testing.assert_array_equal(got_r, exp_r)

@@ -94,3 +94,31 @@ class BaseSplitBackend(ABC):
         categories) instead of ordered thresholds, governed by the three
         LightGBM-style categorical guards.
         """
+
+    def partition_rows(
+        self,
+        binned: np.ndarray,
+        rows: np.ndarray,
+        split: SplitCandidate,
+        missing_bin: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Route ``rows`` into ``(left, right)`` children by ``split``.
+
+        Missing values (bin index ``missing_bin``) always go left (v0
+        convention). Numeric splits send bins ``<= split.bin`` left; categorical
+        subset splits send bins in ``split.left_categories`` left. Both children
+        preserve the input row order — required so the downstream per-row
+        histogram accumulation stays bitwise-parity-able across backends.
+
+        This is the NumPy reference; native backends may override it with a
+        faster kernel that produces the **same** left/right rows in the **same**
+        order. Concrete (not abstract) so the NumPy and CUDA backends inherit it
+        unchanged.
+        """
+        b = binned[rows, split.feature]
+        if split.left_categories is not None:
+            # Categorical bins are the ordinal codes themselves.
+            go_left = np.isin(b, split.left_categories) | (b == missing_bin)
+        else:
+            go_left = (b <= split.bin) | (b == missing_bin)
+        return rows[go_left], rows[~go_left]
