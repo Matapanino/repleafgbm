@@ -803,6 +803,148 @@ fn predict_linear<'py>(
     out.into_pyarray(py)
 }
 
+/// Minimum row count before forest/tree routing goes parallel. Each row's
+/// descent is independent and writes only its own output slot, so the rayon and
+/// serial branches are bitwise-identical (integer leaf ids); the threshold only
+/// trades dispatch latency. Below it the serial branch avoids rayon overhead.
+const APPLY_PARALLEL_MIN: usize = 1 << 14;
+
+/// Route one row from the root to its leaf and return the leaf id.
+///
+/// Mirrors `core/tree.py::Tree.apply` semantics exactly, including the override
+/// precedence: a missing value (NaN) follows `missing_left` regardless of the
+/// node kind; otherwise a categorical node (one with a non-empty
+/// `cat_offsets` slice) routes left iff the raw code is in its left-category
+/// set (`np.isin`, exact code equality), and a numeric node routes left iff
+/// `x <= threshold`. The tree's flat arrays are the same ones `Tree` stores, so
+/// `feature`/`left`/`right`/`leaf_id` are `i32` and `missing_left` is `bool`.
+/// Leaves (`leaf_id >= 0`) terminate the descent and are never tested, so a
+/// root-only tree returns `leaf_id[0]` immediately.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn route_row(
+    i: usize,
+    n_features: usize,
+    x_s: &[f64],
+    feature: &[i32],
+    threshold: &[f64],
+    left: &[i32],
+    right: &[i32],
+    leaf_id: &[i32],
+    missing_left: &[bool],
+    cat_offsets: &[i64],
+    cat_values: &[f64],
+) -> i64 {
+    let mut node = 0usize;
+    while leaf_id[node] < 0 {
+        let f = feature[node] as usize;
+        let x = x_s[i * n_features + f];
+        let go_left = if x.is_nan() {
+            missing_left[node]
+        } else {
+            let lo = cat_offsets[node] as usize;
+            let hi = cat_offsets[node + 1] as usize;
+            if hi > lo {
+                // Categorical subset membership: exact code equality reproduces
+                // NumPy's `np.isin(x, left_categories)` (codes are whole numbers
+                // stored as f64; the subsets are small, so a linear scan wins).
+                // `x` is never NaN here (the is_nan branch above handles it).
+                cat_values[lo..hi].contains(&x)
+            } else {
+                x <= threshold[node]
+            }
+        };
+        node = if go_left {
+            left[node] as usize
+        } else {
+            right[node] as usize
+        };
+    }
+    leaf_id[node] as i64
+}
+
+/// Native single-tree routing: leaf id per row over the raw feature matrix.
+///
+/// Replaces the NumPy level-synchronous router in `Tree.apply` (a Python loop
+/// over tree depth, plus a per-level `np.unique` loop over categorical nodes)
+/// with one rayon pass of independent per-row root-to-leaf descents over the
+/// flat tree arrays. The post-PR #30 prediction-traversal benchmark
+/// (`experiments/results/2026-06-24-prediction-traversal-bench.md`) showed this
+/// routing is 60-100% of predict and the part that scales worst, so it is the
+/// compiled target; leaf-output computation stays in NumPy/`predict_linear`.
+///
+/// Categorical nodes are described as a CSR over node order:
+/// `cat_offsets` is `(n_nodes + 1)` and `cat_values[cat_offsets[i]..cat_offsets[i+1]]`
+/// is node `i`'s left-category codes (empty for numeric nodes and leaves). The
+/// result is **index-exact** with the NumPy path (integer leaf ids), so the two
+/// are asserted equal in `tests/test_tree_routing_native.py`.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn apply_tree<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<'py, f64>,
+    feature: PyReadonlyArray1<'py, i32>,
+    threshold: PyReadonlyArray1<'py, f64>,
+    left: PyReadonlyArray1<'py, i32>,
+    right: PyReadonlyArray1<'py, i32>,
+    leaf_id: PyReadonlyArray1<'py, i32>,
+    missing_left: PyReadonlyArray1<'py, bool>,
+    cat_offsets: PyReadonlyArray1<'py, i64>,
+    cat_values: PyReadonlyArray1<'py, f64>,
+) -> Bound<'py, PyArray1<i64>> {
+    let x = x.as_array();
+    let x_s = x.as_slice().expect("X must be C-contiguous");
+    let n = x.shape()[0];
+    let n_features = x.shape()[1];
+    let feature = feature.as_array();
+    let feature = feature.as_slice().expect("feature must be C-contiguous");
+    let threshold = threshold.as_array();
+    let threshold = threshold.as_slice().expect("threshold must be C-contiguous");
+    let left = left.as_array();
+    let left = left.as_slice().expect("left must be C-contiguous");
+    let right = right.as_array();
+    let right = right.as_slice().expect("right must be C-contiguous");
+    let leaf_id = leaf_id.as_array();
+    let leaf_id = leaf_id.as_slice().expect("leaf_id must be C-contiguous");
+    let missing_left = missing_left.as_array();
+    let missing_left = missing_left
+        .as_slice()
+        .expect("missing_left must be C-contiguous");
+    let cat_offsets = cat_offsets.as_array();
+    let cat_offsets = cat_offsets
+        .as_slice()
+        .expect("cat_offsets must be C-contiguous");
+    let cat_values = cat_values.as_array();
+    let cat_values = cat_values
+        .as_slice()
+        .expect("cat_values must be C-contiguous");
+
+    let mut out = ndarray::Array1::<i64>::zeros(n);
+    let out_s = out.as_slice_mut().unwrap();
+    if n < APPLY_PARALLEL_MIN {
+        for (i, o) in out_s.iter_mut().enumerate() {
+            *o = route_row(
+                i, n_features, x_s, feature, threshold, left, right, leaf_id,
+                missing_left, cat_offsets, cat_values,
+            );
+        }
+    } else {
+        out_s
+            .par_chunks_mut(PREDICT_CHUNK)
+            .enumerate()
+            .for_each(|(ci, oc)| {
+                let base = ci * PREDICT_CHUNK;
+                for (off, o) in oc.iter_mut().enumerate() {
+                    *o = route_row(
+                        base + off, n_features, x_s, feature, threshold, left,
+                        right, leaf_id, missing_left, cat_offsets, cat_values,
+                    );
+                }
+            });
+    }
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn repleafgbm_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_histograms, m)?)?;
@@ -811,5 +953,6 @@ fn repleafgbm_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(leaf_linear_stats, m)?)?;
     m.add_function(wrap_pyfunction!(leaf_linear_stats_mc, m)?)?;
     m.add_function(wrap_pyfunction!(predict_linear, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_tree, m)?)?;
     Ok(())
 }

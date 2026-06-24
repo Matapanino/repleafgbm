@@ -114,7 +114,7 @@
 ### Rust Native Backend Boundary
 
 - `RustSplitBackend` requires contiguous `uint16`, `int64`, and `float64` host arrays; wrappers use `np.ascontiguousarray`, which may copy.
-- Rust kernels currently implement histogram, split scan, embedded-leaf stats, scalar linear prediction, and row partitioning. They do not implement native binning, `Tree.apply` / forest traversal, vector leaves, or multi-output backend scans.
+- Rust kernels currently implement histogram, split scan, embedded-leaf stats, scalar linear prediction, row partitioning, and single-tree routing (`apply_tree`, 2026-06-24 — `Tree.apply` leaf-id assignment). They do not yet implement native binning, forest-level batched traversal, fused leaf-output prediction, vector leaves, or multi-output backend scans.
 - Rust is the best next step for CPU-bound branchy code because it preserves API compatibility and avoids CUDA-only behavior.
 
 ## Data Movement Analysis
@@ -217,6 +217,7 @@ Avoidable transfer: `grad[rows]` and `hess[rows]` should be gathered on device f
    - Target: `Tree.apply`, `core/prediction.py`, `native/src/lib.rs`.
    - Problem: per-tree Python traversal dominates predict and eval on large ensembles.
    - Why GPU is underused: prediction never enters CUDA/Rust today.
+   - Status (2026-06-24): single-tree routing **shipped** (`apply_tree`) — `Tree.apply` now routes per-row in Rust with the NumPy path as fallback; see `experiments/results/2026-06-24-native-routing-apply-tree.md`. Remaining: forest-level batched traversal (one call over all trees) and folding leaf-output computation into the native predictor.
    - Direction: compiled batched traversal over flat tree arrays; later include leaf output computation.
    - Effect: large predict speedup; also speeds early stopping eval.
    - Difficulty: medium.
