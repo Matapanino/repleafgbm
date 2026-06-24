@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+try:  # Optional compiled router (native/); Tree.apply uses it when present.
+    import repleafgbm_native as _native
+except ImportError:  # pragma: no cover - depends on optional extension
+    _native = None
+
 from repleafgbm.backends.base import SplitCandidate
 from repleafgbm.core.splitter import Splitter
 
@@ -52,7 +57,69 @@ class Tree:
         return int((self.leaf_id >= 0).sum())
 
     def apply(self, X_raw: np.ndarray) -> np.ndarray:
-        """Route rows to leaves; returns leaf ids of shape (n_rows,)."""
+        """Route rows to leaves; returns leaf ids of shape (n_rows,).
+
+        Uses the compiled ``repleafgbm_native.apply_tree`` router when the
+        optional extension is available — a single pass of independent per-row
+        root-to-leaf descents, which the post-PR #30 prediction-traversal
+        benchmark showed is 60-100% of predict and the part that scales worst.
+        Falls back to the NumPy level-synchronous reference :meth:`_apply_numpy`
+        (also used when an older extension predates ``apply_tree``). Both return
+        index-identical leaf ids — asserted in tests/test_tree_routing_native.py.
+        """
+        if _native is not None and hasattr(_native, "apply_tree"):
+            cat_offsets, cat_values = self._cat_csr()
+            return _native.apply_tree(
+                np.ascontiguousarray(X_raw, dtype=np.float64),
+                np.ascontiguousarray(self.feature, dtype=np.int32),
+                np.ascontiguousarray(self.threshold, dtype=np.float64),
+                np.ascontiguousarray(self.left, dtype=np.int32),
+                np.ascontiguousarray(self.right, dtype=np.int32),
+                np.ascontiguousarray(self.leaf_id, dtype=np.int32),
+                np.ascontiguousarray(self.missing_left, dtype=bool),
+                cat_offsets,
+                cat_values,
+            )
+        return self._apply_numpy(X_raw)
+
+    def _cat_csr(self) -> tuple[np.ndarray, np.ndarray]:
+        """Per-node left-category codes as a CSR for the native router.
+
+        Returns ``(cat_offsets, cat_values)``: ``cat_offsets`` is
+        ``(n_nodes + 1,)`` int64 and ``cat_values[cat_offsets[i]:cat_offsets[i+1]]``
+        are node ``i``'s left-category codes (float64) — empty for numeric nodes
+        and leaves, so the native router treats a non-empty slice as the
+        categorical-membership branch. A tree with no categorical split yields
+        all-zero offsets and an empty value array (the common, cheap path).
+        """
+        n_nodes = self.feature.shape[0]
+        if self.left_categories is None:
+            return (
+                np.zeros(n_nodes + 1, dtype=np.int64),
+                np.empty(0, dtype=np.float64),
+            )
+        sizes = np.fromiter(
+            (0 if c is None else c.shape[0] for c in self.left_categories),
+            dtype=np.int64,
+            count=n_nodes,
+        )
+        cat_offsets = np.empty(n_nodes + 1, dtype=np.int64)
+        cat_offsets[0] = 0
+        np.cumsum(sizes, out=cat_offsets[1:])
+        parts = [c for c in self.left_categories if c is not None]
+        cat_values = (np.concatenate(parts) if parts else np.empty(0)).astype(
+            np.float64
+        )
+        return cat_offsets, np.ascontiguousarray(cat_values)
+
+    def _apply_numpy(self, X_raw: np.ndarray) -> np.ndarray:
+        """NumPy level-synchronous router (fallback + parity reference).
+
+        At each depth it advances every still-active row by one node, handling
+        numeric thresholds, categorical subset membership, and the missing-value
+        direction (NaN follows ``missing_left``). This is the bitwise reference
+        the native :func:`apply_tree` is parity-tested against.
+        """
         n = X_raw.shape[0]
         node = np.zeros(n, dtype=np.int64)
         active = self.leaf_id[node] < 0
