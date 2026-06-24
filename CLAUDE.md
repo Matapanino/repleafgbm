@@ -147,6 +147,15 @@ are tiered: Opus for judgment/design, Sonnet for execution.
 | `native-optimizer` | opus | Rust/`native/` + `backends/` performance; keeps NumPy⇄Rust parity green (both paths change together). Invoke for kernel/perf work or parity failures. |
 | `qa-verifier` | sonnet | Green-gate: runs `scripts/check.sh`/ruff/pytest with `OMP_NUM_THREADS=1`, fixes only mechanical (lint/import/format) failures, escalates the rest. Invoke as the pre-commit gate. |
 | `agent-architect` | opus | Meta-agent that owns the fleet: creates/edits agents, audits overlap/utilization, proposes merges/splits, keeps this section in sync. Edit agent files through it, not by hand. |
+| `cuda-researcher` | sonnet | GPU-perf scout (XGBoost/LightGBM/CatBoost GPU, cuML/cuDF/CuPy/Numba/RAPIDS, torch/TF kernels) → transferable speedup hypotheses in `docs/perf-notes/research-*.md`. Invoke before a GPU push. GPU-scoped twin of `literature-scout`. |
+| `perf-profiler` | sonnet | Runs `benchmarks/gpu_profile.py`/`predict_profile.py`/`cuda_overnight_loop.py` (`REPLEAFGBM_PROFILE=1`, `get_transfer_stats`), keeps logs in-context, returns compact per-phase seconds + median/spread (>=5 reps) + bottleneck verdict. No edits. |
+| `harness-optimizer` | sonnet | Improves the measurement harness only (`benchmarks/*`, `scripts/*`, `benchmarks/results/*`, `docs/perf-notes/harness-log.md`) — reproducibility, schema, baselines; never edits `src/`/`native/`; separate commit; never deletes cases. |
+| `experiment-strategist` | opus | Reads the perf-note ledgers + `docs/gpu_roadmap.md`, runs a GEPA-style reflection, returns EXACTLY 3 prioritized next-experiment hypotheses (rationale + expected signal + implementer). No implementation/runs. |
+
+Hybrid routing for the perf loop: CUDA/Rust implementation → **native-optimizer**
+(CUDA-scoped); regression/sign-off → **qa-verifier** + **core-reviewer**; run verdicts →
+**results-analyst**; the `docs/perf-notes/` experiment/reflection ledger is owned by the
+loop driver.
 
 ### Invocation examples
 - "Use `experiment-runner` to run the OpenML suite (`--quick`), then `results-analyst` to give the verdict."
@@ -158,6 +167,7 @@ are tiered: Opus for judgment/design, Sonnet for execution.
 ### Recommended workflows
 - **Research loop:** `literature-scout` → `research-proposer` → (implement) → `experiment-runner` → `results-analyst` → `core-reviewer` → `qa-verifier`.
 - **Perf loop:** `native-optimizer` → `qa-verifier` (parity + suite) → `core-reviewer`.
+- **Perf/overnight loop:** `cuda-researcher` → `experiment-strategist` → `native-optimizer`/`harness-optimizer` → `perf-profiler` → `qa-verifier` → `core-reviewer` (+ `results-analyst` on GPU-pass verdicts).
 - **Ship loop:** `qa-verifier` (green) + `core-reviewer` (sign-off) before any commit.
 
 ### Multi-agent / parallel patterns
