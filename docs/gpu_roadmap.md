@@ -170,23 +170,26 @@ Acceptance criteria:
 - Exact bin parity with NumPy for NaN, constant columns, repeated values, and
   max-bin edge cases.
 
-### 2. Row Partition Kernel
+### 2. Row Partition Kernel (landed in native 0.2.0 / PR #30)
 
 Target:
 
 - `src/repleafgbm/core/splitter.py::partition`
 - `native/src/lib.rs`
 
-Plan:
+Status:
 
-- Add a native partition function for numeric and categorical subset splits.
-- Return `rows_l` and `rows_r` as NumPy arrays with the same order as current
-  NumPy masks.
+- Landed as `partition_rows` behind `split_backend="rust"`.
+- Handles numeric and categorical subset splits in a fused single pass.
+- Returns `rows_l` and `rows_r` as NumPy arrays with the same order as the NumPy
+  reference.
 
 Acceptance criteria:
 
 - Tree structure and predictions remain identical for NumPy vs Rust-native
   partition under the same backend.
+- Verified in `tests/test_rust_backend.py` and
+  `experiments/results/2026-06-24-partition-native-kernel.md`.
 
 ### 3. Batched Predictor
 
@@ -322,11 +325,11 @@ Tasks:
 2. ~~CUDA grad/hess device cache~~ — investigated and shelved as a null result
    (2026-06-19); the profiler shows the split scan, not transfers, is the GPU
    bottleneck. See the Phase 1 measurement update and the verdict report.
-3. CUDA split-scan optimization (design + measure first; the real GPU lever —
-   48–85% of fit, peaking on multiclass).
-4. Constant leaf vectorization.
-5. Rust partition kernel.
-6. Rust batched predictor.
+3. CUDA split-scan optimization remains design + measure first; defer broad GPU
+   work until CPU/native evidence justifies it.
+4. Rust partition kernel. — done (native 0.2.0 / PR #30).
+5. Rust batched predictor / focused prediction benchmark.
+6. Constant leaf vectorization.
 7. Multi-output backend scan.
 8. Multiclass batched histogram.
 9. float32/batched embedding work.
@@ -338,4 +341,3 @@ Tasks:
 - No replacement of raw-feature routing with embedding-based splits.
 - No joint encoder updates during boosting.
 - No sparse GPU path until a separate sparse dataset design exists.
-

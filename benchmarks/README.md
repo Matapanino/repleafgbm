@@ -27,6 +27,8 @@ OMP_NUM_THREADS=1 python3 benchmarks/<script>.py [--quick]
 | `multioutput_suite.py` | multi-output regression | single-routing vector leaf vs per-output GBMs; robust multi-output (huber/quantile) under contamination | `experiments/results/multioutput_benchmark.md` |
 | `trainable_embeddings.py` | reg + binary + multiclass | fixed vs learned encoder families, mean±std over seeds | `artifacts/trainable_embeddings/<date>/` + `experiments/results/<date>-trainable-embeddings.md` |
 | `gpu_profile.py` | reg + binary + multiclass | one fit/predict case per invocation: timings, quality, peak memory, CUDA transfer counters | `artifacts/gpu_bench/cases.jsonl` + `summary.md` |
+| `partition_microbench.py` | split kernel microbench | isolated NumPy vs Rust `partition_rows` timing for numeric and categorical splits across node sizes | stdout |
+| `predict_profile.py` | reg + binary + multiclass | decomposes predict into routing (`Tree.apply`) vs leaf-eval (`LeafValues.predict`) across rows/trees/classes/leaf_model (+ a categorical/missing worst case) to size a future Rust `apply_forest` | `artifacts/predict_bench/cases.jsonl` + `summary.md` |
 
 The GPU loop (`scripts/colab_gpu_test.sh --gpu T4`) drives `gpu_profile.py` on a
 Colab GPU and writes `experiments/results/<date>-cuda-parity.md` and
@@ -48,6 +50,14 @@ Which suite exercises each capability added through v1.6.0:
 | GPU encoder pretraining `device="cuda"` (1.5.0) | — | — | — | — | — | `--device cuda` |
 | CUDA split backend + transfer counters (1.6.0) | — | — | — | — | — | `--backend cuda` |
 | categorical handling (native subset splits) | — | ✅ | ✅ | — | — | — |
+
+`partition_microbench.py` is the focused coverage for the native 0.2.0 row
+partition kernel. `gpu_profile.py --backend rust` provides the integrated phase
+timing that shows whether `partition` remains material in end-to-end fits.
+`predict_profile.py` is the focused coverage for the prediction path: it splits
+predict into routing vs leaf-eval so the routing share bounds what a compiled
+predictor could remove (the split is backend-independent — only fit differs —
+so `--backend` just speeds the harness's own fits).
 
 ## Reproducing the committed reports
 
