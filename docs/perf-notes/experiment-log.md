@@ -144,6 +144,21 @@ accuracy regress / API change → REJECT; a scaffold for a future win may HOLD.
 - Decision: **REJECT** — slower in practice (batched LU beats a per-matrix Cholesky
   loop) and the solve isn't the bottleneck. Post-E03 it only affects emb>128 anyway.
 
+### GPU validation pass (Colab T4, 2026-06-25)
+Ran `scripts/colab_gpu_test.sh --gpu T4` on the current branch (validates the
+shipped gate/float32 changes don't regress the CUDA path; reports under
+`experiments/results/2026-06-25-{cuda-parity,gpu-backend-suite}.md`).
+- **CUDA parity: PASS** — `tests/test_cuda_backend.py` 31 passed (gate 64→128 +
+  float32 param are host-side leaf-fit → CUDA path unaffected, confirmed).
+- Histogram micro: NumPy 139ms → CUDA 2.77ms = **50.2×**.
+- e2e fit (50 trees): narrow 100k×30 **1.56×**, wide 50k×200 **2.08×**.
+- Backend suite (30 trees): regression 200f 1.66×, multiclass-c5 200f 2.06×,
+  **multioutput-k5 200f 5.40×**; narrow ~1× (host-scan crossover, by design).
+- MO device-scan A/B: 200f **2.86×** on vs off (matches prior ~2.95×).
+- NOTE: node-batched split scan (iter 003 / E21) is **design-only** — no kernel
+  exists, so it was NOT in this run. It needs the grower frontier-batch refactor
+  + kernel (core-reviewer-gated) as a focused GPU-in-the-loop session, not a batch run.
+
 ### Campaign wrap (2026-06-25) — ~30-hypothesis backlog
 Triaged ~30 hypotheses (E01–E30 + cuda-researcher H1–H13, `experiment-backlog.md`).
 **Shipped 2:** E01 float32 (1.18× wide), **E03 gate 64→128 (1.65× @emb=128 — headline)**.
