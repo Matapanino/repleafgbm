@@ -22,7 +22,7 @@
 
 use ndarray::{Array3, ArrayView1, ArrayView3};
 use numpy::{
-    IntoPyArray, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+    IntoPyArray, PyArray1, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
 };
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -101,6 +101,81 @@ fn build_histograms<'py>(
             .for_each(|(hf, bin_row)| accumulate_feature(hf, bin_row, &rows, &grad, &hess));
     }
     hist.into_pyarray(py)
+}
+
+/// Route a node's rows into `(left, right)` children by one split rule.
+///
+/// `binned` is the cached **feature-major** `(n_features, n_rows)` matrix; only
+/// feature `feature`'s contiguous bin row is read (the sorted row indices then
+/// gather it near-sequentially). Missing values (`bin == missing_bin`) always
+/// go left (v0 convention). Numeric splits send bins `<= bin` left; categorical
+/// subset splits send bins listed in `left_categories` left, via a boolean
+/// lookup table that reproduces NumPy's `np.isin` exactly. `bin` is `i64` (never
+/// narrowed) because symmetric/multi-output trees route categoricals through
+/// this numeric branch as an ordinal-code threshold (`code <= bin`).
+///
+/// Rows are emitted in input order in both children, so the result is
+/// **index-identical** to the NumPy reference `Splitter.partition` and the
+/// downstream per-row histogram accumulation stays bitwise-parity-able. Kept
+/// single-threaded on purpose: partition is a memory-bound gather and the fused
+/// single pass already replaces NumPy's multi-pass boolean index — any future
+/// rayon parallelism MUST preserve global row order (gate it behind a
+/// parallel-branch parity test, like `build_histograms`).
+#[pyfunction]
+#[pyo3(signature = (binned, rows, feature, bin, left_categories, missing_bin))]
+fn partition_rows<'py>(
+    py: Python<'py>,
+    binned: PyReadonlyArray2<'py, u16>,
+    rows: PyReadonlyArray1<'py, i64>,
+    feature: usize,
+    bin: i64,
+    left_categories: Option<PyReadonlyArray1<'py, i64>>,
+    missing_bin: u16,
+) -> (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>) {
+    let binned = binned.as_array(); // feature-major: (n_features, n_rows)
+    let n_rows = binned.shape()[1];
+    let binned_s = binned
+        .as_slice()
+        .expect("feature-major binned must be C-contiguous");
+    let col = &binned_s[feature * n_rows..(feature + 1) * n_rows];
+    let rows = rows.as_array();
+
+    let mut left: Vec<i64> = Vec::with_capacity(rows.len());
+    let mut right: Vec<i64> = Vec::with_capacity(rows.len());
+
+    match left_categories {
+        Some(cats) => {
+            // Membership table over bin codes (all `< missing_bin`), reproducing
+            // `np.isin(b, left_categories)`; missing is OR-ed in separately.
+            let cats = cats.as_array();
+            let mut in_left = vec![false; missing_bin as usize + 1];
+            for &c in cats.iter() {
+                if (0..in_left.len() as i64).contains(&c) {
+                    in_left[c as usize] = true;
+                }
+            }
+            for &r in rows.iter() {
+                let b = col[r as usize];
+                if in_left[b as usize] || b == missing_bin {
+                    left.push(r);
+                } else {
+                    right.push(r);
+                }
+            }
+        }
+        None => {
+            for &r in rows.iter() {
+                let b = col[r as usize];
+                if (b as i64) <= bin || b == missing_bin {
+                    left.push(r);
+                } else {
+                    right.push(r);
+                }
+            }
+        }
+    }
+
+    (left.into_pyarray(py), right.into_pyarray(py))
 }
 
 #[inline]
@@ -731,6 +806,7 @@ fn predict_linear<'py>(
 #[pymodule]
 fn repleafgbm_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_histograms, m)?)?;
+    m.add_function(wrap_pyfunction!(partition_rows, m)?)?;
     m.add_function(wrap_pyfunction!(find_best_split, m)?)?;
     m.add_function(wrap_pyfunction!(leaf_linear_stats, m)?)?;
     m.add_function(wrap_pyfunction!(leaf_linear_stats_mc, m)?)?;

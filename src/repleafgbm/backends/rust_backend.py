@@ -109,3 +109,37 @@ class RustSplitBackend(BaseSplitBackend):
             n_right=int(n_right),
             left_categories=None if cats is None else np.asarray(cats, dtype=np.int64),
         )
+
+    def partition_rows(
+        self,
+        binned: np.ndarray,
+        rows: np.ndarray,
+        split: SplitCandidate,
+        missing_bin: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Route rows with the fused native kernel; NumPy default otherwise.
+
+        Falls back to the bitwise-identical NumPy reference only when an older
+        ``repleafgbm_native`` build predates the kernel. Inputs are normalized
+        exactly as in :meth:`build_histograms` (feature-major bins, contiguous
+        int64 rows), and the native kernel preserves row order so the children
+        are identical to the NumPy path. The kernel beats NumPy at every node
+        size (3-5x numeric, 10-15x categorical; see
+        benchmarks/partition_microbench.py), so there is no min-rows gate.
+        """
+        native = getattr(self._native, "partition_rows", None)
+        if native is None:
+            return super().partition_rows(binned, rows, split, missing_bin)
+        left_categories = (
+            None
+            if split.left_categories is None
+            else np.ascontiguousarray(split.left_categories, dtype=np.int64)
+        )
+        return native(
+            self._feature_major(binned),
+            np.ascontiguousarray(rows, dtype=np.int64),
+            int(split.feature),
+            int(split.bin),
+            left_categories,
+            int(missing_bin),
+        )

@@ -194,13 +194,13 @@ class Splitter:
         return float(self.thresholds[split.feature][split.bin])
 
     def partition(self, rows: np.ndarray, split: SplitCandidate) -> tuple[np.ndarray, np.ndarray]:
-        """Partition rows into (left, right); missing values go left."""
+        """Partition rows into (left, right); missing values go left.
+
+        Delegates the row routing to the split backend. The NumPy reference
+        lives on :class:`BaseSplitBackend`; the Rust backend overrides it with a
+        fused single-pass native kernel. Both preserve the input row order, so
+        the children are identical across backends.
+        """
         with timed(self._profiler, "partition"):
-            b = self.binned[rows, split.feature]
             missing_bin = int(self.n_bins_per_feature[split.feature])
-            if split.left_categories is not None:
-                # Categorical bins are the ordinal codes themselves.
-                go_left = np.isin(b, split.left_categories) | (b == missing_bin)
-            else:
-                go_left = (b <= split.bin) | (b == missing_bin)
-            return rows[go_left], rows[~go_left]
+            return self.backend.partition_rows(self.binned, rows, split, missing_bin)
