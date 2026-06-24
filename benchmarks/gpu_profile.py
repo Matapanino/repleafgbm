@@ -24,6 +24,8 @@ Examples::
         --backend numpy --out artifacts/gpu_bench/dev/cases.jsonl
     python -m benchmarks.gpu_profile --task multiclass --n-classes 5 \\
         --size medium --backend cuda --out artifacts/gpu_bench/dev/cases.jsonl
+    python -m benchmarks.gpu_profile --task multioutput --n-outputs 5 \\
+        --size large --backend cuda --out artifacts/gpu_bench/dev/cases.jsonl
 
 ``phase_seconds`` is populated by the internal phase profiler: the harness sets
 ``REPLEAFGBM_PROFILE=1`` around the timed fit/predict and reads the breakdown
@@ -56,7 +58,12 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from benchmarks.common import apply_quick, make_parser, synthetic_tabular  # noqa: E402
+from benchmarks.common import (  # noqa: E402
+    apply_quick,
+    make_parser,
+    multioutput_signal,
+    synthetic_tabular,
+)
 
 # Size presets: (n_train, n_test, n_features). Mirrors docs/gpu_roadmap.md.
 _SIZES: dict[str, tuple[int, int, int]] = {
@@ -81,16 +88,23 @@ def _parse_threshold(s: str) -> int:
 # Data
 # --------------------------------------------------------------------------- #
 def build_data(
-    task: str, n_train: int, n_test: int, n_features: int, n_classes: int, seed: int
+    task: str, n_train: int, n_test: int, n_features: int, n_classes: int,
+    seed: int, *, n_outputs: int = 1
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Synthetic (X_train, y_train, X_test, y_test) for the requested task.
 
     Regression uses the shared :func:`synthetic_tabular` signal plus light noise;
     binary thresholds the signal at its median; multiclass quantile-bins the
-    signal into ``n_classes`` balanced classes.
+    signal into ``n_classes`` balanced classes; multioutput stacks ``n_outputs``
+    correlated targets sharing one ``X`` (:func:`multioutput_signal`), so
+    ``y`` is ``(n, n_outputs)`` and routes through the shared-routing booster.
     """
     rng = np.random.default_rng(seed)
     n = n_train + n_test
+    if task == "multioutput":
+        X, signal = multioutput_signal(n, n_features, n_outputs, rng)
+        y = signal + rng.normal(scale=0.1, size=signal.shape)  # (n, n_outputs)
+        return X[:n_train], y[:n_train], X[n_train:], y[n_train:]
     X, signal = synthetic_tabular(n, n_features, rng)
     if task == "regression":
         y = signal + rng.normal(scale=0.1, size=n)
@@ -127,7 +141,9 @@ def build_estimator(task: str, args: argparse.Namespace, backend: str) -> Any:
     device = getattr(args, "device", None)
     if device and str(args.encoder).startswith("torch"):
         common["encoder_params"] = {"device": device}
-    if task == "regression":
+    # Multi-output uses the regressor too: a 2-D y auto-routes to the
+    # shared-routing MultiOutputBooster inside the regressor wrapper.
+    if task in ("regression", "multioutput"):
         return RepLeafRegressor(**common)
     return RepLeafClassifier(**common)
 
@@ -151,7 +167,9 @@ def _quality(task: str, model: Any, X_test: np.ndarray, y_test: np.ndarray,
              n_classes: int) -> dict[str, float]:
     from sklearn.metrics import accuracy_score, log_loss, r2_score, roc_auc_score
 
-    if task == "regression":
+    if task in ("regression", "multioutput"):
+        # Multi-output predict/y_test are (n, K); rmse/mae average over all
+        # elements and r2_score uniform-averages over outputs.
         pred = model.predict(X_test)
         err = pred - y_test
         return {
@@ -204,7 +222,7 @@ def _parity_max_abs_diff(task: str, model: Any, args: argparse.Namespace,
                          X_train, y_train, X_test) -> float:
     """Max abs prediction diff vs a numpy-backend twin (sanity vs ~1e-6)."""
     twin = build_estimator(task, args, "numpy").fit(X_train, y_train)
-    if task == "regression":
+    if task in ("regression", "multioutput"):
         a, b = model.predict(X_test), twin.predict(X_test)
     else:
         a, b = model.predict_proba(X_test), twin.predict_proba(X_test)
@@ -266,8 +284,10 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
     n_classes = args.n_classes if task == "multiclass" else (
         2 if task == "binary" else 1
     )
+    n_outputs = args.n_outputs if task == "multioutput" else 1
     X_train, y_train, X_test, y_test = build_data(
-        task, args.n_train, args.n_test, args.n_features, n_classes, args.seed
+        task, args.n_train, args.n_test, args.n_features, n_classes, args.seed,
+        n_outputs=n_outputs
     )
     model = build_estimator(task, args, backend)
 
@@ -298,13 +318,16 @@ def run_case(args: argparse.Namespace) -> dict[str, Any]:
     phase_seconds = dict(getattr(model, "phase_seconds_", {}))
 
     cls_tag = f"_c{n_classes}" if task == "multiclass" else ""
+    out_tag = f"_k{n_outputs}" if task == "multioutput" else ""
     scan_tag = f"_scan{scan}" if scan is not None else ""
     row: dict[str, Any] = {
         "case_id":
-            f"{task}{cls_tag}_{args.n_features}f_bins{args.max_bins}{scan_tag}_{backend}",
+            f"{task}{cls_tag}{out_tag}_{args.n_features}f_bins{args.max_bins}"
+            f"{scan_tag}_{backend}",
         "task": task,
         "backend": backend,
         "n_classes": n_classes,
+        "n_outputs": n_outputs,
         "n_train": args.n_train,
         "n_test": args.n_test,
         "n_features": args.n_features,
@@ -378,12 +401,14 @@ def write_summary(out_path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = make_parser("RepLeafGBM GPU/native benchmark + profiling harness")
-    p.add_argument("--task", choices=["regression", "binary", "multiclass"],
+    p.add_argument("--task",
+                   choices=["regression", "binary", "multiclass", "multioutput"],
                    default="regression")
     p.add_argument("--size", choices=sorted(_SIZES),
                    help="dataset preset; overrides --n-train/--n-test/--n-features")
     p.add_argument("--backend", choices=["numpy", "rust", "cuda"], default="numpy")
     p.add_argument("--n-classes", type=int, default=3, help="multiclass only")
+    p.add_argument("--n-outputs", type=int, default=3, help="multioutput only")
     p.add_argument("--leaf-model", default="embedded_linear",
                    choices=["constant", "embedded_linear", "raw_linear"])
     p.add_argument("--encoder", default="identity",

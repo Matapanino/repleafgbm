@@ -19,6 +19,17 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def _as_host(hist):
+    """Return a NumPy view of a (possibly device-resident) histogram.
+
+    The CUDA backend returns resident CuPy device arrays; the host multi-output
+    stack/scan defaults need a NumPy array. CuPy arrays expose ``.get()`` (a host
+    copy); NumPy/Rust arrays have no ``.get`` and pass through unchanged.
+    """
+    getter = getattr(hist, "get", None)
+    return getter() if callable(getter) else hist
+
+
 @dataclass
 class SplitCandidate:
     """Best split found for one node.
@@ -94,6 +105,78 @@ class BaseSplitBackend(ABC):
         categories) instead of ordered thresholds, governed by the three
         LightGBM-style categorical guards.
         """
+
+    # ----------------------------------------------------------------- #
+    # Multi-output (shared-routing) split search — optional fast paths.
+    #
+    # Multi-output regression grows one shared tree per round whose leaves emit
+    # an (n_outputs,) vector; at each node the K per-output scalar histograms are
+    # stacked into (n_features, n_bins_max, 3, n_outputs) and scanned for a split
+    # whose gain is the per-output Newton gain summed over outputs. These two
+    # methods carry that stack + scan so a device backend can keep the stack
+    # resident and scan it on-device (the CUDA override) instead of round-tripping
+    # every output to the host. The base implementations reproduce the historical
+    # host behavior exactly, so NumPy/Rust stay byte-for-byte unchanged.
+    # ----------------------------------------------------------------- #
+    def build_histograms_multioutput(
+        self,
+        binned: np.ndarray,
+        rows: np.ndarray,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        n_bins_max: int,
+    ) -> np.ndarray:
+        """Stacked per-output histogram for one shared-routing node.
+
+        ``grad``/``hess`` are ``(n_rows, n_outputs)``. Returns the
+        ``(n_features, n_bins_max, 3, n_outputs)`` stack of the per-output scalar
+        histograms; sibling subtraction stays valid (it is linear in the stacked
+        array) and :meth:`find_best_split_multioutput` scans it.
+
+        This default builds one scalar histogram per output via
+        :meth:`build_histograms` and stacks them on the host (each pulled to the
+        host first — a no-op for NumPy/Rust, a ``.get()`` for a device backend),
+        reproducing the splitter's previous behavior exactly. A device backend
+        (CUDA) overrides it to keep the stack resident on the GPU.
+        """
+        return np.stack(
+            [
+                _as_host(
+                    self.build_histograms(
+                        binned, rows, grad[:, k], hess[:, k], n_bins_max
+                    )
+                )
+                for k in range(grad.shape[1])
+            ],
+            axis=-1,
+        )
+
+    def find_best_split_multioutput(
+        self,
+        hist: np.ndarray,
+        n_bins_per_feature: np.ndarray,
+        min_samples_leaf: int,
+        l2: float,
+    ) -> SplitCandidate | None:
+        """Best shared-routing numeric split for a multi-output node.
+
+        ``hist`` is the ``(n_features, n_bins_max, 3, n_outputs)`` stack from
+        :meth:`build_histograms_multioutput`. The gain is the per-output Newton
+        gain summed over outputs with a single shared left/right partition;
+        missing values go left (v0). Every feature is scanned as an ordered
+        threshold — multi-output trees do not produce categorical subset splits.
+
+        This default delegates to the NumPy reference
+        :func:`~repleafgbm.backends.numpy_backend.find_best_split_multioutput`
+        on a host array, so NumPy/Rust stay byte-for-byte identical. The CUDA
+        backend overrides it to scan the resident device array, copying back only
+        the winning split's scalars.
+        """
+        from repleafgbm.backends.numpy_backend import (
+            find_best_split_multioutput as _ref,
+        )
+
+        return _ref(_as_host(hist), n_bins_per_feature, min_samples_leaf, l2)
 
     def partition_rows(
         self,

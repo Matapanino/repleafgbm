@@ -7,10 +7,13 @@ stays resident across a tree's nodes while the **numeric split scan runs
 on-device for large histograms** (Phase B2, adaptive) — only the winning split's
 scalars cross back to the host. Small per-node histograms are scanned on the host
 instead (cheaper than launching many tiny GPU kernels), so narrow fits don't
-regress. The categorical subset scan (the branchy, parity-critical part) and the
-multi-output scan stay on the host. See `docs/adr/0005-cuda-backend-cupy.md` for
-the design and `docs/backend_strategy.md` for where it sits among the compute
-backends.
+regress. Multi-output (shared-routing) trees get the same Phase-B2 treatment: the
+K per-output histograms stay resident as a stacked `(F, bins, 3, K)` array and the
+summed-gain scan runs on-device, returning only the winning split (the same
+adaptive threshold sends narrow nodes to the host). Only the categorical subset
+scan (the branchy, parity-critical part) stays on the host. See
+`docs/adr/0005-cuda-backend-cupy.md` for the design and
+`docs/backend_strategy.md` for where it sits among the compute backends.
 
 ## Install
 
@@ -65,8 +68,8 @@ part of the public estimator API — the default is unchanged. Sweep it with
 `benchmarks/gpu_profile.py --scan-min-cells-sweep` to find a per-GPU optimum; the
 effective value is recorded in the benchmark's `transfer_bytes.scan_min_cells`.
 
-The end-to-end gain is bounded because tree growth, categorical/multi-output
-scans, and leaf fitting still run on the host. GPU leaf fitting was evaluated and
+The end-to-end gain is bounded because tree growth, the categorical subset scan,
+and leaf fitting still run on the host. GPU leaf fitting was evaluated and
 deferred (leaf stats are already accelerated by the Rust `leaf_linear_stats`
 kernel; ADR 0005). The CUDA backend helps most when the histogram dominates —
 many rows, **wide feature matrices / high `max_bins`**, deep/large trees.
@@ -76,9 +79,18 @@ many rows, **wide feature matrices / high `max_bins`**, deep/large trees.
 Unlike the NumPy⇄Rust pair (bitwise-identical histograms), the CUDA backend is
 **allclose, not bitwise**: GPU `atomicAdd` summation order is not fixed, so
 histogram sums differ from NumPy in the low bits and are not reproducible
-run-to-run. Cross-backend predictions still agree to float noise
-(`rtol=1e-6`), which is what the parity tests assert. If you need bitwise
-determinism, use `"numpy"` or `"rust"`.
+run-to-run. When the split scan runs on the **host** (the adaptive default for
+narrow per-node histograms) the chosen splits — and thus the trees — are
+identical to the reference, only leaf values carry that float noise, and
+predictions agree to `rtol=1e-6`. When the numeric scan runs **on-device** (wide
+histograms, or a forced low threshold) the gains are reduced with CuPy whose low
+bits also differ, so on a *near-tied* node the argmax can select a different —
+but equally good — split: the trees then differ structurally and predictions
+agree to float noise except on the few rows a flipped split reroutes. Those flips
+are quality-neutral (the gains were tied), so model quality matches even when the
+exact tree does not (the parity tests assert `rtol=1e-6` on the host-scan path and
+quality-equivalence on the device-scan path). If you need bitwise determinism,
+use `"numpy"` or `"rust"`.
 
 ## GPU encoder pretraining (separate from `split_backend`)
 

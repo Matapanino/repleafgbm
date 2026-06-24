@@ -423,3 +423,233 @@ def test_env_threshold_forces_gpu_scan(monkeypatch, node_data):
         assert (s_np.feature, s_np.bin) == (s_cu.feature, s_cu.bin)
         assert s_np.gain == pytest.approx(s_cu.gain, rel=1e-6)
         assert (s_np.n_left, s_np.n_right) == (s_cu.n_left, s_cu.n_right)
+
+
+# --------------------------------------------------------------------------- #
+# Multi-output (shared-routing) device path
+#
+# Multi-output trees stack the K per-output histograms into (F, B, 3, K) and
+# scan for a split whose gain is the per-output Newton gain summed over outputs.
+# The CUDA backend keeps that stack resident and scans it on-device
+# (build_histograms_multioutput / find_best_split_multioutput), mirroring the
+# scalar Phase-B2 path; parity is allclose, not bitwise.
+# --------------------------------------------------------------------------- #
+def _multioutput_xy(n: int, n_outputs: int, seed: int):
+    """``n_outputs`` correlated regression targets over shared raw features."""
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, 6))
+    cols = [
+        X[:, 0] + 0.5 * X[:, 1] ** 2 - X[:, 2] + np.sin((k + 2) * X[:, 3])
+        + 0.3 * k * X[:, 4]
+        for k in range(n_outputs)
+    ]
+    Y = np.column_stack(cols) + 0.05 * rng.normal(size=(n, n_outputs))
+    return X, Y
+
+
+@pytest.mark.parametrize("leaf_model", ["constant", "embedded_linear"])
+def test_multioutput_end_to_end_backend_agreement(leaf_model):
+    """End-to-end multi-output fit agrees across numpy/cuda to float noise at the
+    adaptive default threshold: these narrow nodes take the host small-scan, so
+    the split selection (and thus the tree) is identical — only leaf values carry
+    the GPU histogram's float noise. (The on-device scan, which can flip a
+    near-tied split, is exercised separately below.)"""
+    X, Y = _multioutput_xy(1200, n_outputs=3, seed=11)
+    Xtr, Ytr, Xte = X[:900], Y[:900], X[900:]
+    preds = {}
+    for backend in ("numpy", "cuda"):
+        model = RepLeafRegressor(
+            n_estimators=30, num_leaves=8, min_samples_leaf=10,
+            leaf_model=leaf_model, split_backend=backend, random_state=42,
+        ).fit(Xtr, Ytr)
+        preds[backend] = model.predict(Xte)
+    assert preds["numpy"].shape == (300, 3)
+    np.testing.assert_allclose(preds["numpy"], preds["cuda"], rtol=1e-6, atol=1e-8)
+
+
+@pytest.mark.parametrize("leaf_model", ["constant", "embedded_linear"])
+def test_multioutput_device_scan_quality_matches(monkeypatch, leaf_model):
+    """Forcing the on-device scan for every node (threshold 0), the cuda model
+    stays quality-equivalent to numpy. The device scan sums per-output Newton
+    gains with CuPy reductions whose low bits differ from NumPy, so on a
+    near-tied node the argmax can pick a *different but equally good* split; that
+    reroutes a handful of rows. The bulk of predictions still agree to the
+    rtol=1e-6 parity bar and the test RMSE matches — the flips are quality-neutral.
+    This is the on-device analogue of the scalar Phase-B2 scan (the narrow default
+    keeps both on the host); exact-tree parity is not guaranteed once the scan
+    runs on the GPU, but model quality is."""
+    monkeypatch.setenv("REPLEAFGBM_CUDA_SCAN_MIN_CELLS", "0")
+    X, Y = _multioutput_xy(1200, n_outputs=3, seed=11)
+    Xtr, Ytr, Xte, Yte = X[:900], Y[:900], X[900:], Y[900:]
+    preds = {}
+    for backend in ("numpy", "cuda"):
+        model = RepLeafRegressor(
+            n_estimators=30, num_leaves=8, min_samples_leaf=10,
+            leaf_model=leaf_model, split_backend=backend, random_state=42,
+        ).fit(Xtr, Ytr)
+        preds[backend] = model.predict(Xte)
+    np_pred, cu_pred = preds["numpy"], preds["cuda"]
+    # Coarse "few rows rerouted" sanity bound: the bulk agree to the rtol=1e-6
+    # bar; only the rare near-tied flips exceed it (observed ~1-2% of elements on
+    # a T4). The RMSE check below is the real quality gate — a scan that actually
+    # drifted (wrong, not near-tied, splits) would reroute far more rows AND
+    # degrade RMSE past its 5% guard — so this bound stays loose to avoid flaking
+    # on GPU run-to-run flip variation.
+    within = np.abs(cu_pred - np_pred) <= 1e-8 + 1e-6 * np.abs(np_pred)
+    assert np.mean(~within) < 0.10
+    # Quality-equivalent: flipped splits are near-tied, so test RMSE matches.
+    rmse_np = float(np.sqrt(np.mean((np_pred - Yte) ** 2)))
+    rmse_cu = float(np.sqrt(np.mean((cu_pred - Yte) ** 2)))
+    assert abs(rmse_cu - rmse_np) < 0.05 * rmse_np
+
+
+def test_multioutput_end_to_end_categoricals_and_missing():
+    """Multi-output routes categoricals as ordered thresholds (no subset split);
+    the device scan must still agree end-to-end with categoricals + missing."""
+    rng = np.random.default_rng(13)
+    n = 1200
+    cat = rng.choice(list("abcde"), size=n).astype(object)
+    cat[rng.random(n) < 0.05] = None
+    x = rng.normal(size=n)
+    high = pd.Series(cat).isin(["a", "d"]).to_numpy()
+    y0 = np.where(high, 3.0, -3.0) + x
+    y1 = np.where(high, -1.0, 2.0) - 0.5 * x
+    Y = np.column_stack([y0, y1]) + rng.normal(0, 0.2, (n, 2))
+    df = pd.DataFrame({"c": cat, "x": x})
+
+    preds = {}
+    for backend in ("numpy", "cuda"):
+        train = RepLeafDataset(df, Y, categorical_features=["c"])
+        model = RepLeafRegressor(
+            n_estimators=20, num_leaves=6, min_samples_leaf=10,
+            min_data_per_group=20, split_backend=backend, random_state=42,
+        )
+        model.fit(train)
+        preds[backend] = model.predict(df)
+    assert preds["numpy"].shape == (n, 2)
+    np.testing.assert_allclose(preds["numpy"], preds["cuda"], rtol=1e-6, atol=1e-8)
+
+
+@pytest.mark.parametrize("scan_min_cells", ["0", "1000000000"])  # device vs host
+@pytest.mark.parametrize("weighted", [False, True])
+def test_multioutput_split_scan_device_vs_host_parity(
+    monkeypatch, scan_min_cells, weighted
+):
+    """Unit parity of the multi-output summed-gain scan vs the NumPy reference,
+    on both the on-device scan (threshold 0) and the host small-scan fallback
+    (huge threshold), with unweighted (h==count) and weighted (h!=count) hess."""
+    monkeypatch.setenv("REPLEAFGBM_CUDA_SCAN_MIN_CELLS", scan_min_cells)
+    rng = np.random.default_rng(15)
+    n, F, n_bins_max, K = 4000, 6, 33, 3
+    binned = rng.integers(0, 32, size=(n, F)).astype(np.uint16)
+    binned[rng.random((n, F)) < 0.05] = 32  # missing bin
+    rows = np.sort(rng.choice(n, size=2500, replace=False)).astype(np.int64)
+    n_bins_pf = np.full(F, 32, dtype=np.int64)
+    grad = rng.normal(size=(n, K))
+    hess = (
+        np.abs(rng.normal(size=(n, K))) + 0.1 if weighted else np.ones((n, K))
+    )
+    np_b, cu_b = NumPySplitBackend(), CudaSplitBackend()
+    hist_np = np_b.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    hist_cu = cu_b.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    assert hist_cu.shape == (F, n_bins_max, 3, K)
+    s_np = np_b.find_best_split_multioutput(hist_np, n_bins_pf, 20, 1.0)
+    s_cu = cu_b.find_best_split_multioutput(hist_cu, n_bins_pf, 20, 1.0)
+    assert (s_np is None) == (s_cu is None)
+    assert s_np is not None  # the constructed node has a valid split
+    # Exact (feature, bin) equality holds here because this fixture's winning
+    # split is not near-tied; on a near-tied node the on-device CuPy reduction
+    # could flip the argmax to an equally-good split (see
+    # test_multioutput_device_scan_quality_matches). The gain is what is
+    # guaranteed allclose either way.
+    assert (s_np.feature, s_np.bin) == (s_cu.feature, s_cu.bin)
+    assert s_np.gain == pytest.approx(s_cu.gain, rel=1e-6)
+    assert (s_np.n_left, s_np.n_right) == (s_cu.n_left, s_cu.n_right)
+
+
+def test_multioutput_histogram_resident_and_subtractable():
+    """The multi-output build returns a resident CuPy (F, B, 3, K) array whose
+    sibling subtraction (parent - child == sibling) holds to float noise, so the
+    grower keeps it on-device as on the scalar path."""
+    rng = np.random.default_rng(17)
+    n, F, n_bins_max, K = 3000, 5, 33, 3
+    binned = rng.integers(0, 32, size=(n, F)).astype(np.uint16)
+    binned[rng.random((n, F)) < 0.05] = 32
+    rows = np.sort(rng.choice(n, size=2000, replace=False)).astype(np.int64)
+    grad = rng.normal(size=(n, K))
+    hess = np.abs(rng.normal(size=(n, K))) + 0.1
+    cu = CudaSplitBackend()
+    half = rows.size // 2
+    left, right = rows[:half], rows[half:]
+    h_parent = cu.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    h_left = cu.build_histograms_multioutput(binned, left, grad, hess, n_bins_max)
+    h_right = cu.build_histograms_multioutput(binned, right, grad, hess, n_bins_max)
+    assert isinstance(h_parent, cp.ndarray)
+    assert h_parent.shape == (F, n_bins_max, 3, K)
+    np.testing.assert_allclose(
+        cp.asnumpy(h_parent), cp.asnumpy(h_left + h_right), rtol=1e-9, atol=1e-9
+    )
+    np.testing.assert_allclose(
+        cp.asnumpy(h_parent - h_left), cp.asnumpy(h_right), rtol=1e-9, atol=1e-9
+    )
+
+
+def test_multioutput_device_scan_gate_off_matches_host(monkeypatch):
+    """With the kill switch off (REPLEAFGBM_CUDA_MO_DEVICE_SCAN=0) the build
+    returns a host stack and the scan delegates to the host reference — the
+    pre-device behavior — without touching NumPy."""
+    monkeypatch.setenv("REPLEAFGBM_CUDA_MO_DEVICE_SCAN", "0")
+    rng = np.random.default_rng(19)
+    n, F, n_bins_max, K = 2000, 5, 33, 2
+    binned = rng.integers(0, 32, size=(n, F)).astype(np.uint16)
+    rows = np.arange(n, dtype=np.int64)
+    grad = rng.normal(size=(n, K))
+    hess = np.ones((n, K))
+    n_bins_pf = np.full(F, 32, dtype=np.int64)
+
+    cu = CudaSplitBackend()
+    assert cu._mo_device_scan is False
+    hist_cu = cu.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    assert not isinstance(hist_cu, cp.ndarray)  # host stack, not resident
+    s_cu = cu.find_best_split_multioutput(hist_cu, n_bins_pf, 20, 1.0)
+
+    np_b = NumPySplitBackend()
+    hist_np = np_b.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    s_np = np_b.find_best_split_multioutput(hist_np, n_bins_pf, 20, 1.0)
+    assert (s_np.feature, s_np.bin) == (s_cu.feature, s_cu.bin)
+    assert s_np.gain == pytest.approx(s_cu.gain, rel=1e-6)
+
+
+def test_multioutput_scan_counters(monkeypatch):
+    """The multi-output scan reuses the transfer counters: a small histogram
+    copies the whole (F, B, 3, K) stack back (host fallback); a large one keeps
+    it resident and only the 32-byte winner crosses back."""
+    rng = np.random.default_rng(21)
+    K = 3
+
+    # Small node (F * n_bins_max below the default threshold): host small-scan.
+    n, F, n_bins_max = 2000, 8, 33
+    assert F * n_bins_max < 32_768
+    binned = rng.integers(0, 32, size=(n, F)).astype(np.uint16)
+    rows = np.arange(n, dtype=np.int64)
+    grad = rng.normal(size=(n, K))
+    hess = np.ones((n, K))
+    n_bins_pf = np.full(F, 32, dtype=np.int64)
+    cu = CudaSplitBackend()
+    hist = cu.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    cu.reset_transfer_stats()
+    cu.find_best_split_multioutput(hist, n_bins_pf, 20, 1.0)
+    s = cu.get_transfer_stats()
+    assert s["n_small_scans"] == 1
+    assert s["hist_d2h_bytes"] == 24 * F * n_bins_max * K
+    assert s["n_gpu_scans"] == 0 and s["winner_d2h_bytes"] == 0
+
+    # Force the on-device scan (threshold 0): only the winner pack crosses back.
+    monkeypatch.setenv("REPLEAFGBM_CUDA_SCAN_MIN_CELLS", "0")
+    cu = CudaSplitBackend()
+    hist = cu.build_histograms_multioutput(binned, rows, grad, hess, n_bins_max)
+    cu.reset_transfer_stats()
+    cu.find_best_split_multioutput(hist, n_bins_pf, 20, 1.0)
+    s = cu.get_transfer_stats()
+    assert s["n_gpu_scans"] == 1 and s["winner_d2h_bytes"] == 32
+    assert s["hist_d2h_bytes"] == 0 and s["n_small_scans"] == 0

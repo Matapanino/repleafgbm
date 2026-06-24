@@ -9,8 +9,9 @@ GPU kernel. It expects the working tree to have been uploaded to
   3. runs the CUDA parity subset (``tests/test_cuda_backend.py``) single-threaded,
   4. micro-benchmarks GPU vs NumPy histogram build,
   5. runs the ``benchmarks.gpu_profile`` matrix (numpy vs cuda across
-     regression/binary/multiclass at narrow/wide shapes), recording per-fit
-     transfer volume to ``/content/gpu_bench/cases.jsonl``,
+     regression/binary/multiclass/multioutput at narrow/wide shapes), recording
+     per-fit transfer volume to ``/content/gpu_bench/cases.jsonl``, plus a
+     multi-output on-device-scan A/B (device path off vs on),
   6. writes a parity report to ``/content/cuda_parity_report.md`` and a
      standalone backend-comparison suite to ``/content/gpu_backend_suite.md``.
 
@@ -145,6 +146,8 @@ def gpu_profile_smoke():
         ("binary", 50_000, 30, "constant", []),
         ("binary", 30_000, 200, "embedded_linear", []),
         ("multiclass", 30_000, 200, "constant", ["--n-classes", "5"]),
+        ("multioutput", 50_000, 30, "constant", ["--n-outputs", "5"]),
+        ("multioutput", 30_000, 200, "embedded_linear", ["--n-outputs", "5"]),
     ]
     for task, n_train, n_features, leaf, extra in shapes:
         for backend in ("numpy", "cuda"):
@@ -158,6 +161,54 @@ def gpu_profile_smoke():
             )
     with open(GPU_BENCH) as fh:
         return [json.loads(line) for line in fh if line.strip()]
+
+
+def multioutput_device_ab():
+    """Paired A/B for the multi-output on-device scan: cuda with the device path
+    off (host stack + host scan — the pre-device baseline) vs on, toggled via
+    ``REPLEAFGBM_CUDA_MO_DEVICE_SCAN`` and interleaved per shape to limit drift.
+
+    Returns ``(case, n_features, fit_off, fit_on, histscan_off, histscan_on,
+    hist_d2h_off, winner_d2h_on)`` per shape. ``histscan`` sums the ``histogram``
+    and ``split_scan`` phase seconds — the two phases the device path moves onto
+    the GPU; the on-device path should shrink them and replace the per-output
+    histogram D2H copies with a 32-byte winner pack."""
+    import json
+
+    shapes = [
+        ("multioutput", 50_000, 30, "constant", ["--n-outputs", "5"]),
+        ("multioutput", 30_000, 200, "embedded_linear", ["--n-outputs", "5"]),
+    ]
+    results = []
+    for task, n_train, n_features, leaf, extra in shapes:
+        per_gate = {}
+        for gate in ("0", "1"):  # off (baseline) then on (device path)
+            out = f"/content/gpu_bench/mo_ab_{n_features}_{gate}.jsonl"
+            if os.path.exists(out):
+                os.remove(out)
+            _run(
+                [sys.executable, "-m", "benchmarks.gpu_profile",
+                 "--task", task, "--backend", "cuda", "--leaf-model", leaf,
+                 "--n-train", str(n_train), "--n-test", "10000",
+                 "--n-features", str(n_features), "--n-estimators", "30",
+                 "--out", out, *extra],
+                cwd=REPO,
+                env={**ENV, "REPLEAFGBM_CUDA_MO_DEVICE_SCAN": gate},
+                check=True,
+            )
+            with open(out) as fh:
+                per_gate[gate] = json.loads(fh.readlines()[-1])
+        off, on = per_gate["0"], per_gate["1"]
+        ps_off, ps_on = off.get("phase_seconds", {}), on.get("phase_seconds", {})
+        tb_off, tb_on = off.get("transfer_bytes", {}), on.get("transfer_bytes", {})
+        results.append((
+            off["case_id"].rsplit("_", 1)[0], n_features,
+            off["fit_seconds"], on["fit_seconds"],
+            ps_off.get("histogram", 0.0) + ps_off.get("split_scan", 0.0),
+            ps_on.get("histogram", 0.0) + ps_on.get("split_scan", 0.0),
+            tb_off.get("hist_d2h_bytes", 0), tb_on.get("winner_d2h_bytes", 0),
+        ))
+    return results
 
 
 def backend_comparison(bench_rows):
@@ -290,6 +341,37 @@ def main():
         "buffer would remove (docs/gpu_roadmap.md, Phase 1)._",
         "",
     ]
+
+    # Multi-output on-device scan A/B (the device residency this change adds).
+    mo_ab = multioutput_device_ab()
+    lines += [
+        "## Multi-output device scan A/B (`REPLEAFGBM_CUDA_MO_DEVICE_SCAN`)",
+        "",
+        "cuda multi-output fit with the on-device summed-gain scan **off** (host "
+        "stack + host scan — the pre-device baseline) vs **on**. `hist+scan` sums "
+        "the `histogram`+`split_scan` phase seconds (the two phases the device "
+        "path keeps on the GPU); on-device should shrink them and replace the "
+        "per-output histogram D2H with a 32-byte winner pack.",
+        "",
+        "| case | features | fit off (s) | fit on (s) | speedup | hist+scan off "
+        "(s) | hist+scan on (s) | hist D2H off | winner D2H on |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for case, nf, f_off, f_on, hs_off, hs_on, d2h_off, win_on in mo_ab:
+        sp = (f_off / f_on) if f_on else float("nan")
+        lines.append(
+            f"| {case} | {nf} | {f_off:.2f} | {f_on:.2f} | **{sp:.2f}x** | "
+            f"{hs_off:.2f} | {hs_on:.2f} | {d2h_off:,} | {win_on:,} |"
+        )
+    lines += [
+        "",
+        "_Parity is covered by `tests/test_cuda_backend.py` (allclose); this table "
+        "is the speed verdict — the device path must win (or at least not regress) "
+        "on the wide shape, with the narrow shape protected by the adaptive "
+        "small-scan crossover._",
+        "",
+    ]
+
     with open(REPORT, "w") as fh:
         fh.write("\n".join(lines))
     print("\n".join(lines), flush=True)
