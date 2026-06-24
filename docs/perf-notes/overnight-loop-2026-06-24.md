@@ -1,0 +1,29 @@
+# Overnight optimization loop — 2026-06-24
+
+Daily narrative log for the CUDA/GPU perf loop. Terse running notes here; the
+durable per-iteration records live in `experiment-log.md` (verdicts),
+`reflections.md` (GEPA), `rejected-ideas.md`, and `harness-log.md`.
+
+## Setup
+
+- Work branch: `perf/cuda-overnight-loop-20260624` (off `cuda-multioutput-device-scan`).
+- Baseline green: `tests/test_rust_backend.py` + `tests/test_cuda_scan_threshold.py`
+  (22 passed). Native ext built (`apply_tree`, `predict_linear`, …). CuPy absent
+  locally (GPU work batched to Colab T4).
+- Fleet (hybrid): +cuda-researcher, perf-profiler, harness-optimizer,
+  experiment-strategist; reuse native-optimizer / qa-verifier+core-reviewer /
+  results-analyst.
+- Harness: `benchmarks/cuda_overnight_loop.py` (median+spread, interleaved A/B,
+  `benchmarks/results/latest.jsonl`), `scripts/perf_loop.sh`.
+
+## Plan for the night (first 3 experiments)
+
+1. Forest-batched Rust predictor (local; bitwise parity; `predict_profile.py`).
+2. float32 embedding-cache option (local; default-off; allclose-gated).
+3. Node-batched split_scan CUDA (code-prep; logical parity local → Colab T4 A/B).
+Cadence: GEPA reflection each iteration; harness iteration every 5 product iters;
+1 Colab T4 pass at the morning checkpoint.
+
+## Running notes
+
+- [setup] scaffolding + orchestrator created; infra commit pending.
