@@ -79,7 +79,8 @@ def fit_vector_leaves(
     gate_insample = getattr(leaf_model, "leaf_gate", "loo") == "insample"
     # Opt-in float32 leaf-fit (mirrors the scalar EmbeddedLinearLeafModel.fit_leaves
     # branch): accumulate ONLY the two large per-leaf reductions — the weighted Gram
-    # and the target projection — in float32 (~1.3x at wide emb), while the centering,
+    # and the target projection — in float32 (~1.3x on those reductions, ~5.5% whole
+    # wide-emb multi-output fit), while the centering,
     # the float64 solve, and the LOO-gate leverage stay float64. The default float64
     # path below is byte-identical; the float32 path is allclose (~1e-5), NOT bitwise
     # (near-tied LOO-gate decisions can flip) — quality-equivalent, opt-in only.

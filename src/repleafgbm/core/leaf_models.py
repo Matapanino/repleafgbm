@@ -43,7 +43,7 @@ _NATIVE_STATS_MAX_DIM = 128
 
 #: Valid ``leaf_fit_precision`` values. ``"float64"`` (default) is the
 #: bitwise-parity path; ``"float32_gram"`` accumulates only the wide-embedding
-#: (emb>64) per-leaf Gram + gradient projection in float32 (≈2x faster) while the
+#: (emb>128) per-leaf Gram + gradient projection in float32 (≈2x faster) while the
 #: solve stays float64 — opt-in, allclose-not-bitwise
 #: (docs/proposals/float32-wide-embedding-leaf-fit.md).
 _LEAF_FIT_PRECISIONS = ("float64", "float32_gram")
@@ -743,8 +743,8 @@ def make_leaf_model(
     responsible for supplying standardized raw numerical features as Z.
     ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit
     (``leaf_gate_margin``/``leaf_gate`` are ignored by the other models).
-    ``leaf_fit_precision`` only affects the wide-embedding (emb>64) BLAS leaf-fit
-    of the linear models; it is inert for ``constant``.
+    ``leaf_fit_precision`` only affects the wide-embedding (emb>128) BLAS leaf-fit
+    of the linear models (and multi-output vector leaves); it is inert for ``constant``.
     """
     if leaf_fit_precision not in _LEAF_FIT_PRECISIONS:
         raise ValueError(
