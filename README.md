@@ -12,6 +12,18 @@ over learned representations inside each leaf.
 > embeddings. It is a boosted ensemble of raw-feature routers with
 > representation-conditioned local predictors.
 
+## Project status & development notes
+
+- **GPU acceleration is an active work in progress.** The CUDA split backend
+  (`split_backend="cuda"`) accelerates wide / multi-output histograms, but
+  performance is still being optimized and is validated only on a limited set of
+  GPUs (e.g. NVIDIA T4). For most CPU workloads the Rust backend
+  (`repleafgbm-native`) is the faster, more mature path — treat GPU speed as
+  evolving, not final.
+- **Built with Claude Code.** RepLeafGBM's implementation and architecture were
+  developed with heavy use of [Claude Code](https://claude.com/claude-code)
+  (both coding and architecture design).
+
 ## How it works
 
 GBDTs dominate tabular ML because axis-aligned splits on raw features handle
