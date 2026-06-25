@@ -82,3 +82,11 @@ short — long prose defeats the purpose.
 - What rule we learned: LOCATE the exact surface before sizing — "multi-output leaf fit" was three different code paths (scalar-reuse / native-mc / vector); only one was the real lever. A 20-min trace stopped me writing float32 where it already existed.
 - Next mutation candidates: E14 float32 `predict_linear`; E02 native-rust wide Gram (the only float64 wide leaf-fit left is the scalar BLAS solve + this vector path); could the vector Gram go native too?
 - Should this affect the harness/prompt/code?: the orchestrator `--task multioutput --precision-a/-b` A/B worked cleanly; keep. No default change.
+
+### 010 — batched histogram HOLD; bottleneck shifted to leaf_fit; Task-B re-prioritized   2026-06-25
+- What we tried: SIZE the batched-histogram lever (iter 010) + Task-B (leafwise) on Colab T4 before building either, via embedded_linear phase shares.
+- What happened: histogram is only 2.7–3.2% of fit post-batched-scan → iter-010 HOLD/null. Surprise: leaf_fit is now 65–73% of CUDA fit. Task-B's leafwise split_scan is 32.2% → M=2 batching projects ~14% fit (BUILD-next).
+- Why it likely happened: the batched scan crushed split_scan (9×), so the remaining CUDA fit is host-leaf_fit-dominated; histogram was never large; leafwise still scans per-node (32.2%), a big launch-bound share to amortize even at M=2.
+- What rule we learned: AFTER a big win, RE-SIZE the phase decomposition — the bottleneck moves. The "obvious next lever" (histogram, mirroring the scan win) was dead because the scan win itself reshaped the profile; a *deferred* lever (Task-B) became MORE attractive once measured.
+- Next mutation candidates: BUILD Task-B leafwise frontier-batch (~14% ceiling); attack CUDA leaf_fit (E02 native-rust wide Gram / GPU leaf-fit) — now the dominant phase.
+- Should this affect the harness/prompt/code?: `scripts/colab_sizing.py` is a reusable phase-share sizer; keep. No product code this iter.

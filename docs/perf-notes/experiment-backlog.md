@@ -119,3 +119,23 @@ Cheap-evidence-first, local before GPU: **E03 → E09 → E08 → E10 → E04 �
 → E06 → E14 → E02 → E17 → E15**, recording each verdict; harness iter every 5
 product iters; GPU items (E21–E25) stay queued for a Colab session. E05/E12/E18
 already reasoned to reject (record + skip the build).
+
+## Session 2 results (2026-06-25, iter 008–010)
+
+- **iter 008 SHIPPED + T4-validated** — flipped `REPLEAFGBM_CUDA_BATCHED_SCAN` default
+  ON (cuda+depthwise). Re-val: wide 3.86× / narrow 1.99× / mc 2.94× fit, quality
+  identical; kill switch `=0`.
+- **E15 SHIPPED** (iter 009) — float32_gram for multi-output **vector** leaves
+  (`fit_vector_leaves`): 1.055× wide-emb MO fit, quality-equivalent. (Multiclass-wide
+  was already float32 via the per-class fallback; narrow mc is native = E02.)
+- **iter 010 HOLD/null** — batched `build_histograms`: histogram is only 2.7–3.2% of
+  fit post-batched-scan (below the +3% gate). Sized out. (Also lowers E22's value.)
+- **GPU bottleneck shifted to leaf_fit** (65–73% depthwise, 49% leafwise post-batch).
+  The next CUDA lever is **leaf_fit** (E02 native-rust wide Gram, or GPU leaf-fit), not
+  histogram/scan.
+- **Task B (leafwise frontier-batch) → BUILD-NEXT** — leafwise split_scan is 32.2% of
+  fit; M=2 batching at the measured ~89%-launch-bound ratio → ~1.8× scan → **~14%
+  whole-fit ceiling**. Stage host-bitwise (reuse `_make_candidates_batched`) then the
+  CuPy M-axis device lift.
+- **Next-session order:** Task-B leafwise batch (G) → E02 native-rust wide Gram (L) →
+  E14 float32 `predict_linear` (L) → E17 float32 embedding cache (L).

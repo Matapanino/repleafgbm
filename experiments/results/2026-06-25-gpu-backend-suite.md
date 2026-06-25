@@ -6,10 +6,10 @@
 
 | case | task | features | numpy fit (s) | cuda fit (s) | fit speedup | numpy pred (s) | cuda pred (s) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| binary_30f_bins256 | binary | 30 | 2.48 | 2.05 | **1.21x** | 0.084 | 0.069 |
-| binary_200f_bins256 | binary | 200 | 11.56 | 6.46 | **1.79x** | 0.339 | 0.223 |
-| multiclass_c5_200f_bins256 | multiclass | 200 | 45.07 | 21.14 | **2.13x** | 0.351 | 0.341 |
-| multioutput_k5_30f_bins256 | multioutput | 30 | 10.86 | 5.66 | **1.92x** | 0.081 | 0.082 |
-| multioutput_k5_200f_bins256 | multioutput | 200 | 54.48 | 9.71 | **5.61x** | 0.674 | 0.678 |
-| regression_30f_bins256 | regression | 30 | 2.78 | 2.11 | **1.32x** | 0.123 | 0.091 |
-| regression_200f_bins256 | regression | 200 | 12.34 | 7.24 | **1.70x** | 0.237 | 0.233 |
+| binary_30f_bins256 | binary | 30 | 2.34 | 2.44 | **0.96x** | 0.068 | 0.070 |
+| binary_200f_bins256 | binary | 200 | 11.18 | 6.36 | **1.76x** | 0.203 | 0.216 |
+| multiclass_c5_200f_bins256 | multiclass | 200 | 43.70 | 21.67 | **2.02x** | 0.339 | 0.323 |
+| multioutput_k5_30f_bins256 | multioutput | 30 | 10.51 | 5.58 | **1.88x** | 0.081 | 0.079 |
+| multioutput_k5_200f_bins256 | multioutput | 200 | 52.79 | 9.59 | **5.50x** | 0.443 | 0.446 |
+| regression_30f_bins256 | regression | 30 | 2.36 | 1.90 | **1.24x** | 0.072 | 0.075 |
+| regression_200f_bins256 | regression | 200 | 11.51 | 7.03 | **1.64x** | 0.254 | 0.238 |
