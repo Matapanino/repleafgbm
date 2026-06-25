@@ -11,7 +11,7 @@ Settings: max_rows=6000, seeds=[0, 1, 2], early_stopping=25 rounds, learned_enco
 - Seeds: [0, 1, 2]
 - max_rows: 6000; early stopping: 25 rounds
 - Split: 60/20/20 — stratified by class for classification, random for regression
-- strict mode: True
+- strict mode: False
 - Datasets (version anchor = OpenML data_id):
   - california (regression, sklearn builtin)
   - house_sales (regression, openml data_id=42731)
@@ -29,50 +29,62 @@ Settings: max_rows=6000, seeds=[0, 1, 2], early_stopping=25 rounds, learned_enco
 |---|---|---|---|
 | catboost | 0.5013 | 0.8090 | 0.5 |
 | RepLeaf embedded_linear | 0.5080 | 0.8038 | 0.2 |
-| RepLeaf constant | 0.5110 | 0.8014 | 0.3 |
-| lightgbm | 0.5119 | 0.8007 | 2.0 |
+| RepLeaf adaptive_insample | 0.5096 | 0.8025 | 0.2 |
+| RepLeaf adaptive | 0.5109 | 0.8017 | 0.4 |
+| RepLeaf constant | 0.5110 | 0.8014 | 0.2 |
+| lightgbm | 0.5119 | 0.8007 | 1.5 |
 | xgboost | 0.5139 | 0.7992 | 0.4 |
-| RepLeaf embedded torch_mlp | 0.5239 | 0.7912 | 0.4 |
-| RepLeaf embedded torch_periodic_plr | 0.5267 | 0.7888 | 0.9 |
-| hist_gradient_boosting | 0.5272 | 0.7887 | 0.4 |
+| RepLeaf embedded plr | 0.5232 | 0.7918 | 0.3 |
+| RepLeaf embedded torch_mlp | 0.5239 | 0.7912 | 0.3 |
+| RepLeaf embedded torch_periodic_plr | 0.5267 | 0.7888 | 0.7 |
+| hist_gradient_boosting | 0.5272 | 0.7887 | 0.3 |
 
 ## house_sales (regression, n=6000, categorical: 1)
 
 | model | rmse | r2 | fit[s] |
 |---|---|---|---|
 | catboost | 0.1654 | 0.9009 | 0.5 |
-| lightgbm | 0.1712 | 0.8937 | 1.0 |
+| lightgbm | 0.1712 | 0.8937 | 0.9 |
 | RepLeaf constant | 0.1719 | 0.8928 | 0.2 |
+| RepLeaf adaptive | 0.1721 | 0.8925 | 0.3 |
 | xgboost | 0.1725 | 0.8921 | 0.3 |
 | hist_gradient_boosting | 0.1742 | 0.8898 | 0.3 |
+| RepLeaf adaptive_insample | 0.1775 | 0.8857 | 0.3 |
 | RepLeaf embedded_linear | 0.1775 | 0.8856 | 0.2 |
-| RepLeaf embedded torch_periodic_plr | 0.1827 | 0.8790 | 0.6 |
+| RepLeaf embedded plr | 0.1799 | 0.8827 | 0.4 |
+| RepLeaf embedded torch_periodic_plr | 0.1827 | 0.8790 | 0.5 |
 | RepLeaf embedded torch_mlp | 0.1878 | 0.8724 | 0.3 |
 
 ## diamonds (regression, n=6000, categorical: 3)
 
 | model | rmse | r2 | fit[s] |
 |---|---|---|---|
-| lightgbm | 0.1035 | 0.9897 | 1.5 |
+| lightgbm | 0.1035 | 0.9897 | 1.4 |
 | xgboost | 0.1058 | 0.9892 | 0.2 |
 | catboost | 0.1064 | 0.9891 | 0.5 |
-| RepLeaf constant | 0.1095 | 0.9885 | 0.5 |
+| RepLeaf constant | 0.1095 | 0.9885 | 0.3 |
+| RepLeaf adaptive | 0.1108 | 0.9882 | 0.5 |
 | hist_gradient_boosting | 0.1109 | 0.9881 | 0.3 |
 | RepLeaf embedded_linear | 0.1114 | 0.9881 | 0.4 |
-| RepLeaf embedded torch_mlp | 0.1179 | 0.9866 | 0.6 |
-| RepLeaf embedded torch_periodic_plr | 0.1189 | 0.9864 | 0.7 |
+| RepLeaf adaptive_insample | 0.1118 | 0.9880 | 0.4 |
+| RepLeaf embedded plr | 0.1151 | 0.9872 | 0.8 |
+| RepLeaf embedded torch_mlp | 0.1179 | 0.9866 | 0.4 |
+| RepLeaf embedded torch_periodic_plr | 0.1189 | 0.9864 | 0.5 |
 
 ## wine_quality (regression, n=6000, categorical: 0)
 
 | model | rmse | r2 | fit[s] |
 |---|---|---|---|
-| lightgbm | 0.6479 | 0.4476 | 1.3 |
-| xgboost | 0.6499 | 0.4439 | 0.2 |
-| RepLeaf embedded_linear | 0.6505 | 0.4432 | 0.4 |
-| RepLeaf constant | 0.6521 | 0.4405 | 0.3 |
+| lightgbm | 0.6479 | 0.4476 | 1.2 |
+| RepLeaf adaptive_insample | 0.6484 | 0.4469 | 0.4 |
+| xgboost | 0.6499 | 0.4439 | 0.3 |
+| RepLeaf embedded_linear | 0.6505 | 0.4432 | 0.3 |
+| RepLeaf adaptive | 0.6514 | 0.4417 | 0.3 |
+| RepLeaf constant | 0.6521 | 0.4405 | 0.2 |
 | catboost | 0.6542 | 0.4367 | 0.5 |
+| RepLeaf embedded plr | 0.6556 | 0.4345 | 0.8 |
 | RepLeaf embedded torch_mlp | 0.6612 | 0.4244 | 0.3 |
-| RepLeaf embedded torch_periodic_plr | 0.6699 | 0.4096 | 0.4 |
+| RepLeaf embedded torch_periodic_plr | 0.6699 | 0.4096 | 0.3 |
 | hist_gradient_boosting | 0.6707 | 0.4077 | 0.2 |
 
 ## credit_g (binary, n=1000, categorical: 13)
@@ -82,21 +94,27 @@ Settings: max_rows=6000, seeds=[0, 1, 2], early_stopping=25 rounds, learned_enco
 | catboost | 0.5126 | 0.7684 | 0.1 |
 | xgboost | 0.5304 | 0.7470 | 0.0 |
 | lightgbm | 0.5365 | 0.7500 | 0.3 |
+| RepLeaf adaptive | 0.5405 | 0.7365 | 0.0 |
 | hist_gradient_boosting | 0.5410 | 0.7460 | 0.0 |
 | RepLeaf embedded_linear | 0.5419 | 0.7387 | 0.0 |
-| RepLeaf embedded torch_mlp | 0.5489 | 0.7341 | 0.1 |
-| RepLeaf constant | 0.5491 | 0.7393 | 0.1 |
+| RepLeaf adaptive_insample | 0.5419 | 0.7387 | 0.0 |
+| RepLeaf embedded plr | 0.5437 | 0.7320 | 0.0 |
+| RepLeaf embedded torch_mlp | 0.5489 | 0.7341 | 0.0 |
+| RepLeaf constant | 0.5491 | 0.7393 | 0.0 |
 | RepLeaf embedded torch_periodic_plr | 0.5528 | 0.7334 | 0.1 |
 
 ## phoneme (binary, n=5404, categorical: 0)
 
 | model | logloss | auc | fit[s] |
 |---|---|---|---|
-| catboost | 0.2584 | 0.9508 | 0.4 |
-| RepLeaf embedded torch_periodic_plr | 0.2652 | 0.9473 | 0.2 |
+| catboost | 0.2584 | 0.9508 | 0.6 |
+| RepLeaf embedded torch_periodic_plr | 0.2652 | 0.9474 | 0.2 |
 | RepLeaf embedded torch_mlp | 0.2654 | 0.9480 | 0.2 |
+| RepLeaf adaptive | 0.2659 | 0.9476 | 0.2 |
 | lightgbm | 0.2668 | 0.9466 | 0.9 |
+| RepLeaf embedded plr | 0.2680 | 0.9470 | 0.4 |
 | RepLeaf embedded_linear | 0.2680 | 0.9463 | 0.1 |
+| RepLeaf adaptive_insample | 0.2688 | 0.9459 | 0.1 |
 | RepLeaf constant | 0.2697 | 0.9453 | 0.1 |
 | xgboost | 0.2756 | 0.9432 | 0.1 |
 | hist_gradient_boosting | 0.2803 | 0.9425 | 0.2 |
@@ -106,36 +124,45 @@ Settings: max_rows=6000, seeds=[0, 1, 2], early_stopping=25 rounds, learned_enco
 | model | logloss | auc | fit[s] |
 |---|---|---|---|
 | xgboost | 0.3144 | 0.9052 | 0.1 |
-| catboost | 0.3154 | 0.9039 | 0.2 |
-| lightgbm | 0.3167 | 0.9039 | 0.7 |
+| catboost | 0.3154 | 0.9039 | 0.3 |
+| lightgbm | 0.3167 | 0.9039 | 0.6 |
 | RepLeaf constant | 0.3235 | 0.9011 | 0.1 |
+| RepLeaf adaptive | 0.3239 | 0.9005 | 0.2 |
+| RepLeaf adaptive_insample | 0.3241 | 0.9003 | 0.1 |
 | RepLeaf embedded_linear | 0.3281 | 0.8979 | 0.1 |
 | RepLeaf embedded torch_mlp | 0.3305 | 0.8961 | 0.2 |
-| RepLeaf embedded torch_periodic_plr | 0.3320 | 0.8948 | 0.3 |
-| hist_gradient_boosting | 0.3336 | 0.8968 | 0.2 |
+| RepLeaf embedded plr | 0.3317 | 0.8955 | 0.1 |
+| RepLeaf embedded torch_periodic_plr | 0.3320 | 0.8948 | 0.2 |
+| hist_gradient_boosting | 0.3336 | 0.8968 | 0.1 |
 
 ## wine (multiclass, n=178, categorical: 0)
 
 | model | logloss | accuracy | fit[s] |
 |---|---|---|---|
 | RepLeaf embedded_linear | 0.0947 | 0.9658 | 0.0 |
-| RepLeaf embedded torch_periodic_plr | 0.1048 | 0.9573 | 0.1 |
+| RepLeaf adaptive | 0.1013 | 0.9573 | 0.0 |
+| RepLeaf embedded plr | 0.1015 | 0.9658 | 0.0 |
+| RepLeaf adaptive_insample | 0.1029 | 0.9658 | 0.0 |
+| RepLeaf embedded torch_periodic_plr | 0.1048 | 0.9573 | 0.0 |
 | RepLeaf constant | 0.1083 | 0.9658 | 0.0 |
-| RepLeaf embedded torch_mlp | 0.1159 | 0.9573 | 0.1 |
+| RepLeaf embedded torch_mlp | 0.1159 | 0.9573 | 0.0 |
 | catboost | 0.1258 | 0.9402 | 0.3 |
 | xgboost | 0.1428 | 0.9487 | 0.0 |
 | lightgbm | 0.1629 | 0.9487 | 0.3 |
-| hist_gradient_boosting | 0.1833 | 0.9573 | 0.1 |
+| hist_gradient_boosting | 0.1833 | 0.9573 | 0.0 |
 
 ## vehicle (multiclass, n=846, categorical: 0)
 
 | model | logloss | accuracy | fit[s] |
 |---|---|---|---|
-| RepLeaf embedded torch_mlp | 0.4905 | 0.7418 | 0.2 |
-| RepLeaf embedded_linear | 0.4984 | 0.7572 | 0.2 |
-| lightgbm | 0.4995 | 0.7707 | 1.3 |
-| catboost | 0.5025 | 0.7707 | 0.7 |
-| RepLeaf embedded torch_periodic_plr | 0.5161 | 0.7457 | 0.2 |
+| RepLeaf embedded torch_mlp | 0.4902 | 0.7418 | 0.1 |
+| RepLeaf adaptive_insample | 0.4971 | 0.7572 | 0.1 |
+| RepLeaf embedded_linear | 0.4985 | 0.7572 | 0.1 |
+| lightgbm | 0.4995 | 0.7707 | 1.0 |
+| catboost | 0.5025 | 0.7707 | 0.5 |
+| RepLeaf adaptive | 0.5053 | 0.7514 | 0.1 |
+| RepLeaf embedded torch_periodic_plr | 0.5156 | 0.7457 | 0.1 |
+| RepLeaf embedded plr | 0.5179 | 0.7534 | 0.1 |
 | RepLeaf constant | 0.5194 | 0.7572 | 0.1 |
 | xgboost | 0.5313 | 0.7572 | 0.1 |
 | hist_gradient_boosting | 0.5387 | 0.7649 | 0.2 |
@@ -144,24 +171,30 @@ Settings: max_rows=6000, seeds=[0, 1, 2], early_stopping=25 rounds, learned_enco
 
 | model | mean rank | datasets |
 |---|---|---|
-| lightgbm | 2.00 | 4 |
-| catboost | 2.50 | 4 |
-| xgboost | 3.25 | 4 |
-| RepLeaf constant | 3.50 | 4 |
-| RepLeaf embedded_linear | 4.25 | 4 |
-| hist_gradient_boosting | 6.50 | 4 |
-| RepLeaf embedded torch_mlp | 6.75 | 4 |
-| RepLeaf embedded torch_periodic_plr | 7.25 | 4 |
+| lightgbm | 2.50 | 4 |
+| catboost | 3.00 | 4 |
+| xgboost | 4.25 | 4 |
+| RepLeaf adaptive | 4.50 | 4 |
+| RepLeaf constant | 4.50 | 4 |
+| RepLeaf adaptive_insample | 5.00 | 4 |
+| RepLeaf embedded_linear | 5.25 | 4 |
+| RepLeaf embedded plr | 8.50 | 4 |
+| hist_gradient_boosting | 8.50 | 4 |
+| RepLeaf embedded torch_mlp | 9.75 | 4 |
+| RepLeaf embedded torch_periodic_plr | 10.25 | 4 |
 
 ## Aggregate mean rank — Classification (lower is better)
 
 | model | mean rank | datasets |
 |---|---|---|
-| catboost | 2.60 | 5 |
-| RepLeaf embedded_linear | 3.60 | 5 |
-| lightgbm | 4.00 | 5 |
-| RepLeaf embedded torch_mlp | 4.00 | 5 |
-| xgboost | 4.60 | 5 |
-| RepLeaf embedded torch_periodic_plr | 4.80 | 5 |
-| RepLeaf constant | 5.20 | 5 |
-| hist_gradient_boosting | 7.20 | 5 |
+| catboost | 3.40 | 5 |
+| RepLeaf adaptive | 4.20 | 5 |
+| RepLeaf embedded_linear | 4.80 | 5 |
+| lightgbm | 5.00 | 5 |
+| RepLeaf adaptive_insample | 5.40 | 5 |
+| RepLeaf embedded torch_mlp | 5.60 | 5 |
+| xgboost | 6.40 | 5 |
+| RepLeaf embedded plr | 6.80 | 5 |
+| RepLeaf embedded torch_periodic_plr | 7.00 | 5 |
+| RepLeaf constant | 7.60 | 5 |
+| hist_gradient_boosting | 9.80 | 5 |

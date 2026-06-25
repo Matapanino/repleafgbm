@@ -90,6 +90,7 @@ adapters, and prediction-cache invalidation schemes are roadmap items.
 | `constant` | `b` (Newton step) | — |
 | `embedded_linear` | `b + w^T z` | encoder (`identity`, `plr`, `periodic`) |
 | `raw_linear` | `b + w^T x_num` | standardized raw numericals (LightGBM `linear_tree` analogue) |
+| `adaptive` | `embedded_linear`, gated per leaf | encoder, with a weighted-LOO fallback to `constant` where the linear fit does not generalize |
 
 Encoders (all NumPy, frozen; see `encoders/`):
 

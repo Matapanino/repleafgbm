@@ -241,7 +241,9 @@ def _split_indices(idx, y_sub, task, rng):
 
 
 def _repleaf_configs(learned_encoders: bool) -> list[tuple[str, dict]]:
-    """RepLeafGBM leaderboard arms. The two stock arms are always present; the
+    """RepLeafGBM leaderboard arms. The stock arms — a constant leaf, embedded
+    linear leaves over the identity and PLR (fixed) encoders, and the adaptive
+    per-leaf LOO gate plus its in-sample baseline — are always present; the
     learned-encoder arms (supervised-pretrained, then frozen to NumPy) are opt-in
     via ``--learned-encoders`` and need the ``[torch]`` extra — skipped silently
     if torch is absent, matching ``benchmark_real_data.py``."""
@@ -249,6 +251,11 @@ def _repleaf_configs(learned_encoders: bool) -> list[tuple[str, dict]]:
         ("RepLeaf constant", dict(leaf_model="constant")),
         ("RepLeaf embedded_linear", dict(leaf_model="embedded_linear",
                                          encoder="identity")),
+        # Fixed (non-learned) PLR representation: quantile piecewise-linear basis
+        # per feature. max_leaf_emb_dim is raised so the n_features*(n_bins+1)
+        # block is fit directly instead of random-projected at the default cap.
+        ("RepLeaf embedded plr", dict(leaf_model="embedded_linear",
+                                      encoder="plr", max_leaf_emb_dim=256)),
         # Per-leaf adaptive constant<->embedded_linear gate (weighted-LOO) and
         # its in-sample baseline (docs/proposals/adaptive-leaf-model.md).
         ("RepLeaf adaptive", dict(leaf_model="adaptive", encoder="identity")),
