@@ -129,6 +129,7 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"constant"` | A constant (classic GBDT leaf). |
 | `"embedded_linear"` | Ridge linear model over `z_theta(x)` (default). |
 | `"raw_linear"` | Ridge linear model over the raw features. |
+| `"adaptive"` | Per-leaf weighted-LOO gate: keeps the `embedded_linear` leaf only where it beats a constant, else falls back. |
 
 **`encoder`**
 
@@ -151,7 +152,7 @@ exactly what is covered vs. experimental is in
 | Backends | NumPy reference (histogram split search, leaf-wise growth) + optional Rust kernels (`repleafgbm-native`, ~5.8x faster, parity-tested). |
 | Tasks | Regression, binary & multiclass classification, multi-output regression (vector leaves). |
 | Objectives | Squared error, `huber`, `quantile`, `poisson`, logistic, softmax (parameterized instances like `Quantile(alpha=0.9)` too). |
-| Leaf models | `constant`, `embedded_linear`, `raw_linear`. |
+| Leaf models | `constant`, `embedded_linear`, `raw_linear`, `adaptive`. |
 | Encoders | `identity`, `plr`, `periodic`, `cross`, learned `torch_*`. |
 | Training | Early stopping, eval metrics (rmse, mae, logloss, multi_logloss, auc, accuracy, or a custom callable via `make_metric`), feature importances, sample weights, `class_weight`, `label_smoothing`. |
 | Data | `RepLeafDataset` with pandas/categorical (native subset splits) and embedding caching. |
@@ -165,23 +166,56 @@ encoder updates during boosting, GPU / distributed training) is in
 ## Benchmarks
 
 These small benchmarks track development progress; they are not performance
-claims. OpenML mean rank across 9 standard datasets (lower is better):
+claims. Two reproducible snapshots — a real-data leaderboard and a controlled
+synthetic signal.
+
+**Real data — OpenML** mean rank across 9 standard datasets, 3 seeds, a 60/20/20
+split with early stopping. Rank is among **all 11 models** in the suite (lower is
+better); primary metric is RMSE (regression) / logloss (classification):
 
 | Model | Regression (4) | Classification (5) |
 |---|---|---|
-| CatBoost | 2.00 | 2.00 |
-| RepLeaf (constant) | 4.00 | 2.60 |
-| XGBoost | 2.75 | 3.40 |
-| LightGBM | 2.50 | 3.60 |
-| RepLeaf (embedded_linear) | 4.50 | 4.20 |
-| HistGradientBoosting | 5.25 | 5.20 |
+| LightGBM | 2.50 | 5.00 |
+| CatBoost | 3.00 | 3.40 |
+| XGBoost | 4.25 | 6.40 |
+| RepLeaf (adaptive) | 4.50 | 4.20 |
+| RepLeaf (constant) | 4.50 | 7.60 |
+| RepLeaf (adaptive_insample) | 5.00 | 5.40 |
+| RepLeaf (embedded_linear) | 5.25 | 4.80 |
+| RepLeaf (embedded + plr) | 8.50 | 6.80 |
+| HistGradientBoosting | 8.50 | 9.80 |
+| RepLeaf (embedded + torch_mlp) | 9.75 | 5.60 |
+| RepLeaf (embedded + torch_periodic_plr) | 10.25 | 7.00 |
 
-RepLeafGBM is competitive with the major GBM libraries on real data, where a
-constant leaf is the honest choice. The leaf embeddings pay off on **smooth /
-periodic** structure: on such synthetic signals `embedded_linear` beats both
-`constant` and LightGBM, and refitting LightGBM's own routes with
-representation-conditioned leaves (`router_extraction`) improves it by 2–12%
-RMSE. Reproduce with `python benchmarks/openml_suite.py`; full numbers in
+The tuned external GBMs lead on real tabular data. Among the RepLeaf arms the
+**adaptive** leaf — a per-leaf weighted-LOO gate between a constant and an
+embedded-linear leaf — is the most robust (2nd overall on classification, behind
+only CatBoost; never worse than `constant`). Its leverage-free ablation
+`adaptive_insample` ranks below it, and higher-dimensional representations
+(`plr`, learned `torch_*`) do **not** help here: on real data a constant or
+adaptively-gated leaf is the honest choice.
+
+**Synthetic signal — regression RMSE** (mean of 3 seeds, n=10k, 20 features). The
+leaf embeddings pay off on smoother structure: an embedded-linear leaf over
+standardized raw features (`identity`) edges out a constant leaf and LightGBM
+(CatBoost still leads):
+
+| Model | RMSE |
+|---|---|
+| CatBoost | 0.395 |
+| RepLeaf (embedded_linear, identity) | 0.407 |
+| HistGradientBoosting | 0.411 |
+| RepLeaf (constant) | 0.412 |
+| LightGBM | 0.413 |
+
+The higher-dimensional `plr` / `torch_*` encoders are random-projected at the
+default `max_leaf_emb_dim=64` on this 20-feature signal and don't gain over
+`identity` (raise the cap to fit them directly). Separately, refitting
+LightGBM's own routes with representation-conditioned leaves
+(`router_extraction`) improves it by 2–12% RMSE.
+
+Reproduce with `python benchmarks/openml_suite.py --learned-encoders` and
+`python benchmarks/benchmark_synthetic_regression.py`; full real-data numbers in
 [experiments/results/openml_benchmark.md](experiments/results/openml_benchmark.md).
 
 ## Development

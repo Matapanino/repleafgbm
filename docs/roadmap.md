@@ -421,24 +421,28 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 
 - `benchmarks/openml_suite.py`: a reproducible breadth-first leaderboard over 9
   curated OpenML datasets (4 regression, 3 binary, 2 multiclass) comparing
-  RepLeafGBM (constant + embedded_linear) against LightGBM, XGBoost, CatBoost,
-  and sklearn HistGradientBoosting. Every model trains on the **same**
+  RepLeafGBM (constant, embedded_linear, the adaptive LOO-gated leaf, a
+  fixed-PLR arm, and the learned `torch_*` encoders) against LightGBM, XGBoost,
+  CatBoost, and sklearn HistGradientBoosting. Every model trains on the **same**
   ordinal-encoded matrix, fixed seed, 60/20/20 split, early stopping. Report:
   experiments/results/openml_benchmark.md (regenerate with one command);
   cached via `~/scikit_learn_data` for offline reruns. Part of the v1.0 OSS
   quality track.
-- Findings (mean rank, lower better): regression — CatBoost 2.00 < LightGBM
-  2.50 < XGBoost 2.75 < RepLeaf-constant 4.00 < RepLeaf-embedded 4.50 < HistGB
-  5.25; classification — CatBoost 2.00 < **RepLeaf-constant 2.60** < XGBoost
-  3.40 < LightGBM 3.60 < RepLeaf-embedded 4.20 < HistGB 5.20. RepLeafGBM is
-  competitive with the major libraries on standard real data (constant-leaf
-  notably edges out LightGBM/XGBoost on classification), and CatBoost leads
-  overall.
-- Confirms at breadth what Phases 14/16 found in depth: **embedded leaves add
-  no real-data accuracy over a constant leaf** here (embedded ranks below
-  constant on 8/9 datasets) — their advantage is specific to smooth/periodic
-  synthetic structure, not typical tabular targets. `leaf_model="constant"`
-  remains the honest default recommendation on unknown real data.
+- Findings (mean rank over **11 models**, 3 seeds, lower better; refreshed
+  2026-06-25 with the expanded arm set): the tuned external GBMs lead —
+  regression LightGBM 2.50 < CatBoost 3.00 < XGBoost 4.25; classification
+  CatBoost 3.40 first. Among the RepLeaf arms the **adaptive** leaf (per-leaf
+  weighted-LOO gate) is strongest — 2nd overall on classification (4.20, behind
+  only CatBoost) and tied-best with constant on regression (4.50); plain
+  `embedded_linear` is competitive on classification (4.80). The
+  higher-dimensional encoders (`plr`, learned `torch_*`) rank low on real data.
+- Confirms at breadth what Phases 14/16 found in depth: **higher-capacity
+  representation leaves add no real-data accuracy over a constant or
+  adaptively-gated leaf** here — their advantage is specific to smooth/periodic
+  synthetic structure (there `embedded_linear`+`identity` edges constant and
+  LightGBM), not typical tabular targets. The **adaptive** gate is the most
+  robust RepLeaf configuration on unknown real data; a plain constant leaf
+  remains a safe, honest baseline.
 
 ## Phase 26 — documentation completion (v1.0) ✅ (2026-06-15)
 
