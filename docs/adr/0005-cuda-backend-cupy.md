@@ -146,6 +146,19 @@ tested locally or in CI.
   T4: ~2.95x wide-200f fit (device scan off→on) and ~5.3x vs NumPy; see
   `experiments/results/2026-06-24-cuda-parity.md`.
 
+- **Node-batched depthwise scan** (added + on by default 2026-06-25). With
+  `grow_policy="depthwise"` the grower hands a whole level's M frontier histograms
+  to `BaseSplitBackend.find_best_split_batched` for one device scan instead of one
+  call per node, amortizing the per-node kernel launch (the measured GPU scan
+  bottleneck, 48–85% of CUDA fit). The host default loops `find_best_split`, so
+  NumPy/Rust stay **bitwise** and the grower's batched path is bitwise-identical to
+  the per-node FIFO; `CudaSplitBackend` overrides it with a CuPy M-axis scan (no
+  RawKernel). Like the MO device scan it is **on by default** with a private
+  `REPLEAFGBM_CUDA_BATCHED_SCAN=0` kill switch, and `_scan_min_cells` still routes
+  tiny frontiers to the host. Scalar targets only (multi-output keeps the per-node
+  path). T4: split_scan 5–9x, depthwise fit 1.9–3.9x, quality-equivalent; see
+  `experiments/results/2026-06-25-batched-scan-ab.md`.
+
 ## Validation
 
 CI and the macOS dev box skip the CUDA tests (`pytest.importorskip("cupy")` +

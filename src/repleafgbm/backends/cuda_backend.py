@@ -171,6 +171,30 @@ def _resolve_mo_device_scan() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+# Private kill switch for the node-batched depthwise scan (default on). The
+# depthwise grower hands each level's frontier histograms here for one batched
+# device scan (amortizing the per-node launch — T4-validated at split_scan 5-9x,
+# depthwise fit 1.9-3.9x, quality-equivalent). Set REPLEAFGBM_CUDA_BATCHED_SCAN to
+# a falsy value to fall back to the per-node path (base default loop), i.e. the
+# pre-batched behavior — a gate for a narrow-case regression. Not part of the
+# public API; read once at construction.
+_BATCHED_SCAN_ENV = "REPLEAFGBM_CUDA_BATCHED_SCAN"
+
+
+def _resolve_batched_scan() -> bool:
+    """Whether depthwise node-batched scan runs on-device. Default True.
+
+    Reads ``REPLEAFGBM_CUDA_BATCHED_SCAN``. Unset/empty → True (the batched device
+    path — one kernel launch per level instead of per node). A falsy value
+    (``0``/``false``/``no``/``off``, case-insensitive) → the per-node host loop
+    (the pre-batched behavior). Any other value keeps the batched path on.
+    """
+    raw = os.environ.get(_BATCHED_SCAN_ENV)
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 class CudaSplitBackend(BaseSplitBackend):
     """GPU histogram build + GPU numeric split scan (CuPy); categoricals host."""
 
@@ -215,6 +239,12 @@ class CudaSplitBackend(BaseSplitBackend):
         # the base host stack + host scan (pre-device behavior). See
         # _resolve_mo_device_scan / build_histograms_multioutput below.
         self._mo_device_scan = _resolve_mo_device_scan()
+        # Node-batched depthwise scan (default ON, kill switch), resolved once. On →
+        # the grower hands each level's frontier histograms to find_best_split_batched
+        # for one device scan; the instance attr tells the grower to take that path
+        # (shadows the base-class default of False). See _resolve_batched_scan.
+        self._batched_scan = _resolve_batched_scan()
+        self.supports_batched_scan = self._batched_scan
         # Private transfer/work counters (profiling only; not part of the public
         # API or the BaseSplitBackend contract). They are plain integer adds at
         # each H2D/D2H boundary — negligible next to a kernel launch — and let
@@ -465,6 +495,140 @@ class CudaSplitBackend(BaseSplitBackend):
                 if cand is not None and (best is None or cand.gain > best.gain):
                     best = cand
         return best
+
+    def find_best_split_batched(
+        self,
+        hists,
+        n_bins_per_feature: np.ndarray,
+        min_samples_leaf: int,
+        l2: float,
+        categorical_mask: np.ndarray | None = None,
+        cat_smooth: float = 10.0,
+        min_data_per_group: int = 100,
+        max_cat_threshold: int = 32,
+    ) -> list[SplitCandidate | None]:
+        """One batched device scan of a depthwise level's M node histograms.
+
+        Vectorizes :meth:`find_best_split`'s numeric scan over a leading node (M)
+        axis — the same CuPy reductions (cumsum + Newton gain + per-node argmax),
+        launched once for all M nodes instead of M times (the launch-amortization
+        win, since the per-node scan is launch-bound, [[gpu-cuda-bottleneck-split-scan]]).
+        Stacks the (already device-resident) histograms on-device, returns only the
+        M winners' scalars (32 bytes each) plus per-node categorical slices. Off the
+        gate or below the cell threshold it falls back to the per-node loop. Parity
+        is allclose + quality-equivalent, not bitwise — near-tied splits can flip via
+        low-bit device reductions (the host depthwise tree is untouched; ADR 0005).
+        """
+        if not self._batched_scan or not hists:
+            return super().find_best_split_batched(
+                hists, n_bins_per_feature, min_samples_leaf, l2,
+                categorical_mask, cat_smooth, min_data_per_group, max_cat_threshold,
+            )
+        cp = self._cp
+        H = cp.stack([cp.asarray(h) for h in hists])  # (M, F, B, 3), on-device
+        m, n_features, n_bins_max = int(H.shape[0]), int(H.shape[1]), int(H.shape[2])
+        # Adaptive: a small batch scans faster per-node on the host (one bulk copy)
+        # than as a launch over M*F*B cells — same crossover as the single scan.
+        if m * n_features * n_bins_max < self._scan_min_cells:
+            self._bump("hist_d2h_bytes", 24 * m * n_features * n_bins_max)
+            self._bump("n_small_scans", m)
+            host = cp.asnumpy(H)
+            return [
+                self._cpu.find_best_split(
+                    host[i], n_bins_per_feature, min_samples_leaf, l2,
+                    categorical_mask, cat_smooth, min_data_per_group, max_cat_threshold,
+                )
+                for i in range(m)
+            ]
+        self._bump("n_gpu_scans", m)
+
+        g, h, n = H[:, :, :, 0], H[:, :, :, 1], H[:, :, :, 2]  # (M, F, B)
+        feat_idx = cp.arange(n_features)
+        nbpf_d = cp.asarray(n_bins_per_feature)
+        # Per-node totals (same across features) off feature 0: each (M,).
+        g_total = g[:, 0].sum(axis=1)
+        h_total = h[:, 0].sum(axis=1)
+        n_total = n[:, 0].sum(axis=1)
+        parent_score = _leaf_score(g_total, h_total, l2)  # (M,)
+
+        miss_g = g[:, feat_idx, nbpf_d][:, :, None]  # (M, F, 1)
+        miss_h = h[:, feat_idx, nbpf_d][:, :, None]
+        miss_n = n[:, feat_idx, nbpf_d][:, :, None]
+        left_g = cp.cumsum(g, axis=2) + miss_g  # (M, F, B)
+        left_h = cp.cumsum(h, axis=2) + miss_h
+        left_n = cp.cumsum(n, axis=2) + miss_n
+        right_n = n_total[:, None, None] - left_n
+
+        valid = (
+            (cp.arange(n_bins_max)[None, None, :] <= (nbpf_d - 2)[None, :, None])
+            & (left_n >= min_samples_leaf)
+            & (right_n >= min_samples_leaf)
+        )
+        if categorical_mask is not None:
+            valid &= ~cp.asarray(categorical_mask)[None, :, None]
+        gain = (
+            _leaf_score(left_g, left_h, l2)
+            + _leaf_score(g_total[:, None, None] - left_g,
+                          h_total[:, None, None] - left_h, l2)
+            - parent_score[:, None, None]
+        )
+        gain = cp.where(valid & cp.isfinite(gain), gain, -np.inf)  # (M, F, B)
+
+        # Per-node argmax over (F*B) (lowest flat index on ties, like np.argmax),
+        # then one batched fetch of every winner's (flat, gain, n_left, n_right).
+        flat_gain = gain.reshape(m, -1)
+        best_flat_d = flat_gain.argmax(axis=1)  # (M,)
+        rows_m = cp.arange(m)
+        packed = cp.asnumpy(
+            cp.stack(
+                [
+                    best_flat_d.astype(cp.float64),
+                    flat_gain[rows_m, best_flat_d],
+                    left_n.reshape(m, -1)[rows_m, best_flat_d],
+                    right_n.reshape(m, -1)[rows_m, best_flat_d],
+                ],
+                axis=1,
+            )
+        )  # (M, 4) — the only numeric-path sync
+        self._bump("winner_d2h_bytes", 32 * m)
+
+        cat_feats = (
+            np.flatnonzero(categorical_mask)
+            if categorical_mask is not None and categorical_mask.any()
+            else np.empty(0, dtype=np.int64)
+        )
+        # Categorical subset scan stays on the host (parity); pull the totals +
+        # the categorical feature slices once for the whole batch.
+        host_hist = cp.asnumpy(H) if cat_feats.size else None
+        gt = cp.asnumpy(g_total) if cat_feats.size else None
+        ht = cp.asnumpy(h_total) if cat_feats.size else None
+        nt = cp.asnumpy(n_total) if cat_feats.size else None
+        ps = cp.asnumpy(parent_score) if cat_feats.size else None
+
+        out: list[SplitCandidate | None] = []
+        for i in range(m):
+            best_flat = int(packed[i, 0])
+            best_gain = float(packed[i, 1])
+            f, c = divmod(best_flat, n_bins_max)
+            best: SplitCandidate | None = None
+            if best_gain > 1e-12:
+                best = SplitCandidate(
+                    feature=int(f), bin=int(c), gain=best_gain,
+                    n_left=int(packed[i, 2]), n_right=int(packed[i, 3]),
+                )
+            for cf in cat_feats:
+                self._bump("cat_slice_d2h_bytes", 24 * n_bins_max)
+                self._bump("n_cat_slices", 1)
+                cand = self._cpu._best_categorical_split(
+                    int(cf), host_hist[i, cf], int(n_bins_per_feature[cf]),
+                    float(gt[i]), float(ht[i]), float(nt[i]), float(ps[i]),
+                    min_samples_leaf, l2, cat_smooth, min_data_per_group,
+                    max_cat_threshold,
+                )
+                if cand is not None and (best is None or cand.gain > best.gain):
+                    best = cand
+            out.append(best)
+        return out
 
     # ----------------------------------------------------------------- #
     # Multi-output (shared-routing) device fast paths.

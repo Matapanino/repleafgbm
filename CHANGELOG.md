@@ -5,6 +5,47 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [1.9.0] - 2026-06-25
+
+Performance release: faster wide-embedding leaf fitting on the CPU path and a faster
+CUDA training path, plus a new opt-in precision knob. No public API break, no
+leaf-math change on the default path, model format unchanged (still v6) — existing
+models load and predict identically. The optional `repleafgbm-native` extension is
+unchanged (still 0.3.0).
+
+### Added
+- **`leaf_fit_precision` constructor param** (`"float64"` default | `"float32_gram"`)
+  on `RepLeafRegressor` / `RepLeafClassifier` — an opt-in knob that accumulates the
+  two large wide-embedding (emb>128) per-leaf reductions (the weighted Gram and the
+  gradient/target projection) in float32 while the centering and the ridge solve stay
+  float64. Covers both scalar leaves and shared-routing multi-output **vector** leaves
+  (`core.multioutput.fit_vector_leaves`). ~1.18x faster wide scalar fit and ~5.5%
+  faster wide (emb=256) multi-output fit, quality-equivalent (allclose, not bitwise —
+  near-tied leaf-gate decisions can flip). The default `"float64"` path is
+  byte-identical and remains the bitwise NumPy<->Rust parity path.
+- **Node-batched CUDA depthwise split scan** (`split_backend="cuda"`,
+  `grow_policy="depthwise"`, scalar targets) — the grower scans a whole level's M
+  frontier histograms in one device kernel launch instead of one call per node,
+  amortizing the launch that dominates the GPU scan. **On by default**; set the
+  private `REPLEAFGBM_CUDA_BATCHED_SCAN=0` as a kill switch. The host NumPy/Rust path
+  is bitwise-identical (the batched scan loops the per-node scan there); only the
+  device launch count changes. T4: split_scan 5-9x, whole depthwise fit 1.9-3.9x,
+  quality-equivalent
+  (`experiments/results/2026-06-25-batched-scan-ab.md`,
+  `experiments/results/2026-06-25-batched-scan-default-on.md`).
+
+### Performance
+- **Native leaf-fit gate raised 64 -> 128** (`_NATIVE_STATS_MAX_DIM`). The rayon
+  native `leaf_linear_stats` now handles embeddings up to 128 dims (the per-leaf BLAS
+  Gram only wins past 128, the measured crossover), giving **1.65x fit at emb=128** —
+  default path, float64, quality-identical. (`leaf_fit_precision="float32_gram"` now
+  applies only to the emb>128 BLAS path.)
+- **Device-resident multi-output CUDA split scan.** The K per-output histograms stay
+  resident on the GPU and the summed-gain scan runs on-device (was host stack + host
+  scan), returning only the winning split — ~2.95x wide-200f multi-output fit (device
+  scan off->on) on a T4. The host NumPy/Rust defaults reproduce the prior behavior
+  bitwise; `REPLEAFGBM_CUDA_MO_DEVICE_SCAN=0` is a kill switch.
+
 ## [1.8.0] - 2026-06-24
 
 Performance + tree-growth release. The CPU training and prediction paths are

@@ -122,6 +122,29 @@ class Splitter:
                 max_cat_threshold=self.max_cat_threshold,
             )
 
+    def find_best_split_batched(
+        self, hists: list[np.ndarray]
+    ) -> list[SplitCandidate | None]:
+        """Best split for each node of a depthwise level, in ONE backend call.
+
+        ``hists`` is one scalar histogram per frontier node (numeric + categorical
+        subset scan). Mirrors :meth:`find_best_split` but hands the whole batch to
+        the backend so a device backend can scan it in a single kernel launch; the
+        host default loops the per-node scan (bitwise-identical). Scalar targets
+        only — the grower keeps the per-node path for multi-output.
+        """
+        with timed(self._profiler, "split_scan"):
+            return self.backend.find_best_split_batched(
+                hists,
+                self.n_bins_per_feature,
+                self.min_samples_leaf,
+                self.l2,
+                categorical_mask=self.is_categorical,
+                cat_smooth=self.cat_smooth,
+                min_data_per_group=self.min_data_per_group,
+                max_cat_threshold=self.max_cat_threshold,
+            )
+
     def find_best_level_split(
         self, hists: list[np.ndarray]
     ) -> tuple[int, int] | None:

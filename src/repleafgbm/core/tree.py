@@ -274,6 +274,14 @@ class TreeGrower:
     ) -> tuple[Tree, list[np.ndarray]]:
         """Grow a tree on the full training set; returns (tree, rows-per-leaf)."""
         if self.grow_policy == "depthwise":
+            # A device backend with the batched-scan gate on scans each level's
+            # frontier in one kernel launch; the level-synchronous grower is
+            # bitwise-identical to the per-node FIFO on any backend whose batched
+            # scan equals the loop (scalar targets only — multi-output keeps FIFO).
+            if grad.ndim == 1 and getattr(
+                self.splitter.backend, "supports_batched_scan", False
+            ):
+                return self._grow_depthwise_batched(grad, hess)
             return self._grow_depthwise(grad, hess)
         if self.grow_policy == "symmetric":
             return self._grow_symmetric(grad, hess)
@@ -338,6 +346,74 @@ class TreeGrower:
                 if child is not None:
                     frontier.append(child)
         return self._finalize(store)
+
+    def _grow_depthwise_batched(
+        self, grad: np.ndarray, hess: np.ndarray
+    ) -> tuple[Tree, list[np.ndarray]]:
+        """Depthwise growth that scans each level's frontier in ONE backend call.
+
+        Processes the tree level-synchronously: expand the current level's
+        candidates left-to-right (committing splits + building child histograms in
+        the exact order the per-node FIFO would pop them), then scan all the
+        level's children in a single :meth:`Splitter.find_best_split_batched` call.
+        On a device backend this batches M nodes into one kernel launch; on the
+        host the batched scan loops the per-node scan, so the produced tree is
+        **bitwise-identical** to :meth:`_grow_depthwise` (asserted in
+        tests/test_batched_scan.py). Used only when the backend opts in
+        (``supports_batched_scan``) for scalar targets.
+        """
+        store = self._new_store()
+        counter = itertools.count()  # same tie-break order as the FIFO path
+        root_rows = store.node_rows[0]
+        if not self._can_split(root_rows, depth=0):
+            return self._finalize(store)
+        root_hist = self.splitter.build_histograms(root_rows, grad, hess)
+        root = self._make_candidate(counter, 0, root_rows, 0, root_hist)
+        if root is None:
+            return self._finalize(store)
+
+        level = [root]
+        n_leaves = 1
+        while level and n_leaves < self.num_leaves:
+            children: list[tuple[int, np.ndarray, int, np.ndarray]] = []
+            for cand in level:
+                if n_leaves >= self.num_leaves:
+                    break  # FIFO stops popping at the cap, left-to-right
+                n_leaves += 1
+                children.extend(self._expand(store, grad, hess, cand))
+            if not children:
+                break
+            level = self._make_candidates_batched(counter, children)
+        return self._finalize(store)
+
+    def _make_candidates_batched(
+        self,
+        counter,
+        children: list[tuple[int, np.ndarray, int, np.ndarray]],
+    ) -> list[_GrowCandidate]:
+        """One batched split scan over the level's children → next-level candidates.
+
+        Preserves the per-node path's order exactly: the tie-break ``counter`` is
+        advanced only for children that yield a split, in input order, so the
+        ``_GrowCandidate.tiebreak`` values match :meth:`_make_candidate`.
+        """
+        splits = self.splitter.find_best_split_batched([h for _, _, _, h in children])
+        out: list[_GrowCandidate] = []
+        for (node_index, rows, depth, hist), split in zip(children, splits):
+            if split is None:
+                continue
+            out.append(
+                _GrowCandidate(
+                    neg_gain=-split.gain,
+                    tiebreak=next(counter),
+                    node_index=node_index,
+                    rows=rows,
+                    depth=depth,
+                    split=split,
+                    hist=hist,
+                )
+            )
+        return out
 
     def _grow_symmetric(
         self, grad: np.ndarray, hess: np.ndarray

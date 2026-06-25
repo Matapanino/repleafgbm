@@ -68,6 +68,17 @@ part of the public estimator API — the default is unchanged. Sweep it with
 `benchmarks/gpu_profile.py --scan-min-cells-sweep` to find a per-GPU optimum; the
 effective value is recorded in the benchmark's `transfer_bytes.scan_min_cells`.
 
+With `grow_policy="depthwise"` (scalar targets) the grower scans a whole **level**
+of M frontier nodes in one device call (`find_best_split_batched`) instead of one
+call per node, amortizing the per-node kernel launch that otherwise dominates the
+scan. This is **on by default** for the CUDA backend; set the private
+`REPLEAFGBM_CUDA_BATCHED_SCAN=0` to fall back to the per-node loop as a kill switch.
+The host grower path is bitwise-identical either way — on NumPy/Rust the batched
+call simply loops the per-node scan — so only the device launch count changes.
+Measured on a T4 (`experiments/results/2026-06-25-batched-scan-ab.md`): split_scan
+**5–9x**, whole depthwise fit **1.9–3.9x**, quality-equivalent; the same
+`_scan_min_cells` crossover still routes tiny frontiers to the host loop.
+
 The end-to-end gain is bounded because tree growth, the categorical subset scan,
 and leaf fitting still run on the host. GPU leaf fitting was evaluated and
 deferred (leaf stats are already accelerated by the Rust `leaf_linear_stats`
