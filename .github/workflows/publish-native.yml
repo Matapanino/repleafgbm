@@ -85,6 +85,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   pypi:
     # Real release: a version tag (vX.Y.Z) publishes to PyPI.
@@ -99,3 +100,8 @@ jobs:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A repleafgbm release that doesn't bump the native version (native is
+          # versioned separately) re-runs this on the same `v*` tag; skip the
+          # already-published wheels instead of failing on the duplicate.
+          skip-existing: true

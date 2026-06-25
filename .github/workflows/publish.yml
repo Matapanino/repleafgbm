@@ -53,6 +53,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   pypi:
     # Real release: a version tag (vX.Y.Z) publishes to PyPI.
@@ -67,3 +68,7 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Idempotent re-runs (e.g. re-tag) skip already-published files
+          # instead of failing on the duplicate.
+          skip-existing: true
