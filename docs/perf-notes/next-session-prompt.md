@@ -5,110 +5,106 @@ Paste the block below into a fresh Claude Code session on this repo.
 ---
 
 You are continuing the RepLeafGBM CUDA/perf overnight loop. The previous session
-shipped and **GPU-validated** several wins; this session moves into the next round
-of implementation, driven by what those experiments found.
+(iter 008–010) shipped + GPU-validated two wins, **released them as repleafgbm 1.9.0
+(merged to `main` + published to PyPI)**, and — crucially — **measured the next two
+levers**. This session BUILDS them.
 
-**Start in plan mode.** First read the source-of-truth ledgers, then confirm the
-top priorities with `experiment-strategist`, then present a plan, then implement.
+**Start in plan mode.** First read the source-of-truth ledgers, then confirm the top
+priorities with `experiment-strategist`, then present a plan, then implement.
 
 ## Branch & state
-- Work on branch `perf/cuda-overnight-loop-20260624` (do NOT touch `main`). It has
-  ~17 commits ahead of the v1.8.0 release base. `git status` should be clean except
-  the untracked `docs/gpu-research/` (leave it).
-- `.claude/` and `artifacts/` are gitignored (agent defs + bench outputs live there
-  but aren't committed).
+- **1.9.0 is shipped** (PR #35 squash-merged to `main`; tagged `v1.9.0`; on PyPI as
+  `repleafgbm==1.9.0`, `repleafgbm-native` unchanged at 0.3.0). The old branch
+  `perf/cuda-overnight-loop-20260624` is squash-merged — **start a FRESH branch off
+  `main`** (e.g. `perf/cuda-leafwise-leaffit-<date>`); do NOT reuse it.
+- `git status` clean except untracked `docs/gpu-research/` (leave it). `.claude/` +
+  `artifacts/` gitignored.
 
-## Read first (the complete record of last session's experiments)
-- `docs/perf-notes/experiment-log.md` — iter 001–007 verdicts (what shipped/rejected/held).
-- `docs/perf-notes/reflections.md` — GEPA reflections + the meta-lessons.
-- `docs/perf-notes/experiment-backlog.md` — the ~30-hypothesis backlog + status.
-- `docs/perf-notes/rejected-ideas.md` — settled dead ends (do NOT re-litigate).
-- `docs/perf-notes/research-node-batched-split-scan.md` + `docs/proposals/*.md`.
-- `docs/perf-notes/harness-log.md` — harness version + the BLAS-thread caveat.
+## Read first (the complete record)
+- `docs/perf-notes/experiment-log.md` — **iter 001–010** verdicts (newest at bottom:
+  iter 008 default-on, iter 009 E15, iter 010 HOLD, + the GPU bottleneck-shift /
+  Task-B sizing block).
+- `docs/perf-notes/reflections.md`, `experiment-backlog.md` (see "Session 2 results"),
+  `rejected-ideas.md`, `harness-log.md`.
+- `docs/perf-notes/research-node-batched-split-scan.md`, `docs/proposals/*.md`.
+- `CHANGELOG.md` `[1.9.0]` for exactly what shipped.
 
-## Already SHIPPED + validated last session (do NOT redo)
-1. **float32 opt-in leaf-fit** — `leaf_fit_precision="float64"|"float32_gram"`
-   (public param, default float64). 1.18× wide-emb fit; applies only to the
-   **emb>128** BLAS path now (see #2). allclose-not-bitwise on the opt-in path.
-2. **native leaf-fit gate 64→128** (`_NATIVE_STATS_MAX_DIM`). Default, float64,
-   quality-identical; **1.65× fit @emb=128**. (Re-measuring a "tuned" gate was the
-   night's biggest lever — keep that instinct.)
-3. **node-batched CUDA split scan** — `find_best_split_batched` +
-   `_grow_depthwise_batched`, opt-in `REPLEAFGBM_CUDA_BATCHED_SCAN` (default OFF).
-   Colab T4: split_scan **5–9×**, whole depthwise fit **1.9–3.9×**, quality
-   identical, parity 35/35. The CUDA path is a plain CuPy M-axis lift of
-   `find_best_split` (NO RawKernel). The host grower is bitwise-identical to FIFO.
+## Already SHIPPED in 1.9.0 (do NOT redo)
+- `leaf_fit_precision="float64"|"float32_gram"` (opt-in) — float32 the two wide-emb
+  (emb>128) Gram/projection reductions for **scalar AND multi-output vector** leaves.
+- Node-batched CUDA depthwise split scan, **default ON** (`REPLEAFGBM_CUDA_BATCHED_SCAN=0`
+  kill switch). Native leaf-fit gate **64→128**. Device-resident multi-output CUDA scan.
 
 ## Implementation tasks (confirm/re-order with experiment-strategist)
-1. **Flip `REPLEAFGBM_CUDA_BATCHED_SCAN` default → ON** for cuda+depthwise. It is
-   already T4-validated (3.9×, quality-identical) and the MO device-scan precedent
-   (`REPLEAFGBM_CUDA_MO_DEVICE_SCAN`) defaults on; the CUDA path is already
-   allclose. Update `_resolve_batched_scan` + the test that asserts default-off
-   (`tests/test_cuda_backend.py::test_batched_scan_gate_off_loops_per_node` — keep a
-   kill-switch test) and `tests/test_batched_scan.py::test_default_supports_batched_scan_is_false`.
-   This is a **default-behavior change** → core-reviewer sign-off + a Colab re-validation.
-2. **Extend node-batching to leafwise** (the DEFAULT grow_policy → the broad win).
-   Leafwise pops one best-gain node at a time, so there is no natural level; design
-   the frontier-batch with `core-reviewer` first (it is harder than depthwise — the
-   priority-queue ordering must be preserved bitwise on the host). Then implement +
-   Colab A/B. This is the highest-value extension; treat its host parity exactly
-   like `_grow_depthwise_batched` (bitwise vs the per-node FIFO).
-3. **Batched `build_histograms`** — build a level's M node histograms in one device
-   call to feed the batched scan (cuts launch overhead on the build side too).
-4. **Remaining backlog levers (cheap-test-first):** E14 float32 `predict_linear`,
-   E15 float32 multi-output (vector) leaves, E17 float32 embedding cache, E02
-   native-rust wide-emb float32 Gram (emb>128). Reject/hold per the criteria.
-5. **Package for merge:** the validated wins are independent — split into reviewable
-   PRs to `main` (e.g. (a) float32 param + gate 64→128 leaf-fit; (b) node-batched
-   scan). Bump versions per `release-infra-v102` memory (repleafgbm + native if the
-   Rust path changed — it did NOT this round, so likely just repleafgbm MINOR),
-   update CHANGELOG/docs, run `qa-verifier` (green) + `core-reviewer` (sign-off)
-   before any commit you intend to merge. **Do not push/merge/tag/publish without asking.**
+1. **Task-B — leafwise frontier-batch (the headline GPU lever; it is now MEASURED, not
+   speculative).** Last session sized it on a T4: a **leafwise + cuda** fit spends
+   **32.2% of fit in split_scan** (leafwise scans per-node, unbatched), and the
+   depthwise A/B showed the per-node device scan is ~89% launch overhead → an M=2
+   leafwise batch (halve the launch count) projects **~1.8× scan → ~14% whole-fit
+   ceiling**. Leafwise is the DEFAULT grow_policy, so this is the broad win.
+   - **Stage it exactly like `_grow_depthwise_batched`:** prove the host frontier-batch
+     **bitwise** vs the heap pop-order FIRST (M=2: pop one best-gain node, batch-scan
+     its 2 children) — **reuse `_make_candidates_batched`** (`core/tree.py:389`), which
+     already preserves the tie-break `counter` order. Then the device path is the proven
+     CuPy M-axis lift of `find_best_split` (no RawKernel). Add a `_grow_leafwise_batched`
+     guarded by `grad.ndim==1 ∧ supports_batched_scan` (like the depthwise dispatch at
+     `tree.py:281`). `core-reviewer` on the grower refactor (readable hot path), then
+     Colab A/B (leafwise default, embedded_linear, wide-200f).
+2. **E02 — CUDA leaf_fit (the bottleneck SHIFTED here).** Post-batched-scan, leaf_fit is
+   **65–73% of depthwise CUDA fit** (scan fell to 7–8%). leaf_fit is host-side, so this
+   is the same target E01/E03/E15 attacked. Options (cheap-test-first):
+   (a) native-rust wide-emb Gram (extend `leaf_linear_stats` past the 128 gate,
+   optionally float32 — could beat NumPy float32 BLAS + cut the per-leaf Python loop;
+   big Rust+parity surface, allclose for f32); (b) GPU leaf-fit (larger). Micro-bench
+   native-vs-BLAS at emb 160/256 before committing. **Top non-GPU prize.**
+3. **Backlog (cheap-test-first, local):** E14 float32 `predict_linear`, E17 float32
+   embedding cache. Reject/hold per the criteria. (iter-010 batched histogram is HOLD —
+   histogram is only 2.7–3.2% of fit; don't revisit. E22 mc-histogram similarly low.)
+4. **Package** the session's wins → 1.10.0 (bump `repleafgbm`; bump `repleafgbm-native`
+   too **iff** the Rust path changed — E02 would), CHANGELOG/docs, `qa-verifier` +
+   `core-reviewer`, single PR to `main`. **NOTE the release-infra gotcha (now fixed):**
+   both publish workflows have `skip-existing: true`, so a repleafgbm-only release no
+   longer fails on the unchanged native version. **Do not push/merge/tag/publish without
+   asking.**
 
-## Loop discipline (keep it)
-Per iteration: one hypothesis → cheap evidence FIRST → implement only on **+3%
-median over ≥5 reps with green tests + parity held** → record the verdict in
-`experiment-log.md` (continue iter numbering at 008) + a ≤15-line GEPA reflection.
-Harness change every 5 product iters (separate commit, re-baseline). Commit each
-accepted change separately on the branch.
+## Loop discipline
+One hypothesis → cheap evidence FIRST → implement only on **+3% median over ≥5 reps with
+green tests + parity** → record in `experiment-log.md` (continue at **iter 011**) +
+≤15-line GEPA reflection. Harness change every 5 product iters (separate commit,
+re-baseline). Commit each accepted change separately.
 
-## Safety / invariants (non-negotiable)
-- No push/merge/tag/PyPI publish; no new dependencies; no encoder unfreeze; no
-  splitting on embedding dims.
-- NumPy↔Rust parity stays **bitwise** on default paths; CUDA is **allclose +
-  quality-equivalence** (assert quality, NOT rtol=1e-6 — near-tied splits flip).
-- A new public API param is human-gated (the `leaf_fit_precision` param was already
-  approved; anything new asks first). Default changes get a deliberate decision.
-- Keep CuPy/torch/lightgbm out of the native (Rust) path.
+## Safety / invariants
+- No push/merge/tag/publish without asking; no new deps; no encoder unfreeze; no
+  embedding-dim splits.
+- NumPy↔Rust parity stays **bitwise** on default paths (`tests/test_rust_backend.py` —
+  and **gate any RustSplitBackend-parametrized test on `find_spec("repleafgbm_native")`**,
+  or the no-native CI `test` lane fails, see [[booster-picklability-rust-ci]]). CUDA is
+  **allclose + quality-equivalence** (assert quality, NOT rtol=1e-6 — near-tied splits flip).
+- Default changes get a deliberate decision; new public API params are human-gated.
 
 ## GPU validation (billable Colab T4; creds persist)
-- Parity + benchmarks: `bash scripts/colab_gpu_test.sh --gpu T4 [--keep]` runs
-  `tests/test_cuda_backend.py` + the matrix on a T4 and downloads reports to
-  `experiments/results/`. With `--keep` the VM stays up.
-- Batched A/B: after `--keep`, `colab exec -s rlgbm-gpu --timeout 1800 -f
-  scripts/colab_batched_ab.py` then `colab download -s rlgbm-gpu
-  /content/batched_ab_report.md experiments/results/<date>-...md`, then **`colab
-  stop -s rlgbm-gpu`** (always tear the VM down — it is billable).
-- The Colab loop is fire-and-forget (upload→run→download); batch related GPU work
-  into one `--keep` session.
+- `bash scripts/colab_gpu_test.sh --gpu T4 --keep` → parity + matrix → reports to
+  `experiments/results/`. With `--keep`: `colab exec -s rlgbm-gpu --timeout 1800 -f
+  scripts/colab_batched_ab.py` (depthwise A/B) and `scripts/colab_sizing.py` (phase-share
+  sizer — extend for a **leafwise** A/B), `colab download …`, then ALWAYS
+  `colab stop -s rlgbm-gpu`. Batch all GPU work into ONE `--keep` session.
 
 ## Commands
-- Tests: `OMP_NUM_THREADS=1 PYTHONPATH=src python3 -m pytest tests/ -q`
-  (`OMP_NUM_THREADS=1` avoids the torch+lightgbm libomp deadlock; it also makes
-  BLAS single-threaded, so wide-emb leaf_fit shares look larger than multi-threaded
-  — `env.threads`/`env.blas` are now logged per bench row).
-- Lint: `ruff check src tests benchmarks`. Full gate: `bash scripts/check.sh`.
-- Local perf A/B: `bash scripts/perf_loop.sh --mode ab ...` (median+spread+signal;
-  supports `--n-features/--max-leaf-emb-dim/--leaf-model/--n-estimators/--precision-a/-b`).
+- `OMP_NUM_THREADS=1 PYTHONPATH=src python3 -m pytest tests/ -q` (OMP=1 avoids the
+  torch+lightgbm libomp deadlock + single-threads BLAS so wide-emb leaf_fit shares are
+  real-world-representative). `ruff check src tests benchmarks scripts`. `bash scripts/check.sh`.
+- `bash scripts/perf_loop.sh --mode ab …` / `python -m benchmarks.cuda_overnight_loop
+  --mode ab …` (median+spread+signal; `--task multioutput --precision-a/-b`,
+  `--n-features/--max-leaf-emb-dim/--leaf-model/--n-estimators/--n-train/--n-test`).
 - Parity: `tests/test_rust_backend.py` (bitwise), `tests/test_batched_scan.py`,
   `tests/test_cuda_backend.py` (GPU-only, runs on Colab).
 
-## Subagents available (fleet in `.claude/agents/`)
-`experiment-strategist` (prioritize), `cuda-researcher` (external ideas),
-`perf-profiler` (run+measure, returns numbers), `native-optimizer` (Rust/backends/
-CUDA impl), `qa-verifier` (green-gate), `core-reviewer` (architecture/SemVer/parity
-sign-off), `results-analyst` (verdict on a run). Route CUDA/Rust impl to
-native-optimizer; gate every source change with qa-verifier + core-reviewer.
+## Subagents (fleet in `.claude/agents/`)
+`experiment-strategist` (prioritize), `cuda-researcher` (external ideas), `perf-profiler`
+(run+measure), `native-optimizer` (Rust/backends/CUDA impl — owns Task-B + E02),
+`qa-verifier` (green-gate), `core-reviewer` (architecture/SemVer/parity sign-off),
+`results-analyst` (run verdict). Route CUDA/Rust impl to `native-optimizer`; gate every
+source change with `qa-verifier` + `core-reviewer`.
 
-Begin: read the ledgers, run `experiment-strategist`, and present a plan
-(ExitPlanMode) before implementing.
+Begin: read the ledgers, run `experiment-strategist`, and present a plan (ExitPlanMode)
+before implementing.
