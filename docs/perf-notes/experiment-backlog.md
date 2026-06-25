@@ -55,9 +55,12 @@ Pre-investigated this session (cheap probes, before the backlog):
   iter 001: only >3% predict path, large layer-coupling change. Stays HELD.
 - **E14 `L` TODO** — float32 leaf-eval in `predict_linear` (opt-in, like E01). Cheap:
   predict_profile float32 vs float64 leaf_eval at wide emb. Allclose-gated.
-- **E15 `L` TODO** — extend `leaf_fit_precision=float32_gram` to **vector (multi-output)
-  leaves** (currently scalar-only BLAS path; vector path is a separate branch). Cheap:
-  check the multioutput leaf-fit path; A/B on multioutput_suite wide-emb. Allclose.
+- **E15 `L` SHIPPED** (iter 009) — `float32_gram` extended to the shared-routing
+  **vector** leaf fit (`multioutput.py::fit_vector_leaves`, the only multi-output path
+  with NO float32 branch — multiclass-wide already reused the scalar branch via the
+  per-class `fit_leaves` fallback; narrow multiclass is native float64 = E02). 1.055×
+  wide-emb (emb=256) MO fit, 5/5 signal, quality-equivalent (|Δr2|=8e-9). Opt-in;
+  default float64 bitwise.
 - **E16 `L` TODO** — the training F-update (eval phase) `leaf_idx[rows]=i` Python loop over
   leaves → vectorize. float64, bitwise. Cheap: measure the loop vs predict share.
 

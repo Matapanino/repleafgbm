@@ -74,3 +74,11 @@ short — long prose defeats the purpose.
 - What rule we learned: when last session shipped a validated opt-in behind an env gate, flipping its default is a cheap, high-confidence iteration — but still a deliberate default change (core-reviewer + a re-validation), not a silent edit.
 - Next mutation candidates: size Task B (leafwise split_scan share under the default grow_policy) on the same Colab run; iter-009 E15 float32 vector leaves (local).
 - Should this affect the harness/prompt/code?: docs paid the iter-007 doc debt (cuda.md/ADR never documented the batched scan). No harness/prompt change.
+
+### 009 — E15 float32 vector leaves shipped (opt-in)   2026-06-25
+- What we tried: extend the approved float32_gram opt-in to multi-output, after a cheap-evidence pass to LOCATE the true surface first.
+- What happened: the backlog's "vector branch is pure float64" held — but only for the shared-routing vector fit (`fit_vector_leaves`); the multiclass-wide case was ALREADY float32-covered via the per-class fallback. Shipped 1.055× MO fit (5/5, |Δr2|=8e-9).
+- Why it likely happened: `fit_vector_leaves` has no native path (always NumPy BLAS), and its two centered GEMMs are 21–31% of MO fit; float32 halves only those, so 5.5% not 30% (reflection-004 rule held a third time).
+- What rule we learned: LOCATE the exact surface before sizing — "multi-output leaf fit" was three different code paths (scalar-reuse / native-mc / vector); only one was the real lever. A 20-min trace stopped me writing float32 where it already existed.
+- Next mutation candidates: E14 float32 `predict_linear`; E02 native-rust wide Gram (the only float64 wide leaf-fit left is the scalar BLAS solve + this vector path); could the vector Gram go native too?
+- Should this affect the harness/prompt/code?: the orchestrator `--task multioutput --precision-a/-b` A/B worked cleanly; keep. No default change.

@@ -124,3 +124,70 @@ def test_estimator_param_roundtrip_and_quality():
     assert m32.get_params()["leaf_fit_precision"] == "float32_gram"
     from sklearn.metrics import r2_score
     assert abs(r2_score(y, m64.predict(X)) - r2_score(y, m32.predict(X))) < 5e-3
+
+
+# --------------------------------------------------------------------------- #
+# Multi-output (shared-routing VECTOR leaves) — fit_vector_leaves, no native path
+# (so float32 applies at any emb; the win is at wide emb). Mirrors the scalar tests.
+# --------------------------------------------------------------------------- #
+def _vector_leaf_inputs(n=1500, emb=WIDE, K=4, n_leaves=4, seed=0):
+    """Synthetic single-tree multi-output leaf-fit inputs (rows, grad, hess, Z)."""
+    rng = np.random.default_rng(seed)
+    Z = rng.normal(size=(n, emb))
+    W = rng.normal(size=(emb, K))
+    resid = Z @ W + rng.normal(scale=0.1, size=(n, K))  # (n, K)
+    grad, hess = -resid, np.ones((n, K))  # squared-error multi-output: h = 1
+    rows = np.array_split(rng.permutation(n), n_leaves)
+    return rows, grad, hess, Z
+
+
+def test_float32_vector_leaves_match_float64_allclose_and_quality():
+    from repleafgbm.core.multioutput import fit_vector_leaves
+    rows, grad, hess, Z = _vector_leaf_inputs()
+    lv64 = fit_vector_leaves(EmbeddedLinearLeafModel(l2=1.0), rows, grad, hess, Z, 1.0)
+    lv32 = fit_vector_leaves(
+        EmbeddedLinearLeafModel(l2=1.0, leaf_fit_precision="float32_gram"),
+        rows, grad, hess, Z, 1.0,
+    )
+    leaf_idx = np.concatenate([np.full(len(r), i) for i, r in enumerate(rows)])
+    Zc = Z[np.concatenate(rows)]
+    p64, p32 = lv64.predict(leaf_idx, Zc), lv32.predict(leaf_idx, Zc)  # (n, K)
+    # Scale-relative allclose (vector weight deviation ~1e-5) + RMSE equivalence.
+    scale = float(np.max(np.abs(p64)))
+    assert np.max(np.abs(p32 - p64)) <= 1e-4 * scale
+    rmse = lambda a, b: float(np.sqrt(np.mean((a - b) ** 2)))  # noqa: E731
+    t = -grad[np.concatenate(rows)]
+    assert abs(rmse(p32, t) - rmse(p64, t)) < 1e-4
+
+
+def test_float32_vector_default_is_float64_bitwise():
+    from repleafgbm.core.multioutput import fit_vector_leaves
+    rows, grad, hess, Z = _vector_leaf_inputs(seed=1)
+    lv_default = fit_vector_leaves(
+        EmbeddedLinearLeafModel(l2=1.0), rows, grad, hess, Z, 1.0)
+    lv_f64 = fit_vector_leaves(
+        EmbeddedLinearLeafModel(l2=1.0, leaf_fit_precision="float64"),
+        rows, grad, hess, Z, 1.0)
+    lv_f32 = fit_vector_leaves(
+        EmbeddedLinearLeafModel(l2=1.0, leaf_fit_precision="float32_gram"),
+        rows, grad, hess, Z, 1.0)
+    # Default == explicit float64 (bytes); float32 actually differs (branch exercised).
+    assert np.array_equal(lv_default.weights, lv_f64.weights)
+    assert np.array_equal(lv_default.bias, lv_f64.bias)
+    assert not np.array_equal(lv_f32.weights, lv_default.weights)
+
+
+def test_multioutput_estimator_float32_quality_equivalent():
+    rng = np.random.default_rng(5)
+    n, f, K = 2500, WIDE, 4
+    X = rng.normal(size=(n, f))
+    B = rng.normal(size=(f, K))
+    y = np.tanh(X @ B) + rng.normal(scale=0.1, size=(n, K))  # 2-D y -> MO booster
+    common = dict(n_estimators=12, leaf_model="embedded_linear",
+                  max_leaf_emb_dim=256, random_state=0)
+    m64 = RepLeafRegressor(**common).fit(X, y)
+    m32 = RepLeafRegressor(leaf_fit_precision="float32_gram", **common).fit(X, y)
+    from sklearn.metrics import r2_score
+    r64 = r2_score(y, m64.predict(X), multioutput="raw_values")
+    r32 = r2_score(y, m32.predict(X), multioutput="raw_values")
+    assert np.max(np.abs(np.asarray(r64) - np.asarray(r32))) < 5e-3

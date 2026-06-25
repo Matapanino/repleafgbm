@@ -77,6 +77,13 @@ def fit_vector_leaves(
     # ``None`` for constant/embedded_linear leaves leaves the gate off.
     gate_margin = getattr(leaf_model, "leaf_gate_margin", None)
     gate_insample = getattr(leaf_model, "leaf_gate", "loo") == "insample"
+    # Opt-in float32 leaf-fit (mirrors the scalar EmbeddedLinearLeafModel.fit_leaves
+    # branch): accumulate ONLY the two large per-leaf reductions — the weighted Gram
+    # and the target projection — in float32 (~1.3x at wide emb), while the centering,
+    # the float64 solve, and the LOO-gate leverage stay float64. The default float64
+    # path below is byte-identical; the float32 path is allclose (~1e-5), NOT bitwise
+    # (near-tied LOO-gate decisions can flip) — quality-equivalent, opt-in only.
+    use_f32 = getattr(leaf_model, "leaf_fit_precision", "float64") == "float32_gram"
 
     for i, rows in enumerate(leaf_rows):
         if rows.shape[0] < min_n:
@@ -95,8 +102,14 @@ def fit_vector_leaves(
         t_mean = (w[:, None] * t).sum(axis=0) / h_sum  # (K,)
         tc = t - t_mean
         wZc = Zc * w[:, None]
-        A = wZc.T @ Zc + l2 * np.eye(emb_dim)
-        rhs = wZc.T @ tc  # (emb, K)
+        if use_f32:
+            wZc32, Zc32, tc32 = (wZc.astype(np.float32),
+                                 Zc.astype(np.float32), tc.astype(np.float32))
+            A = (wZc32.T @ Zc32).astype(np.float64) + l2 * np.eye(emb_dim)
+            rhs = (wZc32.T @ tc32).astype(np.float64)  # (emb, K)
+        else:
+            A = wZc.T @ Zc + l2 * np.eye(emb_dim)
+            rhs = wZc.T @ tc  # (emb, K)
         try:
             W = np.linalg.solve(A, rhs)
         except np.linalg.LinAlgError:

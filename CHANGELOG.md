@@ -18,6 +18,12 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   1.9–3.9x, quality-equivalent
   (`experiments/results/2026-06-25-batched-scan-ab.md`). No public API or
   model-format change.
+- **`leaf_fit_precision="float32_gram"` now also covers multi-output (vector)
+  leaves.** The shared-routing vector-leaf fit (`core.multioutput.fit_vector_leaves`)
+  gains the same opt-in float32 path as scalar leaves — the two wide-emb Gram /
+  projection reductions accumulate in float32 while centering + the float64 solve are
+  unchanged. ~5.5% faster wide-emb (emb=256) multi-output fit, quality-equivalent
+  (per-output |Δr2|~1e-8). Default `float64` is byte-identical; no new public param.
 
 ## [1.8.0] - 2026-06-24
 
