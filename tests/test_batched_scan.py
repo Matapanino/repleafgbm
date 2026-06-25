@@ -11,18 +11,22 @@ Stage 2 (Colab-gated). Here we prove, with NO GPU, that:
 
 from __future__ import annotations
 
+import importlib.util
+
 import numpy as np
 import pytest
 
 from repleafgbm import RepLeafClassifier, RepLeafRegressor
 from repleafgbm.backends.numpy_backend import NumPySplitBackend
+from repleafgbm.backends.rust_backend import RustSplitBackend
 
-try:
-    from repleafgbm.backends.rust_backend import RustSplitBackend
-
-    _BACKENDS = [NumPySplitBackend, RustSplitBackend]
-except Exception:  # pragma: no cover - native ext absent
-    _BACKENDS = [NumPySplitBackend]
+# RustSplitBackend imports fine without the native ext (the class is pure Python);
+# it only raises at INSTANTIATION when repleafgbm_native is missing. Gate the rust
+# parametrization on the extension actually being importable, so the no-native CI
+# `test` lane skips it (mirrors tests/test_rust_backend.py's importorskip).
+_BACKENDS = [NumPySplitBackend]
+if importlib.util.find_spec("repleafgbm_native") is not None:
+    _BACKENDS.append(RustSplitBackend)
 
 
 def _node_hists(backend, *, seed=0, n_nodes=5):
