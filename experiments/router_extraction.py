@@ -26,7 +26,10 @@ from pathlib import Path
 import numpy as np
 from sklearn.datasets import make_friedman1
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
+ROOT = Path(__file__).resolve().parents[1]
+for _p in (str(ROOT), str(ROOT / "benchmarks")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from common import synthetic_tabular  # noqa: E402
 
 from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor  # noqa: E402
@@ -137,14 +140,102 @@ def run_dataset(name: str, seeds: list[int], n_train: int, n_valid: int, n_test:
     return sorted(results.values(), key=lambda r: np.mean(r.metric))
 
 
-def main() -> None:
+def run_real(datasets, seeds, max_rows, alpha, mrd):
+    """Leaf-channel isolation on **real** regression data, >= 5 seeds.
+
+    For each seed one early-stopped LightGBM base is extracted, then its *same*
+    routes are refit with constant vs embedded-linear leaves — the cleanest
+    isolation of the representation-conditioned leaf channel. Returns markdown
+    blocks with per-arm RMSE and the embedded-vs-constant Wilcoxon + win/tie/loss.
+    """
+    from benchmarks import stats, suites
+    from benchmarks.openml_suite import _split_indices
+
+    arms = (
+        ("constant", dict(leaf_model="constant")),
+        ("embedded identity", dict(leaf_model="embedded_linear", encoder="identity")),
+        ("embedded plr",
+         dict(leaf_model="embedded_linear", encoder="plr", max_leaf_emb_dim=256)),
+    )
+    blocks: list[str] = []
+    for ds_name in datasets:
+        spec = suites.find(ds_name)
+        if spec.task != "regression":
+            print(f"  [skip] {ds_name}: not a regression dataset")
+            continue
+        print(f"=== real dataset: {ds_name} ===", flush=True)
+        per: dict[str, list[float]] = {label: [] for label, _ in arms}
+        for seed in seeds:
+            X, y, cats = suites.load(spec, n_rows=max_rows, seed=seed)
+            rng = np.random.default_rng(seed)
+            idx = rng.permutation(len(X))[: min(max_rows, len(X))]
+            i_tr, i_va, i_te = _split_indices(idx, y[idx], "regression", rng)
+            train = RepLeafDataset(X.iloc[i_tr], y[i_tr], categorical_features=cats)
+            valid = RepLeafDataset(X.iloc[i_va], y[i_va], metadata=train.metadata)
+            test = RepLeafDataset(X.iloc[i_te], y[i_te], metadata=train.metadata)
+            Xtr_e, Xva_e = train.get_raw_features(), valid.get_raw_features()
+
+            base = LightGBMExternalModel(task="regression", random_state=seed,
+                                         **BASE_PARAMS)
+            base.fit(Xtr_e, y[i_tr], eval_set=[(Xva_e, y[i_va])],
+                     early_stopping_rounds=ES_ROUNDS)
+            for label, kwargs in arms:
+                m = RouterExtractionRegressor(
+                    base=base, min_samples_leaf=20,
+                    early_stopping_rounds=ES_ROUNDS, random_state=seed, **kwargs)
+                m.fit(train, eval_set=[valid])
+                per[label].append(rmse(y[i_te], m.predict(test)))
+
+        const = np.array(per["constant"])
+        block = [f"## Real dataset: {ds_name} (regression, seeds={len(seeds)})", "",
+                 "| config | test RMSE (mean ± std) |", "|---|---|"]
+        for label, _ in arms:
+            arr = np.array(per[label])
+            block.append(f"| {label} | {arr.mean():.4f} ± {arr.std():.4f} |")
+        block += ["",
+                  "Leaf-channel isolation — embedded vs **constant** on the same "
+                  f"extracted routes (alpha={alpha}, MRD={mrd:.0%}):", "",
+                  "| arm | median ΔRMSE | Wilcoxon p | win/tie/loss | verdict |",
+                  "|---|---|---|---|---|"]
+        for label in ("embedded identity", "embedded plr"):
+            emb = np.array(per[label])
+            scores = np.column_stack([const, emb])  # (seeds, 2): [constant, emb]
+            _, p, md = stats.wilcoxon_pairs(scores, ["constant", label],
+                                            baseline="constant")[label]
+            w, t, ll = stats.win_tie_loss(emb, const, mrd=mrd)
+            verdict = ("sig. better" if (md < 0 and p < alpha) else "not sig.")
+            block.append(f"| {label} | {md:+.4f} | {p:.3g} | {w}/{t}/{ll} | "
+                         f"{verdict} |")
+        for label, _ in arms:
+            vals = per[label]
+            print(f"  {label:20s} rmse={np.mean(vals):.4f} ± {np.std(vals):.4f}")
+        blocks.append("\n".join(block))
+    return blocks
+
+
+def main(argv=None) -> Path:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seeds", type=int, default=2)
     parser.add_argument("--n-train", type=int, default=4000)
     parser.add_argument("--n-valid", type=int, default=1500)
     parser.add_argument("--n-test", type=int, default=4000)
-    args = parser.parse_args()
+    parser.add_argument("--real", action="store_true",
+                        help="add a real-data leaf-channel isolation study "
+                             "(>= 5 seeds recommended; embedded vs constant)")
+    parser.add_argument("--datasets", nargs="*", default=None,
+                        help="real regression datasets for --real "
+                             "(default: california, which needs no OpenML fetch)")
+    parser.add_argument("--max-rows", type=int, default=8000)
+    parser.add_argument("--alpha", type=float, default=0.05)
+    parser.add_argument("--mrd", type=float, default=0.01)
+    parser.add_argument("--quick", action="store_true",
+                        help="small/fast settings for a smoke run")
+    parser.add_argument("--out", default=None)
+    args = parser.parse_args(argv)
     seeds = list(range(args.seeds))
+    if args.quick:
+        args.n_train, args.n_valid, args.n_test = 800, 400, 800
+        args.max_rows = min(args.max_rows, 1500)
 
     out_lines = [
         "# Experiment: native router vs extracted LightGBM router (fair, v2)",
@@ -181,10 +272,20 @@ def main() -> None:
             ],
         ]
 
-    out_path = Path(__file__).resolve().parent / "results" / "router_extraction.md"
+    if args.real:
+        real_datasets = args.datasets or (
+            ["california"] if args.quick
+            else ["california", "diamonds", "wine_quality"])
+        out_lines += ["", "# Real-data leaf-channel isolation", ""]
+        out_lines += run_real(real_datasets, seeds, args.max_rows, args.alpha,
+                              args.mrd)
+
+    out_path = (Path(args.out) if args.out else
+                Path(__file__).resolve().parent / "results" / "router_extraction.md")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(out_lines) + "\n")
     print(f"\nreport written to {out_path}")
+    return out_path
 
 
 if __name__ == "__main__":

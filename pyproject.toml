@@ -34,8 +34,13 @@ external = ["lightgbm>=4.0"]
 # GPU histogram kernel (split_backend="cuda"); needs an NVIDIA GPU + CUDA 12.
 # CuPy JIT-compiles the kernel at runtime, so no build step is required.
 cuda = ["cupy-cuda12x>=12"]
-# External GBMs used as optional benchmark comparisons (and future backends).
-bench = ["lightgbm>=4.0", "xgboost>=2.0", "catboost>=1.2"]
+# Benchmark/leaderboard tooling: external GBM competitors plus the fair-HPO and
+# significance stack (Optuna search, SciPy tests, Matplotlib CD diagrams). All
+# confined to benchmarks/ + experiments/; the library (src/) never imports them.
+bench = [
+    "lightgbm>=4.0", "xgboost>=2.0", "catboost>=1.2",
+    "optuna>=3", "scipy>=1.7", "matplotlib>=3.5",
+]
 # API reference generation (scripts/build_docs.sh).
 docs = ["pdoc>=14"]
 dev = ["pytest>=7.0", "pytest-cov>=4", "ruff>=0.4"]
