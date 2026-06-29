@@ -5,6 +5,29 @@ All notable changes to RepLeafGBM are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org) for the public API defined
 in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
+## [Unreleased]
+
+### Changed
+- **Robust regression objectives (`huber`, `quantile`) now auto-standardize the
+  target per output** (median / 1.4826·MAD) before boosting, and un-standardize
+  predictions + eval metrics. This fixes a scale bug: a fixed `delta=1` / unit
+  quantile step under-fit large-scale targets (per-output σ in the hundreds — e.g.
+  the Mulan multi-target sets), so robust objectives could lose to squared error
+  even on clean data. They are now a consistent win under contamination across
+  target scales (diagnosis:
+  `experiments/results/2026-06-29-robust-delta-diagnosis.md`). **Behavior change:**
+  `objective="huber"/"quantile"` and `Huber(delta=...)` / `Quantile(alpha=...)`
+  now produce different (improved) predictions, and `delta` is effectively in
+  robust-σ units. `squared_error` (default), `poisson`, and classification are
+  unchanged. See `docs/proposals/robust-target-standardization.md`.
+
+### Serialization
+- **Model format → v7** (bump-on-use): models carrying a non-identity target
+  transform (the robust regression objectives above) persist per-output
+  `target_loc`/`target_scale` in `tree_ensemble.json`. Squared-error / multiclass
+  / multi-output-squared models keep writing v3/v5/v6, and all v3–v6 models load
+  bit-for-bit (identity transform). Backward-compatible read; minor version bump.
+
 ## [1.9.0] - 2026-06-25
 
 Performance release: faster wide-embedding leaf fitting on the CPU path and a faster

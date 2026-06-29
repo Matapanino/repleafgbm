@@ -97,6 +97,13 @@ class Huber(BaseObjective):
     Hessian is 0 beyond delta, which would let outlier-only leaves blow up).
     With h = 1 the Newton targets are clipped residuals, so leaf fits — and
     linear leaves in particular — see outliers with bounded influence.
+
+    Note: when used via :class:`~repleafgbm.RepLeafRegressor`, the target is
+    auto-standardized per output (median / 1.4826·MAD) before boosting, so
+    ``delta`` is effectively in robust-σ units (``delta=1`` ≈ 1 MAD-σ) and the
+    same value is scale-consistent across targets; without this a fixed delta
+    under-fits large-scale targets. See
+    docs/proposals/robust-target-standardization.md.
     """
 
     name = "huber"
@@ -122,6 +129,13 @@ class Quantile(BaseObjective):
     g = (1 - alpha) where F >= y and -alpha where F < y, h = 1 — the loss is
     piecewise linear, so boosting takes fixed-size steps whose sign balance
     converges to the alpha-quantile within each leaf.
+
+    Note: when used via :class:`~repleafgbm.RepLeafRegressor`, the target is
+    auto-standardized per output (median / 1.4826·MAD) before boosting, so the
+    fixed unit step is scale-consistent across targets (otherwise large-scale
+    targets under-fit). The alpha-quantile optimum is scale-equivariant, so the
+    un-standardized prediction is unchanged in expectation. See
+    docs/proposals/robust-target-standardization.md.
     """
 
     name = "quantile"

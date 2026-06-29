@@ -293,6 +293,14 @@ class BaseRepLeafModel(BaseEstimator):
             dataset = self._prepare_target(dataset, is_train=True)
             weight = self._resolve_sample_weight(dataset, sample_weight)
             dataset.sample_weight = self._enforce_weight_capability(weight)
+        # Robust regression objectives (huber/quantile) are fit in standardized
+        # target space (so a fixed delta=1 is ~1 sigma); identity otherwise. Done
+        # before the encoder so a learned encoder's supervised pretrain target is
+        # coherent. The booster un-standardizes predictions/eval (set below).
+        target_transform = self._resolve_target_transform(dataset)
+        if target_transform is not None:
+            loc, scale = target_transform
+            dataset.y = (dataset.y - loc) / scale
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
@@ -334,6 +342,8 @@ class BaseRepLeafModel(BaseEstimator):
             early_stopping_rounds=self.early_stopping_rounds,
         )
         self.booster_ = self._make_booster(params)
+        if target_transform is not None:
+            self.booster_.target_loc_, self.booster_.target_scale_ = target_transform
         self.booster_.fit(
             dataset,
             self.encoder_,
@@ -381,6 +391,17 @@ class BaseRepLeafModel(BaseEstimator):
         """Hook: the classifier overrides this to return a
         :class:`~repleafgbm.core.multiclass.MulticlassBooster` for 3+ classes."""
         return Booster(params, self._build_objective())
+
+    def _resolve_target_transform(
+        self, dataset: RepLeafDataset
+    ) -> tuple[float | np.ndarray, float | np.ndarray] | None:
+        """Hook: per-output target standardization ``(loc, scale)`` applied to
+        the training target before boosting, or ``None`` for no transform (the
+        base/classifier default). The regressor returns ``(median, 1.4826*MAD)``
+        for the saturated-gradient robust objectives (huber/quantile) so a fixed
+        ``delta=1`` lands at ~1 sigma across target scales — see
+        docs/proposals/robust-target-standardization.md."""
+        return None
 
     def _build_objective(self) -> BaseObjective:
         """Resolve the ``objective`` parameter (name, instance, or None for
