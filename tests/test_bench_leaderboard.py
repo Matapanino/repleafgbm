@@ -58,8 +58,9 @@ def test_build_report_significance_and_bolding():
 def test_cd_diagram_png_written_when_matplotlib_present(tmp_path):
     pytest.importorskip("matplotlib")  # matplotlib is a [bench] extra, not on .[dev]
     text = LB.build_report(_ordered_records(), _SETTINGS, assets_dir=tmp_path)
-    assert (tmp_path / "leaderboard-cd-regression.png").exists()
-    assert "![CD diagram](leaderboard-cd-regression.png)" in text
+    # CD filename is suite-qualified (_SETTINGS suite="t") to avoid cross-suite clobber.
+    assert (tmp_path / "leaderboard-cd-t-regression.png").exists()
+    assert "![CD diagram](leaderboard-cd-t-regression.png)" in text
 
 
 def test_build_report_skips_aggregation_when_too_small():

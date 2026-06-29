@@ -278,7 +278,10 @@ def _task_section(task, records, settings, assets_dir) -> list[str]:
         f"({'models differ' if fried_p < settings['alpha'] else 'no detected difference'} "
         f"at alpha={settings['alpha']}).", "",
     ]
-    cd_png = (assets_dir / f"leaderboard-cd-{task}.png") if assets_dir else None
+    # Suite-qualified so different suites' CD diagrams don't overwrite each other
+    # (e.g. num_reg and cat_reg are both task="regression").
+    cd_png = (assets_dir / f"leaderboard-cd-{settings['suite']}-{task}.png"
+              if assets_dir else None)
     lines += [stats.critical_difference_diagram(
         avg, cd, out_path=cd_png, title=f"{task}: avg rank"), ""]
 
