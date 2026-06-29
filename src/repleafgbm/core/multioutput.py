@@ -159,6 +159,12 @@ class MultiOutputBooster:
         #: Split backend from the last ``fit`` (runtime-only introspection
         #: handle, never serialized); see :class:`Booster.split_backend_`.
         self.split_backend_: BaseSplitBackend | None = None
+        #: Per-output target standardization (identity by default); robust
+        #: objectives (huber/quantile) are fit in standardized space and
+        #: ``predict_raw``/eval un-standardize. Shapes broadcast over (n, K).
+        #: See docs/proposals/robust-target-standardization.md.
+        self.target_loc_: float | np.ndarray = 0.0
+        self.target_scale_: float | np.ndarray = 1.0
 
     def __getstate__(self) -> dict:
         # Drop the runtime split-backend handle so the model stays picklable;
@@ -264,7 +270,8 @@ class MultiOutputBooster:
                 with timed(profiler, "eval"):
                     for name, Xe, ye, Ze, Fe in evals:
                         Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
-                        pred = self.objective.transform(Fe)
+                        # eval_set y is raw-scale; un-standardize (identity default).
+                        pred = self.objective.transform(self.target_loc_ + self.target_scale_ * Fe)
                         self.evals_result_[name][eval_metric.name].append(
                             eval_metric(ye, pred)
                         )
@@ -293,7 +300,7 @@ class MultiOutputBooster:
         """Raw score matrix (n_rows, n_outputs); best iteration by default."""
         if n_trees is None:
             n_trees = self.best_iteration_  # None -> all trees
-        return predict_raw_multioutput(
+        raw = predict_raw_multioutput(
             self.trees_,
             self.leaf_values_,
             self.init_score_,
@@ -302,6 +309,8 @@ class MultiOutputBooster:
             Z,
             n_trees=n_trees,
         )
+        # Identity by default; per-output un-standardization for robust losses.
+        return self.target_loc_ + self.target_scale_ * raw
 
     def feature_importance(
         self, n_features: int, importance_type: str = "gain"

@@ -38,7 +38,7 @@ from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.encoders import encoder_from_config
 from repleafgbm.encoders.base import BaseEncoder
 
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 #: Older versions this build can still read. v1 lacks per-node
 #: ``missing_left`` (defaulted to True, the convention those trees used);
 #: v2 lacks categorical subset splits (``left_categories``), which v1/v2
@@ -49,8 +49,13 @@ FORMAT_VERSION = 6
 #: written only for multiclass models — binary/regression models keep
 #: writing v3/v4); v6 adds shared-routing vector leaves for multi-output
 #: regression (``n_outputs`` + vector ``init_score``; per-tree ``bias`` is
-#: 2-D and ``weights`` 3-D), written only for multi-output models.
-READABLE_VERSIONS = (1, 2, 3, 4, 5, 6)
+#: 2-D and ``weights`` 3-D), written only for multi-output models; v7 adds
+#: per-output target standardization (``target_loc``/``target_scale`` in
+#: tree_ensemble.json) for the robust regression objectives (huber/quantile),
+#: written only when the transform is non-identity — so squared-error /
+#: multiclass / multi-output-squared models keep writing v3/v5/v6 and load
+#: bit-for-bit on older builds; older models load with the identity transform.
+READABLE_VERSIONS = (1, 2, 3, 4, 5, 6, 7)
 
 
 def save_model_dir(
@@ -81,7 +86,14 @@ def save_model_dir(
         # Each schema addition bumps the written version only for models that
         # use it, so unaffected models stay readable by older builds:
         # multi-output -> 6, multiclass -> 5, frequency maps -> 4, else -> 3.
-        if multioutput:
+        # Non-identity target standardization (robust regression objectives)
+        # bumps to v7 and serializes the per-output (loc, scale); see load.
+        target_loc = getattr(booster, "target_loc_", 0.0)
+        target_scale = getattr(booster, "target_scale_", 1.0)
+        has_transform = bool(np.any(target_loc != 0.0) or np.any(target_scale != 1.0))
+        if has_transform:
+            version = 7
+        elif multioutput:
             version = 6
         elif multiclass:
             version = 5
@@ -110,6 +122,9 @@ def save_model_dir(
             ensemble["n_classes"] = booster.n_classes
         if multioutput:
             ensemble["n_outputs"] = booster.n_outputs
+        if has_transform:
+            ensemble["target_loc"] = np.asarray(target_loc).tolist()
+            ensemble["target_scale"] = np.asarray(target_scale).tolist()
         _dump_json(out / "tree_ensemble.json", ensemble)
 
         leaf_arrays: dict[str, np.ndarray] = {}
@@ -202,6 +217,9 @@ def load_model_dir(path: str | Path) -> dict:
         booster.init_score_ = float(ensemble["init_score"])
     booster.best_iteration_ = ensemble.get("best_iteration")
     booster.best_score_ = ensemble.get("best_score")
+    if "target_loc" in ensemble:  # v7: robust-objective target standardization
+        booster.target_loc_ = np.asarray(ensemble["target_loc"], dtype=np.float64)
+        booster.target_scale_ = np.asarray(ensemble["target_scale"], dtype=np.float64)
     booster.trees_ = [Tree.from_dict(d) for d in ensemble["trees"]]
 
     with np.load(path / "leaf_params.npz") as data:

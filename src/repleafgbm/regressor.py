@@ -90,6 +90,31 @@ class RepLeafRegressor(RegressorMixin, BaseRepLeafModel):
             return MultiOutputBooster(params, self._build_multioutput_objective())
         return super()._make_booster(params)
 
+    def _resolve_target_transform(self, dataset: RepLeafDataset):
+        """Per-output (median, 1.4826*MAD) standardization for the saturated-
+        gradient robust objectives (huber, quantile) only — so a fixed delta=1 /
+        unit quantile step is scale-consistent (~1 sigma) across target scales,
+        fixing the large-scale clean-fit underfit (e.g. scm20d). squared_error /
+        poisson / classification return None (no transform). Diagnosis:
+        experiments/results/2026-06-29-robust-delta-diagnosis.md."""
+        if getattr(self, "objective", None) is None:
+            return None  # default squared_error
+        if getattr(self, "n_outputs_", 1) > 1:
+            robust = isinstance(self._build_multioutput_objective(),
+                                (MultiOutputHuber, MultiOutputQuantile))
+        else:
+            robust = isinstance(self._build_objective(), (Huber, Quantile))
+        if not robust:
+            return None
+        y = np.asarray(dataset.y, dtype=np.float64)
+        if y.ndim == 2:  # multi-output: per-output scalars
+            loc = np.median(y, axis=0)
+            mad = np.median(np.abs(y - loc), axis=0) * 1.4826
+            return loc, np.where(mad < 1e-9, 1.0, mad)
+        loc = float(np.median(y))
+        mad = float(np.median(np.abs(y - loc)) * 1.4826)
+        return loc, (1.0 if mad < 1e-9 else mad)
+
     def _pretrain_target(
         self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
     ) -> np.ndarray | None:

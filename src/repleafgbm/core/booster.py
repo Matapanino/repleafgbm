@@ -101,6 +101,13 @@ class Booster:
         #: tools can read backend-private stats (e.g. the CUDA backend's
         #: transfer counters) after an end-to-end fit.
         self.split_backend_: BaseSplitBackend | None = None
+        #: Target standardization carried by the booster (identity by default).
+        #: Robust regression objectives (huber/quantile) are fit in standardized
+        #: target space (the estimator sets these); ``predict_raw`` and the eval
+        #: loop un-standardize so predictions and metrics are on the raw target
+        #: scale. See docs/proposals/robust-target-standardization.md.
+        self.target_loc_: float | np.ndarray = 0.0
+        self.target_scale_: float | np.ndarray = 1.0
 
     def __getstate__(self) -> dict:
         # ``split_backend_`` is a runtime-only handle that can wrap an
@@ -262,7 +269,9 @@ class Booster:
                 with timed(profiler, "eval"):
                     for name, Xe, ye, Ze, Fe in evals:
                         Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
-                        pred = self.objective.transform(Fe)
+                        # eval_set y is on the raw scale; un-standardize the
+                        # std-space score before the metric (identity by default).
+                        pred = self.objective.transform(self.target_loc_ + self.target_scale_ * Fe)
                         self.evals_result_[name][eval_metric.name].append(
                             eval_metric(ye, pred)
                         )
@@ -292,7 +301,7 @@ class Booster:
         """Raw scores. Uses the early-stopping best iteration by default."""
         if n_trees is None:
             n_trees = self.best_iteration_  # None -> all trees
-        return predict_raw(
+        raw = predict_raw(
             self.trees_,
             self.leaf_values_,
             self.init_score_,
@@ -301,6 +310,9 @@ class Booster:
             Z,
             n_trees=n_trees,
         )
+        # Identity by default; un-standardizes for robust objectives fit in
+        # standardized target space (core/prediction.py stays pure for parity).
+        return self.target_loc_ + self.target_scale_ * raw
 
     def feature_importance(
         self, n_features: int, importance_type: str = "gain"

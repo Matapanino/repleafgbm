@@ -198,11 +198,11 @@ def test_multioutput_robust_save_load_roundtrip(tmp_path, objective):
 
     model.save_model(tmp_path)
     config = json.loads((tmp_path / "model_config.json").read_text())
-    assert config["format_version"] == 6
+    assert config["format_version"] == 7  # robust objective -> target standardization (v7)
     assert config["objective"] == f"multioutput_{objective}"
 
     reloaded = RepLeafRegressor.load_model(tmp_path)
-    # Identity transform => predictions round-trip exactly.
+    # The per-output (target_loc, target_scale) round-trips, so predictions are exact.
     assert np.array_equal(reloaded.predict(X), before)
     assert reloaded.booster_.objective.name == f"multioutput_{objective}"
 
