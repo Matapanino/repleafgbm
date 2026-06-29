@@ -54,6 +54,44 @@ packages = ["src/repleafgbm"]
 # Ship the PEP 561 marker so type checkers honour the inline annotations.
 force-include = { "src/repleafgbm/py.typed" = "repleafgbm/py.typed" }
 
+[tool.hatch.build.targets.sdist]
+# Release-safety boundary: ship only public source + packaging metadata + tests.
+# `include` is an allowlist (the authoritative boundary); `exclude` re-states the
+# specific risky paths for clarity/defense-in-depth. The optional Rust extension
+# (native/) is a SEPARATE PyPI distribution built by maturin (publish-native.yml),
+# not part of this pure-Python sdist. Internal research docs (paper, gpu-research,
+# perf-notes), benchmark/experiment result ledgers, assistant prompts/.claude,
+# generated artifacts (artifacts/, catboost_info/, site/) and caches stay out.
+include = [
+    "src/repleafgbm",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+]
+exclude = [
+    "CLAUDE.md",
+    ".claude",
+    ".github",
+    "docs",
+    "benchmarks",
+    "experiments",
+    "scripts",
+    "native",
+    "artifacts",
+    "catboost_info",
+    "site",
+    "dist",
+    "build",
+    "**/__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".coverage",
+    "*.jsonl",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
