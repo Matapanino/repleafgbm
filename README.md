@@ -12,6 +12,22 @@ over learned representations inside each leaf.
 > embeddings. It is a boosted ensemble of raw-feature routers with
 > representation-conditioned local predictors.
 
+## Paper
+
+📄 **[RepLeafGBM: Gradient Boosting with Raw-Feature Routing and
+Representation-Conditioned Leaves](docs/paper/repleafgbm-algorithm.pdf)** — Masaya
+Kawamata ([PDF](docs/paper/repleafgbm-algorithm.pdf), [LaTeX
+source](docs/paper/repleafgbm-algorithm.tex)).
+
+A technical report covering the method, the frozen-encoder correctness argument,
+and an honest empirical study: a fair same-HPO-budget leaderboard on the Grinsztajn
+tabular suites (RepLeafGBM is competitive mid-pack), plus niche studies where the
+representation-conditioned leaf and scale-consistent robust multi-output objectives
+provide a defensible edge. All numbers are reproducible with the benchmark and
+experiment harness in this repository.
+
+> **Preprint draft** — not yet peer-reviewed or posted to an external repository.
+
 ## Project status & development notes
 
 - **GPU acceleration is an active work in progress.** The CUDA split backend
