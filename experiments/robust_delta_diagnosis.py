@@ -1,0 +1,152 @@
+"""Diagnose (and validate a fix for) the rf1/scm20d robust-objective clean-fit penalty.
+
+The robust multi-output study found huber/quantile LOSE to squared at low
+contamination on rf1/scm20d. Confirmed cause: their gradients saturate at ±delta
+(huber) / ±alpha (quantile), so each tree's update is bounded; on large-scale
+targets (scm20d per-output std ~250, rf1 ~60; huber default delta=1) the model
+cannot traverse the target range in n_estimators trees -> severe underfit even on
+CLEAN data. (Scale check: wq std~1 works, energy std~10 works, rf1 std~60 fails,
+scm20d std~250 fails — monotone in scale.)
+
+Fix hypothesis: **per-output (robust) target standardization** brings residuals to
+~O(1) so delta=1 is appropriate for every dataset. This experiment validates it by
+standardizing OUTSIDE the model (median / 1.4826*MAD from the contaminated train,
+fit on standardized targets, un-standardize predictions, score on raw clean test)
+and comparing to the baseline. squared is the scale-equivariant control (should be
+~unchanged). No `src/` change — if confirmed, the fix (standardize targets in the
+multi-output path, or data-driven per-output delta) is proposed separately and
+gated through results-analyst.
+
+    OMP_NUM_THREADS=1 PYTHONPATH=src python3 experiments/robust_delta_diagnosis.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from collections import defaultdict
+from datetime import date
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+for _p in (str(ROOT), str(ROOT / "src"), str(ROOT / "experiments")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+from robust_multioutput_suite import _mean_per_output, contaminate, load_real  # noqa: E402
+
+from repleafgbm import RepLeafRegressor  # noqa: E402
+
+OBJECTIVES = [("squared", None), ("huber", "huber"), ("quantile(0.5)", "quantile")]
+
+
+def robust_scale(Y):
+    """Per-output (median, 1.4826*MAD) — robust to the contaminated rows."""
+    med = np.median(Y, axis=0)
+    mad = np.median(np.abs(Y - med), axis=0) * 1.4826
+    return med, np.where(mad < 1e-9, 1.0, mad)
+
+
+def fit_eval(Xtr, Ytr, Xte, Yte_clean, objective, standardize, seed, n_est):
+    if standardize:
+        med, scale = robust_scale(Ytr)
+        Yfit = (Ytr - med) / scale
+    else:
+        Yfit = Ytr
+    model = RepLeafRegressor(
+        n_estimators=n_est, num_leaves=16, min_samples_leaf=10, learning_rate=0.1,
+        leaf_model="embedded_linear", encoder="identity",
+        objective=objective, random_state=seed)
+    model.fit(Xtr, Yfit)
+    pred = model.predict(Xte)
+    if standardize:
+        pred = pred * scale + med
+    return _mean_per_output(Yte_clean, pred)
+
+
+def main(argv=None) -> Path:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--datasets", nargs="*", default=["energy", "rf1", "scm20d"])
+    p.add_argument("--contam", type=float, nargs="*", default=[0.0, 0.16])
+    p.add_argument("--seeds", type=int, default=3)
+    p.add_argument("--n-estimators", type=int, default=200)
+    p.add_argument("--contam-scale", type=float, default=8.0)
+    p.add_argument("--out", default=None)
+    args = p.parse_args(argv)
+    seeds = list(range(args.seeds))
+    specs = [s for s in __import__("robust_multioutput_suite").REAL_DATASETS
+             if s.name in set(args.datasets)]
+
+    # results[dataset][(objective, variant, contam)] -> [rmse...]
+    res = defaultdict(lambda: defaultdict(list))
+    for spec in specs:
+        X, Y = load_real(spec)
+        n = len(X)
+        print(f"=== {spec.name} (outputs={Y.shape[1]}, std~[{Y.std(0).min():.2g},"
+              f"{Y.std(0).max():.2g}]) ===", flush=True)
+        for seed in seeds:
+            idx = np.random.default_rng(seed).permutation(n)
+            cut = int(n * 0.6)
+            i_tr, i_te = idx[:cut], idx[cut:]
+            Xtr, Xte, Yte = X[i_tr], X[i_te], Y[i_te]
+            for c in args.contam:
+                Ytr = contaminate(Y[i_tr], c, args.contam_scale, seed)
+                for label, obj in OBJECTIVES:
+                    for std in (False, True):
+                        rmse = fit_eval(Xtr, Ytr, Xte, Yte, obj, std, seed,
+                                        args.n_estimators)
+                        res[spec.name][(label, std, c)].append(rmse)
+                        print(f"  {spec.name} seed={seed} c={c:.0%} {label:13s} "
+                              f"{'std ' if std else 'base'} rmse={rmse:.4f}", flush=True)
+
+    out = _report(args, res)
+    out_path = (Path(args.out) if args.out else ROOT / "experiments" / "results"
+                / f"{date.today().isoformat()}-robust-delta-diagnosis.md")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(out) + "\n")
+    print(f"\nreport written to {out_path}", flush=True)
+    return out_path
+
+
+def _report(args, res):
+    out = [
+        "# Robust-objective clean-fit penalty: diagnosis + standardization fix",
+        "",
+        "Auto-generated by `experiments/robust_delta_diagnosis.py`. baseline = raw "
+        "targets (current behavior); std = per-output median/MAD standardization "
+        "(fix). Mean per-output RMSE on clean test (lower is better). squared is "
+        "the scale-equivariant control.",
+        "",
+        f"Settings: seeds={list(range(args.seeds))}, n_estimators={args.n_estimators}, "
+        f"contamination={[f'{c:.0%}' for c in args.contam]} at {args.contam_scale}x std.",
+    ]
+    for d in res:
+        out += ["", f"## {d}", "",
+                "| objective | variant | " + " | ".join(f"c={c:.0%}" for c in args.contam) + " |",
+                "|---|---|" + "---|" * len(args.contam)]
+        for label, _o in OBJECTIVES:
+            for std in (False, True):
+                cells = " | ".join(
+                    f"{np.mean(res[d][(label, std, c)]):.4f}" for c in args.contam)
+                out.append(f"| {label} | {'std' if std else 'baseline'} | {cells} |")
+        # verdict for this dataset (clean-penalty fixed? robustness restored?)
+        if 0.0 in args.contam:
+            sq0 = np.mean(res[d][("squared", False, 0.0)])
+            hb0b = np.mean(res[d][("huber", False, 0.0)])
+            hb0s = np.mean(res[d][("huber", True, 0.0)])
+            out.append(
+                f"\n- clean (0%) huber penalty vs squared: baseline {hb0b / sq0:.1f}x "
+                f"-> standardized {hb0s / sq0:.1f}x.")
+        chi = max(args.contam)
+        if chi > 0:
+            sqc = np.mean(res[d][("squared", False, chi)])
+            hbc_s = np.mean(res[d][("huber", True, chi)])
+            out.append(
+                f"- at {chi:.0%} contamination: squared {sqc:.4f} vs standardized "
+                f"huber {hbc_s:.4f} ({'huber wins' if hbc_s < sqc else 'squared wins'}).")
+    return out
+
+
+if __name__ == "__main__":
+    main()
