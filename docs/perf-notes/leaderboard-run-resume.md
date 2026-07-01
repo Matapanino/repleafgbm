@@ -21,7 +21,7 @@ tiny abalone probe). Remaining ≈ 19 h sequential, **≈ 10 h if run concurrent
 ## Resume (concurrent — recommended)
 
 ```bash
-cd /Users/kawamatamasaya/dev/repleafgbm
+cd /path/to/repleafgbm   # repo root
 caffeinate -i env OMP_NUM_THREADS=1 PYTHONPATH=src python3 benchmarks/leaderboard.py \
     --suite grinsztajn_num_reg --seeds 5 --n-trials 50 \
     --out experiments/results/leaderboard-grinsztajn-num-reg.md &

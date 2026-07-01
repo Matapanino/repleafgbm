@@ -133,9 +133,14 @@ already reasoned to reject (record + skip the build).
 - **GPU bottleneck shifted to leaf_fit** (65–73% depthwise, 49% leafwise post-batch).
   The next CUDA lever is **leaf_fit** (E02 native-rust wide Gram, or GPU leaf-fit), not
   histogram/scan.
-- **Task B (leafwise frontier-batch) → BUILD-NEXT** — leafwise split_scan is 32.2% of
-  fit; M=2 batching at the measured ~89%-launch-bound ratio → ~1.8× scan → **~14%
-  whole-fit ceiling**. Stage host-bitwise (reuse `_make_candidates_batched`) then the
-  CuPy M-axis device lift.
-- **Next-session order:** Task-B leafwise batch (G) → E02 native-rust wide Gram (L) →
-  E14 float32 `predict_linear` (L) → E17 float32 embedding cache (L).
+- **Task B (leafwise frontier-batch) → BUILD-CANDIDATE (measured, narrow)** — leafwise
+  split_scan is 32.2% of fit; M=2 batching at the measured ~89%-launch-bound ratio →
+  ~1.8× scan → **~14% whole-fit ceiling**. Stage host-bitwise (reuse
+  `_make_candidates_batched`) then the CuPy M-axis device lift. Reach is `cuda ∩ leafwise`
+  only (cuda is opt-in) — narrow but low-risk and measured.
+- **Next-session plan:** cheap-probe **E02** (broad reach — default rust leaf-fit + CUDA's
+  now-dominant 65–73% phase; unmeasured, high Rust+parity risk) and **Task-B** (narrow —
+  `cuda ∩ leafwise` only; measured ~14%, low-risk host-bitwise) **in parallel (local); the
+  +3% gate picks the build order** — E02 first if its native-vs-BLAS f32 micro-bench is
+  clear, else Task-B's measured win. Then E14 float32 `predict_linear` / E17 float32
+  embedding cache as filler. (iter-010 batched histogram stays HOLD.)
