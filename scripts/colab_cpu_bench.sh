@@ -12,7 +12,12 @@
 #
 # Usage:
 #   bash scripts/colab_cpu_bench.sh [--suite NAME] [--seeds N] [--n-trials N]
-#       [--quick] [--session NAME] [--keep] [-- <extra leaderboard args>]
+#       [--quick] [--session NAME] [--keep] [--include-untracked]
+#       [-- <extra leaderboard args>]
+#
+# By default the upload tarball is `git archive HEAD` (committed code only); the
+# resume ledger is uploaded separately, so this is all the remote needs. Pass
+# --include-untracked to pack the live working tree (in-progress code) instead.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -22,6 +27,7 @@ TRIALS=40
 SESSION="rlgbm-cpu"
 KEEP=0
 QUICK=0
+INCLUDE_UNTRACKED=0
 EXTRA=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -31,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --session) SESSION="$2"; shift 2 ;;
         --quick) QUICK=1; shift ;;
         --keep) KEEP=1; shift ;;
+        --include-untracked) INCLUDE_UNTRACKED=1; shift ;;
         --) shift; EXTRA=("$@"); break ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -62,10 +69,62 @@ trap cleanup_local EXIT
     for a in "${EXTRA[@]:-}"; do [[ -n "$a" ]] && echo "$a"; done
 } > "$ARGV_FILE"
 
-echo ">> packing working tree -> $TARBALL"
-tar --exclude='.git' --exclude='**/__pycache__' --exclude='*.egg-info' \
-    --exclude='target' --exclude='build' --exclude='dist' --exclude='.pytest_cache' \
-    -czf "$TARBALL" .
+# --- release-safe upload tarball ---------------------------------------------
+# Default: archive the COMMITTED tree (git archive HEAD); untracked files (e.g.
+# the resume ledger, uploaded separately below) never ride along and uncommitted
+# tracked changes are refused, so secrets / caches / build artifacts / private
+# notes cannot leak into the upload. --include-untracked packs the live working
+# tree instead, minus the excludes below and with a hard refusal on secrets.
+TAR_EXCLUDES=(
+    --exclude='./.git' --exclude='**/.git'
+    --exclude='**/.claude'
+    --exclude='**/.env' --exclude='**/.env.*'
+    --exclude='**/*.pem' --exclude='**/*.key' --exclude='**/id_rsa*'
+    --exclude='**/.pypirc' --exclude='**/.npmrc'
+    --exclude='**/__pycache__' --exclude='*.egg-info'
+    --exclude='**/.pytest_cache' --exclude='**/.mypy_cache' --exclude='**/.ruff_cache'
+    --exclude='**/.coverage'
+    --exclude='./artifacts' --exclude='**/catboost_info' --exclude='./site'
+    --exclude='./dist' --exclude='./build' --exclude='./target' --exclude='**/target'
+    --exclude='./docs/paper' --exclude='./docs/gpu-research'
+    --exclude='**/*.jsonl'                  # benchmark result ledgers
+    --exclude='**/next-session-prompt.md'   # private runbook (assistant prompt)
+)
+
+guard_no_secrets() {
+    local hits
+    hits="$(find . -path ./.git -prune -o \( -name '.env' -o -name '.env.*' \
+        -o -name '*.pem' -o -name '*.key' -o -name 'id_rsa*' \
+        -o -name '.pypirc' -o -name '.npmrc' \) -print 2>/dev/null)"
+    if [[ -n "$hits" ]]; then
+        echo "error: refusing to pack -- secret-like files are present:" >&2
+        echo "$hits" >&2
+        exit 1
+    fi
+}
+
+make_tarball() {  # $1 = output path
+    if [[ "$INCLUDE_UNTRACKED" -eq 1 ]]; then
+        echo ">> packing live working tree (--include-untracked) -> $1"
+        guard_no_secrets
+        tar "${TAR_EXCLUDES[@]}" -czf "$1" .
+        return
+    fi
+    if ! git diff --quiet HEAD; then
+        echo "error: tracked files differ from HEAD -- 'git archive HEAD' would omit your changes." >&2
+        echo "  commit/stash them, or re-run with --include-untracked to pack the live tree." >&2
+        git status --short >&2
+        exit 1
+    fi
+    if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+        echo ">> note: untracked files are NOT included (use --include-untracked to add them):"
+        git ls-files --others --exclude-standard
+    fi
+    echo ">> archiving committed tree (git archive HEAD) -> $1"
+    git archive --format=tar.gz -o "$1" HEAD
+}
+
+make_tarball "$TARBALL"
 
 echo ">> provisioning CPU VM (session: $SESSION)"
 colab new -s "$SESSION"
