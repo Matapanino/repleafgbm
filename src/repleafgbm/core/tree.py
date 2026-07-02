@@ -299,9 +299,10 @@ class TreeGrower:
         ``num_leaves`` is reached.
 
         When the backend opts in (``supports_leafwise_batched_scan``, the CUDA
-        backend's default) and targets are scalar, the two children of each
-        expansion are scanned in ONE ``find_best_split_batched`` call instead
-        of one per child — halving the per-node kernel launches that dominate
+        backend's default) and targets are scalar, the (up to two) splittable
+        children of each expansion are scanned in ONE
+        ``find_best_split_batched`` call instead of one per child — halving
+        the per-node kernel launches that dominate
         the leafwise device scan (Task B, ~89% launch overhead measured on the
         depthwise A/B). Candidate order and heap tie-breaking are preserved
         exactly (``_make_candidates_batched`` advances the counter in input
