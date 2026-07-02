@@ -66,8 +66,12 @@ def test_leaf_fit_stats_parity_f64(d):
     backend = CudaSplitBackend()
     got = backend.leaf_fit_stats(Z, grad, hess, order, offsets, linear)
     want = _host_reference(Z, grad, hess, order, offsets, linear)
+    # Device bincount/scatter_add reductions use atomics, so the summation
+    # order differs from NumPy's: sums with cancellation carry ~n*eps*max|term|
+    # absolute noise (~1e-12 here). 1e-9 keeps real math errors detectable
+    # while not asserting a reduction order ADR 0005 explicitly disclaims.
     for g, w in zip(got, want):
-        np.testing.assert_allclose(g, w, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(g, w, rtol=1e-9, atol=1e-9)
 
 
 def test_leaf_fit_stats_parity_f32_gram():
@@ -80,7 +84,7 @@ def test_leaf_fit_stats_parity_f32_gram():
     # f32 accumulation on the two large reductions only (A and gz): loose tol.
     names = ["g_sum", "h_sum", "s_hz", "A", "gz", "z_min", "z_max"]
     for name, g, w in zip(names, got, want):
-        tol = 1e-3 if name in ("A", "gz") else 1e-10
+        tol = 1e-3 if name in ("A", "gz") else 1e-9
         np.testing.assert_allclose(g, w, rtol=tol, atol=tol, err_msg=name)
 
 
