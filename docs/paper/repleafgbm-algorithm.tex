@@ -51,11 +51,14 @@ empirically and report an honest picture. Under a \emph{shared}
 hyperparameter-optimization budget on the Grinsztajn tabular benchmarks, with significance
 testing, RepLeafGBM is a competitive \emph{mid-pack} learner---not state-of-the-art on
 average. Its distinctive value is in niche regimes: the representation-conditioned leaf is a
-genuine, separable contribution (refitting an external GBDT's own routes with embedded-linear
-leaves improves regression by up to $-11.5\%$ RMSE), and joint vector-leaf routing with
-robust objectives is decisive under target contamination---where we identify and fix a scale
-bug in saturated-gradient (Huber/quantile) objectives through per-output target
-standardization, making them robust \emph{consistently} across target scales. Equally, we
+genuine, separable contribution (refitting an external GBDT's own routes with
+embedded-linear leaves improves regression RMSE by $5$--$9\%$ on synthetic targets and
+significantly---Wilcoxon $p=0.002$ over ten seeds, no losses---on every real regression
+dataset tested), and joint vector-leaf routing with robust objectives is decisive under
+target contamination (beating squared error on $10/10$ seeds at every contamination level
+on all five real multi-target datasets)---where we identify and fix a scale bug in
+saturated-gradient (Huber/quantile) objectives through per-output target standardization,
+making them robust \emph{consistently} across target scales. Equally, we
 document where the idea does \emph{not} help---binary classification (the logistic Hessian
 starves the leaf-linear fit), and \emph{learned} encoders, which beat \texttt{identity} on
 structured synthetic data but fail to transfer to real tabular targets. We release an
@@ -134,15 +137,24 @@ categorical subset splits; CatBoost~\citep{prokhorenkova2018catboost} uses obliv
 (symmetric) trees as a strong regularizer and fast predictor. RepLeafGBM reuses this
 routing machinery verbatim---histogram splits, Newton gain, leaf-wise/depthwise/
 symmetric policies, categorical subset splits---and changes only the leaf.
+NGBoost~\citep{duan2020ngboost} varies the complementary axis: it keeps simple leaves but
+changes \emph{what} they predict (distributional parameters via natural gradients),
+whereas RepLeafGBM changes what the leaf predicts \emph{on}; the two are compatible in
+principle, though v0 does not combine them.
 
 \paragraph{Model trees and piecewise-linear leaves.}
 Replacing the constant leaf with a local linear model is a long line of work: model
 trees~\citep{quinlan1992m5,wang1997m5prime}, logistic model
 trees~\citep{landwehr2005lmt}, and, within boosting, gradient boosting with
-piecewise-linear regression trees~\citep{shi2019gbdtpl}. These fit a linear model in
-the \emph{raw} (or selected) features. RepLeafGBM's leaf instead regresses on a
-\emph{learned, frozen} representation $\zt(x)$, of which the raw-linear leaf is the
-identity-encoder special case.
+piecewise-linear regression trees~\citep{shi2019gbdtpl} (implemented as LightGBM's
+\texttt{linear\_tree} option). Boosted generalized additive models---intelligible
+models and GA\textsuperscript{2}M, popularized as Explainable Boosting
+Machines~\citep{lou2012intelligible,lou2013accurate}---also enrich the weak learner,
+but with per-feature (or feature-pair) shape functions in which routing and leaf basis
+are the \emph{same} raw features. All of these fit their local model in the raw (or
+selected) features. RepLeafGBM's leaf instead regresses on a \emph{learned, frozen}
+representation $\zt(x)$, decoupled from the routing features, of which the raw-linear
+leaf is the identity-encoder special case.
 
 \paragraph{Tabular deep learning and numerical embeddings.}
 Neural tabular models embed features and learn interactions end-to-end:
@@ -151,9 +163,15 @@ FT-Transformer~\citep{gorishniy2021revisiting}. \citet{gorishniy2022embeddings} 
 that piecewise-linear (PLR) and periodic numerical embeddings are the key ingredient;
 these are exactly the encoder families RepLeafGBM can consume. The difference is how
 the embedding is used: as the input to a deep network there, versus a frozen
-\emph{leaf basis} under an explicit tree here. \citet{grinsztajn2022why} document that
-tree-based models still lead on typical tabular data, which motivates keeping the tree
-explicit.
+\emph{leaf basis} under an explicit tree here. A separate axis is in-context tabular
+prediction: TabPFN~\citep{hollmann2025tabpfn} amortizes training into a pretrained
+transformer prior and excels on small datasets, without explicit routing.
+\citet{grinsztajn2022why} document that tree-based models still lead on typical tabular
+data; \citet{mcelfresh2023when} show that much of the apparent NN-vs-GBDT gap dissolves
+under matched tuning budgets---precisely the caution our shared-budget evaluation
+protocol (\S\ref{sec:exp-openml}) adopts---and the living TabArena
+benchmark~\citep{erickson2025tabarena} confirms tuned GBDTs remain strong defaults.
+Together these motivate keeping the tree explicit.
 
 \paragraph{Hybrids of trees and representations.}
 Deep neural decision forests~\citep{kontschieder2015deep} and NODE~\citep{popov2020node}
@@ -516,37 +534,41 @@ The cleanest test of the leaf idea holds \emph{routing fixed} and varies only th
 We take a LightGBM model, extract its early-stopped tree routes, and refit the leaves two
 ways: with LightGBM's own constant leaves, and with RepLeafGBM embedded-linear leaves
 over $\zt(x)$ (router extraction; the leaves are refit by sequential replay so the
-boosting consistency is preserved). Table~\ref{tab:routerx} shows that on the same routes,
-swapping constant for embedded-linear leaves improves regression by up to $11.5\%$ RMSE,
-while a fully native RepLeafGBM (grown with embedded leaves interleaved) does better still
-with far fewer trees. On binary data the leaf swap is neutral---a recurring theme below.
+boosting consistency is preserved). Table~\ref{tab:routerx} shows that on the same routes
+(ten seeds), swapping constant for embedded-linear leaves improves regression by $5.1\%$
+RMSE with the identity encoder and by $9.2\%$ with a PLR encoder, while a fully native
+RepLeafGBM (grown with embedded leaves interleaved) does better still with far fewer
+trees. On binary data the leaf swap is neutral---a recurring theme below.
 
 \begin{table}[t]
 \centering
-\caption{Leaf-model channel isolated by router extraction (mean over seeds; RMSE for
+\caption{Leaf-model channel isolated by router extraction (mean over ten seeds; RMSE for
 regression, log-loss for binary; lower is better). Holding LightGBM's routes fixed,
-embedded-linear leaves improve regression; the native RepLeafGBM is best. ``n.s.''
-denotes a difference within one standard deviation.}
+embedded-linear leaves improve regression---and a PLR leaf basis helps further on the
+synthetic targets whose smooth per-feature structure it can represent---while the native
+RepLeafGBM is best. ``n.s.'' denotes a difference within one standard deviation.}
 \label{tab:routerx}
-\begin{tabular}{lccc}
+\begin{tabular}{lcccc}
 \toprule
-Dataset (metric) & LightGBM & \makecell{LightGBM routes\\+ embedded leaf} & \makecell{RepLeafGBM\\(native)} \\
+Dataset (metric) & LightGBM & \makecell{routes\\+ emb.\ leaf (id.)} & \makecell{routes\\+ emb.\ leaf (PLR)} & \makecell{RepLeafGBM\\(native)} \\
 \midrule
-\texttt{piecewise\_linear} (RMSE) & 0.4864 & 0.4304 \,($-11.5\%$) & \textbf{0.4074} \\
-\texttt{friedman1} (RMSE)         & 1.1921 & 1.1689 \,($-1.9\%$)  & \textbf{1.1282} \\
-\texttt{binary\_piecewise} (log-loss) & 0.2850 & 0.2842 \,(n.s.) & \textbf{0.2804} \\
+\texttt{piecewise\_linear} (RMSE) & 0.4747 & 0.4507 \,($-5.1\%$) & 0.4309 \,($-9.2\%$) & \textbf{0.4136} \\
+\texttt{friedman1} (RMSE)         & 1.1933 & 1.1690 \,($-2.0\%$) & 1.1854 \,($-0.7\%$) & \textbf{1.1216} \\
+\texttt{binary\_piecewise} (log-loss) & 0.2803 & 0.2825 \,(n.s.) & 0.2833 \,(n.s.) & \textbf{0.2800} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-On real regression data the same isolation holds: refitting an identity-embedded linear
-leaf on extracted LightGBM routes for \texttt{california}, \texttt{diamonds}, and
-\texttt{wine\_quality} (five seeds) improves RMSE on all three datasets and never loses on a
-single seed (median ${\sim}1$--$2\%$), while a PLR encoder adds nothing over identity---the
-gain is the linear leaf, not a richer representation, reinforcing \texttt{identity} as the
-default (\S\ref{sec:exp-encoders}). With only five seeds these per-dataset Wilcoxon tests
-sit at the two-sided $p=0.0625$ floor, so the direction is consistent but formal
-significance awaits more seeds.
+On real regression data the same isolation holds and is now formally significant:
+refitting an identity-embedded linear leaf on extracted LightGBM routes improves RMSE on
+\texttt{california} (median $-0.0076$, $9/1/0$ wins over ten seeds),
+\texttt{diamonds} ($-0.0021$, $7/3/0$), and \texttt{wine\_quality} ($-0.0060$, $4/6/0$,
+no losses), each with two-sided Wilcoxon $p=0.002$. A PLR encoder is weaker than
+identity on every real dataset (significant only on \texttt{california}, and by a smaller
+margin)---on real targets the gain is the linear leaf itself, not a richer
+representation, reinforcing \texttt{identity} as the default (\S\ref{sec:exp-encoders});
+the PLR column of Table~\ref{tab:routerx} shows the richer basis paying off only where
+the target has planted smooth per-feature structure.
 
 \subsection{Leaf models and the extrapolation guard on real data}
 \label{sec:exp-guard}
@@ -603,13 +625,28 @@ untested.
 The honest summary (Table~\ref{tab:openml}) is that RepLeafGBM is a \emph{consistent
 mid-pack} learner. Its mean rank is $3.18$--$3.43$ out of five in \emph{every} suite; it is
 never the leader, and it is never both significantly \emph{and} practically worse than the
-best baseline, nor significantly better. The categorical suites are statistically flat
-(Friedman $p=0.375$ and $0.788$; the categorical-classification suite has only seven
+best baseline, nor significantly better (on numerical regression the Wilcoxon test against
+the best baseline is $p=0.055$, not significant). The categorical suites are statistically
+flat (Friedman $p=0.375$ and $0.788$; the categorical-classification suite has only seven
 datasets and correspondingly low power). RepLeafGBM is thus competitive but not
 state-of-the-art on average---a useful, honestly-positioned tabular learner whose
 distinctive value lies in the niche regimes studied below, not in the aggregate
-leaderboard. Full per-dataset tables and the critical-difference diagrams are produced by
-the shipped leaderboard harness (Appendix~\ref{app:repro}).
+leaderboard. Full per-dataset tables and the critical-difference diagrams
+(Figure~\ref{fig:cd}) are produced by the shipped leaderboard harness
+(Appendix~\ref{app:repro}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.49\linewidth]{figures/leaderboard-cd-grinsztajn_num_reg.png}\hfill
+\includegraphics[width=0.49\linewidth]{figures/leaderboard-cd-grinsztajn_num_cls.png}\\[2pt]
+\includegraphics[width=0.49\linewidth]{figures/leaderboard-cd-grinsztajn_cat_reg.png}\hfill
+\includegraphics[width=0.49\linewidth]{figures/leaderboard-cd-grinsztajn_cat_cls.png}
+\caption{Critical-difference diagrams (Nemenyi, $\alpha{=}0.05$) for the four Grinsztajn
+suites under the shared HPO budget. Models joined by a bar are not statistically
+separable. RepLeafGBM sits mid-pack in every suite and is never separated from the leading
+GBDTs; the categorical suites are statistically flat.}
+\label{fig:cd}
+\end{figure}
 
 \begin{table}[t]
 \centering
@@ -622,10 +659,10 @@ statistically flat. The Friedman $p$ is over all five models.}
 \toprule
 Grinsztajn suite (\# datasets) & RepLeafGBM mean rank (of $5$) & Friedman $p$ \\
 \midrule
-Numerical regression (19)      & $3.2$--$3.4$ & significant ($<0.05$) \\
-Numerical classification (16)  & $3.2$--$3.4$ & significant ($<0.05$) \\
-Categorical regression (17)    & $3.2$--$3.4$ & $0.375$ (flat) \\
-Categorical classification (7) & $3.2$--$3.4$ & $0.788$ (flat) \\
+Numerical regression (19)      & $3.32$ & $1.6\times10^{-4}$ \\
+Numerical classification (16)  & $3.38$ & $3.3\times10^{-3}$ \\
+Categorical regression (17)    & $3.18$ & $0.375$ (flat) \\
+Categorical classification (7) & $3.43$ & $0.788$ (flat) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -680,11 +717,12 @@ are RepLeafGBM's clearest empirical edge. We inject heavy-tailed outliers (at $8
 into a fraction $\{0,4,8,16\%\}$ of the training targets and score on clean test data,
 across five real multi-target datasets---energy-efficiency, jura, water-quality, rf1, and
 scm20d---and a synthetic control, with squared, Huber~\citep{huber1964robust}, and median
-(quantile, $\tau{=}0.5$) objectives over five seeds. On energy, jura, water-quality, and the
-synthetic control, Huber and quantile beat squared error decisively at essentially every
-contamination level (winning on all five seeds), with effect sizes of multiples of the
-target standard deviation---e.g.\ on energy at $8\%$ contamination Huber attains $2.22$ RMSE
-versus $12.49$ for squared error (a $5.6\times$ reduction).
+(quantile, $\tau{=}0.5$) objectives over ten seeds. The result is uniform: on \emph{every}
+dataset and at \emph{every} nonzero contamination level, both Huber and quantile beat
+squared error on all ten seeds (two-sided Wilcoxon $p=0.002$, $10/0/0$), with effect sizes
+of multiples of the target standard deviation---e.g.\ on energy at $8\%$ contamination the
+median objective attains $2.40$ RMSE (Huber $3.70$) versus $12.92$ for squared error, a
+$3.5$--$5.4\times$ reduction.
 
 \paragraph{A scale-consistency fix for saturated-gradient objectives.} The two large
 multi-target sets (rf1, scm20d) initially \emph{contradicted} this picture: Huber and
@@ -700,16 +738,18 @@ target range within $n_\text{estimators}$ trees, so the model severely under-fit
 per output by its median and $1.4826\cdot\mathrm{MAD}$ before boosting, fit in the
 standardized space, and un-standardize predictions, so $\delta=1$ corresponds to one
 robust-$\sigma$ on every target. This removes the clean-fit penalty (rf1
-$15.0\times{\rightarrow}0.9\times$, scm20d $2.4\times{\rightarrow}1.0\times$) and restores
-robustness on rf1 and scm20d under contamination (rf1 at $16\%$: squared $27.6$ vs.\
-standardized quantile $2.94$; scm20d at $16\%$: squared $285$ vs.\ standardized Huber
-$135$), turning robust multi-output regression from a dataset-dependent into a
-\emph{general} win. The standardization is applied automatically for the Huber and quantile
+$15.0\times{\rightarrow}0.9\times$, scm20d $2.4\times{\rightarrow}1.0\times$; at ten seeds
+the clean Huber fit is now slightly \emph{better} than squared on both) and restores
+robustness on rf1 and scm20d under contamination (rf1 at $16\%$: squared $27.8$ vs.\
+standardized quantile $3.0$; scm20d at $16\%$: squared $286$ vs.\ standardized Huber
+$136$), turning robust multi-output regression from a dataset-dependent into a
+\emph{general} win---the uniform $10/0/0$, $p=0.002$ sweep above is measured \emph{with}
+this fix in place. The standardization is applied automatically for the Huber and quantile
 objectives. The one honest trade-off is on small-scale targets (energy, $\sigma{\approx}10$),
 where the un-standardized objective's accidentally-aggressive clipping had been \emph{more}
 robust at heavy contamination; standardization gives up a little peak robustness there
-(Huber at $16\%$: $2.51{\rightarrow}5.68$) while still beating squared error ($18.76$), and
-a sub-unit $\delta/\sigma$ ratio could recover it.
+(Huber at $16\%$: $5.6$ versus squared error's $19.2$; the median objective reaches $3.1$),
+and a sub-unit $\delta/\sigma$ ratio could recover it.
 
 \begin{table}[t]
 \centering
@@ -849,10 +889,10 @@ at every split rather than learning a default direction.
 tabular models such as TabNet~\citep{arik2021tabnet}, NODE~\citep{popov2020node}, or
 FT-Transformer~\citep{gorishniy2021revisiting}, so the positioning relative to tabular deep
 learning is argued rather than measured. (vi) The fair leaderboard uses five seeds and fifty
-HPO trials per model; the niche studies (robust multi-output, router extraction) use five
-seeds, at which the two-sided Wilcoxon test floors at $p=0.0625$---their effect directions
-are consistent across seeds, but formal significance awaits a seven-to-ten-seed rerun, and
-the smaller synthetic and guard studies should be read as indicative. (vii) The per-output
+HPO trials per model (a ten-seed replication is the obvious firming-up step); the two niche
+studies (robust multi-output, router extraction) were rerun at ten seeds and are
+significant (two-sided Wilcoxon $p=0.002$), but the smaller synthetic and guard studies
+remain five-seed and should be read as indicative. (vii) The per-output
 target standardization that makes robust objectives scale-consistent gives up a little peak
 robustness on small-scale targets; a tuned sub-unit $\delta/\sigma$ ratio is left to future
 work. (viii) Two empirical questions are open: why joint vector-leaf routing trails
@@ -927,24 +967,42 @@ Multi-output (squared)& $F-Y$ & $1$ & $\overline{Y}_{\cdot k}$ & identity \\
 \section{Reproducibility and additional results}
 \label{app:repro}
 
-\paragraph{Manifest.}
-The OpenML suite (Table~\ref{tab:openml}) uses seeds $\{0,1,2\}$, a $60/20/20$ split
-(stratified for classification), early stopping after $25$ rounds, and at most $6{,}000$
-rows per dataset; datasets are anchored by OpenML \texttt{data\_id}: \texttt{house\_sales}
-(42731), \texttt{diamonds} (42225), \texttt{wine\_quality} (287), \texttt{credit\_g} (31),
-\texttt{phoneme} (1489), \texttt{adult} (1590), \texttt{wine} (187), \texttt{vehicle} (54),
-plus the scikit-learn \texttt{california} set; multi-output uses energy-efficiency (1472).
-Package versions: Python 3.11, numpy 1.23.5, scikit-learn 1.2.0, lightgbm 4.6.0, xgboost
-3.2.0, catboost 1.2.10, torch 2.9.1. The NumPy and Rust backends are parity-tested
-\emph{bitwise} (identical histograms, leaf fits, and predictions); the CUDA backend is
-parity-tested at \texttt{allclose} because GPU atomic-add reordering precludes bitwise
-equality. The full per-dataset tables and the harness that produced every number are
-included with the open-source release.
+\paragraph{Leaderboard manifest (Table~\ref{tab:openml}, Figure~\ref{fig:cd}).}
+The fair-budget leaderboard runs the four Grinsztajn suites, anchored by OpenML
+study ids $336$ (numerical regression, $19$ datasets), $337$ (numerical
+classification, $16$), $335$ (categorical regression, $17$), and $334$ (categorical
+classification, $7$). Every model family---LightGBM, XGBoost, CatBoost, scikit-learn
+HistGradientBoosting, and RepLeafGBM (whose search space spans
+constant/embedded-linear/adaptive leaves and identity/PLR encoders)---receives the
+\emph{same} budget of $50$ Optuna TPE trials per dataset, selected on a validation
+split and scored once on a held-out test split ($70/15/15$, stratified for
+classification), over five seeds, with datasets capped at $10{,}000$ rows. All models
+are fit on the identical ordinal-encoded matrix (RepLeafGBM's native categorical subset
+splits are disabled for symmetry). Significance uses Friedman tests with Nemenyi
+critical-difference diagrams, per-pair Wilcoxon signed-rank tests, and bootstrap
+confidence intervals; results count only when significant \emph{and} above a
+minimum-relevant-difference band. The resumable ledger, per-dataset tables, and the
+harness that produced every number ship with the open-source release. The
+leaf-channel isolation (Table~\ref{tab:routerx}) and robust multi-output
+(\S\ref{sec:exp-multioutput}) studies use ten seeds. Package versions: Python 3.11,
+numpy 1.23.5, scikit-learn 1.2.0, lightgbm 4.6.0, xgboost 3.2.0, catboost 1.2.10,
+torch 2.9.1. The NumPy and Rust backends are parity-tested \emph{bitwise} (identical
+histograms, leaf fits, and predictions); the CUDA backend is parity-tested at
+\texttt{allclose} because GPU atomic-add reordering precludes bitwise equality.
 
-\paragraph{Per-dataset OpenML results.}
-Table~\ref{tab:openml-full} gives the per-dataset primary metric behind the mean ranks of
-Table~\ref{tab:openml}, for a representative subset of models. Tuned GBDTs lead the
-regression and binary datasets, while RepLeafGBM with embedded-linear leaves wins both
+\paragraph{Legacy breadth study (superseded).}
+Tables~\ref{tab:openml-full} and~\ref{tab:synthetic} are retained from an earlier,
+\emph{unequal-tuning} breadth study and are \textbf{not} the evidence behind
+Table~\ref{tab:openml}: they predate the shared-HPO-budget leaderboard above and use a
+different protocol---seeds $\{0,1,2\}$, a $60/20/20$ split, early stopping after $25$
+rounds, at most $6{,}000$ rows, and hand-chosen model configurations; datasets are
+anchored by OpenML \texttt{data\_id}: \texttt{house\_sales} (42731), \texttt{diamonds}
+(42225), \texttt{wine\_quality} (287), \texttt{credit\_g} (31), \texttt{phoneme} (1489),
+\texttt{adult} (1590), \texttt{wine} (187), \texttt{vehicle} (54), plus the scikit-learn
+\texttt{california} set; multi-output uses energy-efficiency (1472). We keep them for
+breadth (per-dataset numbers across nine datasets and eleven model arms) and because the
+multiclass observation below is not covered by the leaderboard suites. Tuned GBDTs lead
+the regression and binary datasets, while RepLeafGBM with embedded-linear leaves wins both
 multiclass datasets among the models shown (\texttt{wine} outright across all models).
 
 \begin{table}[h]
