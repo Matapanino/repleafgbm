@@ -61,7 +61,8 @@ def run_parity_tests():
     proc = _run(
         [
             sys.executable, "-m", "pytest",
-            "tests/test_cuda_backend.py", "tests/test_cuda_leaf_fit.py", "-q",
+            "tests/test_cuda_backend.py", "tests/test_cuda_leaf_fit.py",
+            "-q", "--tb=line",
         ],
         cwd=REPO, env=ENV, capture_output=True, text=True,
     )
