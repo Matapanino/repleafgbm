@@ -932,8 +932,9 @@ class CudaSplitBackend(BaseSplitBackend):
 
         s_hz_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float64)
         cupyx.scatter_add(s_hz_d, seg_d, hZs)
-        gz_all_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float64)
-        cupyx.scatter_add(gz_all_d, seg_d, Zs * gs[:, None])
+        if not use_f32:  # the f32 branch below computes its own projection
+            gz_all_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float64)
+            cupyx.scatter_add(gz_all_d, seg_d, Zs * gs[:, None])
 
         # z_min/z_max are computed per linear leaf with exact slice reductions
         # in the GEMM loop below — CuPy's float scatter_min/scatter_max round

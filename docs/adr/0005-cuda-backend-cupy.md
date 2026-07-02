@@ -79,17 +79,31 @@ tested locally or in CI.
   histogram micro-benchmark **32x** over NumPy (was ~8.5x before caching), and
   **1.58x end-to-end** `RepLeafRegressor.fit` (100k×30, 50 trees,
   embedded_linear). See `experiments/results/2026-06-17-cuda-parity.md`.
-- **Phase C1 (evaluated, deferred):** GPU `leaf_linear_stats`. The 1.58x
-  end-to-end implies histogram was only ~37% of the fit; the remaining host work
-  (tree growth, split scan, leaf fitting) dominates. Crucially, leaf fitting is
-  *already* accelerated by the Rust `leaf_linear_stats` kernel in real
-  deployments (the Colab box lacked it, so the benchmark ran the slow NumPy
-  fallback — inflating, not understating, the host share). So GPU leaf stats
-  would target a small, already-fast slice while costing a wider core change
-  (threading the split backend into the leaf model) plus a new Gram-matrix kernel
-  with its own parity surface. Per the project's "change directions only with
-  evidence" rule, **C1 is deferred**; revisit only if profiling shows leaf
-  fitting is a bottleneck for some workload.
+- **Phase C1 (evaluated, deferred — later SHIPPED 2026-07-02):** GPU
+  `leaf_linear_stats`. The 1.58x end-to-end implies histogram was only ~37% of
+  the fit; the remaining host work (tree growth, split scan, leaf fitting)
+  dominates. Crucially, leaf fitting is *already* accelerated by the Rust
+  `leaf_linear_stats` kernel in real deployments (the Colab box lacked it, so
+  the benchmark ran the slow NumPy fallback — inflating, not understating, the
+  host share). So GPU leaf stats would target a small, already-fast slice while
+  costing a wider core change (threading the split backend into the leaf model)
+  plus a new Gram-matrix kernel with its own parity surface. Per the project's
+  "change directions only with evidence" rule, **C1 was deferred**; the evidence
+  arrived once the batched scans shipped and leaf_fit became 49–73% of CUDA fit
+  (2026-06-25 sizing) — see the device leaf-fit entry below.
+- **Device leaf-fit statistics** (added + on by default 2026-07-02, iter 012).
+  `leaf_fit_stats` computes the per-leaf weighted Gram stacks / projections /
+  z-range guards on-device (Z identity-cached per fit); the centering, ridge
+  solve, and adaptive LOO gate stay host float64 through the same assembly as
+  the native path. This *extends the allclose-not-bitwise decision one layer
+  down*: a **near-tied adaptive LOO-gate verdict can flip** under device
+  reduction noise, exactly like near-tied splits, so its e2e tests assert
+  quality-equivalence (|Δr²| bound). Two hard-won constraints: CuPy's float
+  `scatter_min/max` rounds float64 through float32 (~5e-8) — guard bounds are
+  exact per-leaf slice reductions — and device-sum parity is asserted at
+  rtol/atol 1e-9 (atomic-order noise ~1e-12). T4: wide fit 1.72×, narrow 1.23×
+  (`experiments/results/2026-07-02-cuda-leaf-ridge-ab.md`); kill switch
+  `REPLEAFGBM_CUDA_LEAF_FIT=0`, crossover `REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS`.
 - **Phase B2 (shipped, adaptive):** resident histograms + an **adaptive**
   numeric split scan. `build_histograms` now *returns* the
   `(n_features, n_bins_max, 3)` histogram as a resident CuPy array instead of

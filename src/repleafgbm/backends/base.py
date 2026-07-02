@@ -194,6 +194,20 @@ class BaseSplitBackend(ABC):
     #: backend sets it on by default (kill switch REPLEAFGBM_CUDA_BATCHED_SCAN=0).
     supports_batched_scan: bool = False
 
+    #: Whether the leaf models may hand this backend a tree's leaf-fit
+    #: statistics work (``leaf_fit_stats``). Default off → leaf fitting stays
+    #: on the host (native Rust / NumPy BLAS). The CUDA backend sets it on by
+    #: default (kill switch REPLEAFGBM_CUDA_LEAF_FIT=0). A backend that sets
+    #: this True must also provide ``leaf_fit_stats`` and may lower
+    #: ``leaf_fit_min_cells``.
+    supports_leaf_fit: bool = False
+
+    #: Minimum per-tree leaf-fit work (gathered rows × emb_dim cells) before a
+    #: capable backend's device path engages; the effectively-infinite default
+    #: keeps host-only backends inert even if a subclass flips
+    #: ``supports_leaf_fit`` without tuning the crossover.
+    leaf_fit_min_cells: int = 1 << 62
+
     def find_best_split_batched(
         self,
         hists,

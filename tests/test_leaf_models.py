@@ -694,17 +694,28 @@ def test_fit_backend_seam_works_for_adaptive_gate():
 
 
 def test_booster_hands_fit_backend_to_leaf_model():
+    """The boosting loop sets fit_backend for the duration of the fit and
+    resets it afterwards (the handle is transient, never left dangling)."""
     from repleafgbm.core.booster import Booster, BoosterParams
     from repleafgbm.core.objectives import get_objective
     from repleafgbm.data import RepLeafDataset
 
+    seen = []
+
+    class _SpyLeafModel(ConstantLeafModel):
+        def fit_leaves(self, leaf_rows, grad, hess, Z):
+            seen.append(self.fit_backend)
+            return super().fit_leaves(leaf_rows, grad, hess, Z)
+
     rng = np.random.default_rng(0)
     X = rng.normal(size=(200, 4))
     y = X[:, 0] + rng.normal(0, 0.1, 200)
-    lm = ConstantLeafModel()
+    lm = _SpyLeafModel()
     booster = Booster(
         BoosterParams(n_estimators=2, split_backend="numpy"),
         get_objective("squared_error"),
     )
     booster.fit(RepLeafDataset(X, y), None, lm)
-    assert lm.fit_backend is booster.split_backend_
+    assert len(seen) == 2  # one per round
+    assert all(b is booster.split_backend_ for b in seen)  # handed during fit
+    assert lm.fit_backend is None  # reset afterwards

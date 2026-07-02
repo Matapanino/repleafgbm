@@ -146,7 +146,8 @@ class Booster:
         self.split_backend_ = splitter.backend
         # Hand the backend to the leaf model for the duration of this fit: a
         # capable backend (CUDA) computes leaf-fit statistics on-device. The
-        # leaf model is a fit-local, so the handle is never serialized.
+        # leaf model is a fit-local, so the handle is never serialized; it is
+        # still reset afterwards in case a caller reuses the leaf model.
         leaf_model.fit_backend = splitter.backend
         grower = TreeGrower(
             splitter,
@@ -154,14 +155,17 @@ class Booster:
             max_depth=p.max_depth,
             grow_policy=p.grow_policy,
         )
-        return self._run_boosting(
-            dataset, encoder, leaf_model,
-            next_tree=grower.grow,
-            n_rounds=p.n_estimators,
-            eval_sets=eval_sets,
-            eval_metric=eval_metric,
-            profiler=profiler,
-        )
+        try:
+            return self._run_boosting(
+                dataset, encoder, leaf_model,
+                next_tree=grower.grow,
+                n_rounds=p.n_estimators,
+                eval_sets=eval_sets,
+                eval_metric=eval_metric,
+                profiler=profiler,
+            )
+        finally:
+            leaf_model.fit_backend = None
 
     def fit_with_routes(
         self,
