@@ -112,18 +112,19 @@ def test_batched_fit_matches_reference_implementation():
         np.testing.assert_array_equal(lv.z_max[i], Z[rows].max(axis=0))
 
 
-@pytest.mark.parametrize("d", [8, 33, 48, 64])
+@pytest.mark.parametrize("d", [8, 33, 48, 64, 200])
 def test_native_and_numpy_stat_paths_agree(monkeypatch, d):
     """The Rust fused-stats path and the NumPy/BLAS path must produce the same
-    leaf models (to float noise) across the embedding widths the native gate
-    now covers (``_NATIVE_STATS_MAX_DIM`` == 64). With n=1500 rows, d=8/33 take
-    the native serial branch while d=48/64 exceed ``LEAF_PARALLEL_MIN_CELLS``
-    and exercise the rayon leaf-parallel branch; d>32 also guards the raised
-    gate (native vs BLAS up to d=64)."""
+    leaf models (to float noise) across the embedding widths the scalar f64
+    native gate covers (``_NATIVE_STATS_MAX_DIM_SCALAR_F64`` == 256). With
+    n=1500 rows, d=8/33 take the native serial branch while d>=48 exceed
+    ``LEAF_PARALLEL_MIN_CELLS`` and exercise the rayon leaf-parallel branch;
+    d=200 guards the wide-emb gate raised by the iter-011 probe."""
     pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
     import repleafgbm.core.leaf_models as lm
 
-    assert d <= lm._NATIVE_STATS_MAX_DIM  # every case must reach the native path
+    # every case must reach the native path
+    assert d <= lm._NATIVE_STATS_MAX_DIM_SCALAR_F64
     rng = np.random.default_rng(10)
     n = 1500
     Z = rng.normal(size=(n, d))
@@ -569,3 +570,37 @@ def test_adaptive_multiclass_per_class_verdict():
     linear = [int((np.abs(out[k].weights).sum(axis=1) > 0).sum()) for k in range(K)]
     assert linear[0] > 0  # clean-linear class keeps linear leaves
     assert linear[1] == 0 and linear[2] == 0  # noise classes demoted
+
+
+def test_wide_multiclass_fallback_native_per_class(monkeypatch):
+    """Wide (emb>128) multiclass falls back to per-class fit_leaves, which now
+    takes the native scalar path — the only place a *strided* grad[:, k]
+    column reaches the Rust kernel (safe because the binding reads grad/hess
+    stride-aware). Must match the BLAS fallback allclose."""
+    pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
+    import repleafgbm.core.leaf_models as lm
+
+    rng = np.random.default_rng(21)
+    n, K, d = 900, 3, 160  # 128 < d <= 256: per-class native, pooled gate off
+    Z = np.ascontiguousarray(rng.normal(size=(n, d)))
+    grad = np.ascontiguousarray(rng.normal(size=(n, K)))  # grad[:, k] strided
+    hess = np.ascontiguousarray(np.abs(rng.normal(1.0, 0.3, (n, K))) + 0.1)
+    rows_per_class = [
+        [np.sort(p).astype(np.int64) for p in
+         np.array_split(np.random.default_rng(30 + k).permutation(n), 3)]
+        for k in range(K)
+    ]
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+
+    out_native = model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+    monkeypatch.setattr(lm, "_native", None)
+    out_blas = model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+
+    for lv_n, lv_b in zip(out_native, out_blas):
+        assert np.isfinite(lv_n.bias).all() and np.isfinite(lv_n.weights).all()
+        np.testing.assert_allclose(lv_n.bias, lv_b.bias, rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(
+            lv_n.weights, lv_b.weights, rtol=1e-6, atol=1e-8
+        )
+        np.testing.assert_array_equal(lv_n.z_min, lv_b.z_min)
+        np.testing.assert_array_equal(lv_n.z_max, lv_b.z_max)

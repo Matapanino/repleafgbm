@@ -33,13 +33,22 @@ except ImportError:  # pragma: no cover - depends on optional extension
 #: Above this embedding width the BLAS-based NumPy path beats the native fused
 #: pass, so wider embeddings fall back to BLAS. The native helper is rayon
 #: leaf-parallel (parallelizing across leaves — the right axis for the small
-#: per-leaf Gram matrices, which thread poorly inside BLAS). The 32→64 move
-#: (2026-06-19) only validated the default emb=64; a 2026-06-25 crossover sweep
-#: (8-core arm64) showed native still wins to ~200 single-thread and ~128
-#: multi-threaded BLAS (crossover ~256), output allclose ~1e-14, so the gate is
-#: raised to a conservative 128 — well below the measured crossover and a win
-#: under both threading regimes (docs/perf-notes/experiment-log.md iter 005).
+#: per-leaf Gram matrices, which thread poorly inside BLAS). History: 32→64
+#: (2026-06-19), →128 after a 2026-06-25 crossover sweep (iter 005). Still the
+#: gate for the pooled-multiclass kernel (``leaf_linear_stats_mc``, whose
+#: crossover is unmeasured) and for the ``float32_gram`` opt-in (which only
+#: exists on the BLAS path; at 256 dims f32 BLAS beats native f64).
 _NATIVE_STATS_MAX_DIM = 128
+
+#: Scalar float64 leaf fits stay native up to this width. A 2026-07-02
+#: interleaved A/B probe (200k rows × 31 leaves, 8-core arm64, iter 011)
+#: showed native f64 beats the f64 BLAS loop at every width up to 256 in BOTH
+#: threading regimes — 1.24–1.57× with single-threaded BLAS and 2.65–4.79×
+#: with multi-threaded BLAS (small per-leaf GEMMs thread pathologically) — so
+#: the default-precision scalar gate is raised to 256. Output allclose vs
+#: BLAS (~1e-14 at 64 dims, rtol 1e-6 tested at 200), bitwise-deterministic
+#: within the native path (docs/perf-notes/experiment-log.md iter 011).
+_NATIVE_STATS_MAX_DIM_SCALAR_F64 = 256
 
 #: Valid ``leaf_fit_precision`` values. ``"float64"`` (default) is the
 #: bitwise-parity path; ``"float32_gram"`` accumulates only the wide-embedding
@@ -282,7 +291,15 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         linear = np.flatnonzero(sizes >= min_n)
         k = linear.size
 
-        if k and _native is not None and emb_dim <= _NATIVE_STATS_MAX_DIM:
+        # float64 (the default) stays native to 256 dims (iter 011 probe);
+        # the float32_gram opt-in keeps its BLAS path above 128 so opting in
+        # still buys the f32 reductions it promises.
+        native_max_dim = (
+            _NATIVE_STATS_MAX_DIM_SCALAR_F64
+            if self.leaf_fit_precision == "float64"
+            else _NATIVE_STATS_MAX_DIM
+        )
+        if k and _native is not None and emb_dim <= native_max_dim:
             # Fused single-pass statistics in Rust (narrow embeddings only:
             # for wide ones the BLAS Gram below wins).
             g_sum, h_sum, s_hz, A, gz, zmn, zmx = _native.leaf_linear_stats(
@@ -744,7 +761,10 @@ def make_leaf_model(
     ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit
     (``leaf_gate_margin``/``leaf_gate`` are ignored by the other models).
     ``leaf_fit_precision`` only affects the wide-embedding (emb>128) BLAS leaf-fit
-    of the linear models (and multi-output vector leaves); it is inert for ``constant``.
+    of the linear models (and multi-output vector leaves); it is inert for
+    ``constant``. Note the float64 default takes the *native* pass up to 256
+    dims (``_NATIVE_STATS_MAX_DIM_SCALAR_F64``) — choosing ``"float32_gram"``
+    at 128 < emb <= 256 therefore switches both the precision and the kernel.
     """
     if leaf_fit_precision not in _LEAF_FIT_PRECISIONS:
         raise ValueError(

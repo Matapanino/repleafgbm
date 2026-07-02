@@ -85,12 +85,13 @@ class BaseRepLeafModel(BaseEstimator):
             leverage-corrected held-out error) or "insample" (drops the leverage
             correction — a deliberately weak baseline for diagnostics).
         leaf_fit_precision: "float64" (default) or "float32_gram". A perf knob for
-            the linear leaf models on **wide embeddings** (emb_dim > 128, the BLAS
-            leaf-fit path): "float32_gram" accumulates only the per-leaf Gram and
-            gradient projection in float32 (~1.6-2x faster on those reductions,
-            ~15% faster wide-emb fit; also covers multi-output vector leaves) while
-            the solve stays float64. Inert for "constant" and for narrow embeddings
-            (the native path). Trade-off:
+            the linear leaf models on **wide embeddings** (emb_dim > 128, where
+            "float32_gram" takes the BLAS leaf-fit path): it accumulates only the
+            per-leaf Gram and gradient projection in float32 (~1.6-2x faster on
+            those reductions, ~15% faster wide-emb fit; also covers multi-output
+            vector leaves) while the solve stays float64. The "float64" default
+            itself stays on the fast native kernel up to 256 dims. Inert for
+            "constant" and for narrow embeddings (emb_dim <= 128). Trade-off:
             "float32_gram" is allclose-not-bitwise and not guaranteed
             reproducible across BLAS vendors/platforms; "float64" is the
             reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.

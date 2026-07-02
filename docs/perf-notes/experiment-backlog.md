@@ -19,10 +19,11 @@ Pre-investigated this session (cheap probes, before the backlog):
 ## Tier 1 — local, leaf_fit (largest measured headroom; float64-safe or opt-in)
 
 - **E01** `SHIPPED` (iter 004) — float32 wide-emb Gram (`leaf_fit_precision`). 1.18× wide fit.
-- **E02 `L` TODO** — native-Rust wide-emb (emb>64) Gram, optionally float32. Extend
-  `leaf_linear_stats` past the 64 gate; removes the per-leaf Python loop + could beat
-  NumPy float32 BLAS. Cheap test: micro-bench native-vs-BLAS at emb 96/128/200. Risk:
-  Rust+parity (allclose for f32); big-ish kernel. Top Tier-1 prize.
+- **E02 `SHIPPED-AS-GATE-RAISE` (iter 011, 2026-07-02)** — the cheap probe showed the
+  EXISTING kernel already beats BLAS to 256 dims (no new Rust needed): scalar f64 gate
+  128 → 256 (precision-dependent; `float32_gram` keeps BLAS >128). e2e wide-200d fit
+  **1.62× default threading / 1.47× OMP=1**. Residual Rust work (wide-specialized or
+  f32 native kernel, pooled-mc crossover probe) DEPRIORITIZED — >256 f32 BLAS wins.
 - **E03 `L` TODO** — re-measure the `_NATIVE_STATS_MAX_DIM=64` crossover on this
   machine/BLAS. Cheap: native-vs-BLAS leaf-fit sweep emb∈{48,64,96,128}. If native
   wins past 64, raise the gate (bitwise-safe — native path is allclose-vs-BLAS but

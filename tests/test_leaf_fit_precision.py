@@ -18,7 +18,11 @@ from repleafgbm.core.leaf_models import (
     make_leaf_model,
 )
 
-WIDE = 160  # > _NATIVE_STATS_MAX_DIM (128) -> BLAS Gram path (where float32 applies)
+# > _NATIVE_STATS_MAX_DIM (128): float32_gram takes the BLAS Gram path here
+# (that is where the knob applies), while float64 at this width now takes the
+# native fused pass (gate 256, iter 011) — the comparisons below remain
+# allclose/quality-level by design (native vs BLAS f64 is ~1e-6 rtol).
+WIDE = 160
 
 
 def _leaf_inputs(n=1500, emb=WIDE, n_leaves=4, seed=0):
@@ -30,6 +34,47 @@ def _leaf_inputs(n=1500, emb=WIDE, n_leaves=4, seed=0):
     grad, hess = -resid, np.ones(n)
     rows = np.array_split(rng.permutation(n), n_leaves)
     return rows, grad, hess, Z
+
+
+@pytest.mark.skipif(
+    leaf_models._native is None, reason="requires the native extension"
+)
+def test_wide_gate_is_precision_dependent(monkeypatch):
+    """f64 at 128 < emb <= 256 takes the native pass; float32_gram keeps BLAS
+    (the knob's f32 reductions only exist on the BLAS path — iter 011)."""
+    calls: list[str] = []
+    real = leaf_models._native
+
+    class _Spy:
+        def __getattr__(self, name):
+            attr = getattr(real, name)
+            if name != "leaf_linear_stats":
+                return attr
+
+            def wrapped(*args, **kwargs):
+                calls.append(name)
+                return attr(*args, **kwargs)
+
+            return wrapped
+
+    monkeypatch.setattr(leaf_models, "_native", _Spy())
+    rows, grad, hess, Z = _leaf_inputs(emb=200, seed=3)
+    EmbeddedLinearLeafModel(l2=1.0).fit_leaves(rows, grad, hess, Z)
+    assert calls == ["leaf_linear_stats"]  # f64 -> native at emb=200
+    calls.clear()
+    EmbeddedLinearLeafModel(
+        l2=1.0, leaf_fit_precision="float32_gram"
+    ).fit_leaves(rows, grad, hess, Z)
+    assert calls == []  # f32_gram -> BLAS at emb=200
+
+    rows, grad, hess, Z = _leaf_inputs(emb=256, seed=5)
+    EmbeddedLinearLeafModel(l2=1.0).fit_leaves(rows, grad, hess, Z)
+    assert calls == ["leaf_linear_stats"]  # boundary: 256 is still native
+    calls.clear()
+
+    rows, grad, hess, Z = _leaf_inputs(emb=300, seed=4)
+    EmbeddedLinearLeafModel(l2=1.0).fit_leaves(rows, grad, hess, Z)
+    assert calls == []  # past 256 even f64 falls back to BLAS
 
 
 def test_float32_gram_matches_float64_allclose_and_quality():
