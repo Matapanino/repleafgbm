@@ -148,6 +148,10 @@ class Booster:
             profiler=profiler,
         )
         self.split_backend_ = splitter.backend
+        # Hand the backend to the leaf model for the duration of this fit: a
+        # capable backend (CUDA) computes leaf-fit statistics on-device. The
+        # leaf model is a fit-local, so the handle is never serialized.
+        leaf_model.fit_backend = splitter.backend
         grower = TreeGrower(
             splitter,
             num_leaves=p.num_leaves,

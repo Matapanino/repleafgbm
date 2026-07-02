@@ -37,6 +37,19 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   bit-for-bit (identity transform). Backward-compatible read; minor version bump.
 
 ### Performance
+- **Device leaf-fit statistics for `split_backend="cuda"` (GPU leaf ridge,
+  roadmap Phase 4.3).** Scalar leaf fitting — measured at 65-73% of CUDA fit
+  time once the split scans went on-device — now computes its per-leaf weighted
+  Gram stacks, gradient projections, and z-range guards on the GPU
+  (`CudaSplitBackend.leaf_fit_stats`); the embedding matrix uploads once per fit
+  (identity-cached). Centering, the ridge solve, and the adaptive LOO gate stay
+  host float64 (the same assembly code as the native path), so parity is
+  allclose + quality-equivalent per ADR 0005. On by default with an adaptive
+  work crossover (`REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS`, provisional default 1e6
+  cells pending the T4 sweep); `REPLEAFGBM_CUDA_LEAF_FIT=0` is the kill switch.
+  `leaf_fit_precision="float32_gram"` narrows the two large device reductions to
+  float32. Multiclass-pooled and multi-output vector leaves still fit on the
+  host (follow-up). NumPy/Rust paths untouched.
 - **Wide-embedding scalar leaf fits (float64) stay native up to 256 dims** (gate
   raised from 128; `_NATIVE_STATS_MAX_DIM_SCALAR_F64`). An interleaved A/B probe
   showed the rayon `leaf_linear_stats` kernel beats the per-leaf BLAS Gram loop at

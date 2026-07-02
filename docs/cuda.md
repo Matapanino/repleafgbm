@@ -79,11 +79,28 @@ Measured on a T4 (`experiments/results/2026-06-25-batched-scan-ab.md`): split_sc
 **5–9x**, whole depthwise fit **1.9–3.9x**, quality-equivalent; the same
 `_scan_min_cells` crossover still routes tiny frontiers to the host loop.
 
-The end-to-end gain is bounded because tree growth, the categorical subset scan,
-and leaf fitting still run on the host. GPU leaf fitting was evaluated and
-deferred (leaf stats are already accelerated by the Rust `leaf_linear_stats`
-kernel; ADR 0005). The CUDA backend helps most when the histogram dominates —
-many rows, **wide feature matrices / high `max_bins`**, deep/large trees.
+**Device leaf-fit statistics (GPU leaf ridge, roadmap Phase 4.3).** After the
+batched scan shipped, profiling showed CUDA fits are **leaf_fit-bound** (65–73%
+of depthwise fit — `experiments/results/2026-06-25-cuda-sizing.md`), so the
+per-tree leaf-fit statistics now run on the GPU too: the embedding matrix `Z`
+is uploaded once per fit (identity-cached, like the binned matrix), each tree
+ships its gathered grad/hess + row order, and the per-leaf weighted Gram
+stacks, gradient projections, and z-range guards are computed on-device
+(`CudaSplitBackend.leaf_fit_stats`), returning the same statistics tuple the
+native Rust kernel produces. Centering, the ridge solve, and the adaptive LOO
+gate stay on the host in float64 — byte-identical assembly code across the
+native/BLAS/device paths. **On by default** for `split_backend="cuda"` scalar
+fits with an adaptive work crossover (`REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS`,
+default 1e6 gathered-row×dim cells; small trees stay on the host);
+`REPLEAFGBM_CUDA_LEAF_FIT=0` is the kill switch. `leaf_fit_precision=
+"float32_gram"` narrows the two large device reductions to float32, mirroring
+the host contract. Multiclass (pooled) and multi-output vector leaves still
+fit on the host (follow-up).
+
+The end-to-end gain is bounded because tree growth and the categorical subset
+scan still run on the host. The CUDA backend helps most when the histogram or
+the leaf fit dominates — many rows, **wide feature matrices / wide embeddings /
+high `max_bins`**, deep/large trees.
 
 ## Parity and determinism
 
@@ -100,7 +117,10 @@ but equally good — split: the trees then differ structurally and predictions
 agree to float noise except on the few rows a flipped split reroutes. Those flips
 are quality-neutral (the gains were tied), so model quality matches even when the
 exact tree does not (the parity tests assert `rtol=1e-6` on the host-scan path and
-quality-equivalence on the device-scan path). If you need bitwise determinism,
+quality-equivalence on the device-scan path). The device leaf-fit statistics carry
+the same caveat one layer down: a *near-tied* adaptive LOO-gate verdict can flip
+under device reduction noise, so its e2e tests also assert quality-equivalence
+(|Δr²| bound), not prediction equality. If you need bitwise determinism,
 use `"numpy"` or `"rust"`.
 
 ## GPU encoder pretraining (separate from `split_backend`)

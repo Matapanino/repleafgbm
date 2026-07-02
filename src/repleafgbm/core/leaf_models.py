@@ -145,6 +145,14 @@ class BaseLeafModel(ABC):
     #: Whether this leaf model consumes the embedding matrix Z.
     uses_embeddings: bool = False
 
+    #: Transient handle to the boosting run's split backend, set by the
+    #: boosting loop for the duration of a fit. A backend that advertises
+    #: ``supports_leaf_fit`` (the CUDA backend) computes the per-leaf fit
+    #: statistics on-device; None (the default) keeps leaf fitting on the
+    #: host. Never serialized: leaf models are fit-locals, and persisted
+    #: models carry only ``LeafValues``.
+    fit_backend = None
+
     @abstractmethod
     def fit_leaves(
         self,
@@ -290,6 +298,31 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         min_n = max(self.min_samples_linear, emb_dim + 2)
         linear = np.flatnonzero(sizes >= min_n)
         k = linear.size
+
+        # Device leaf-fit statistics (split_backend="cuda"): the boosting loop
+        # hands its split backend to the leaf model as a transient
+        # ``fit_backend`` attribute (never serialized — the leaf model itself
+        # is a fit-local). When the backend advertises the capability and the
+        # tree carries enough gathered work for the GPU to win, the per-leaf
+        # Gram stacks + projections are computed on-device and fed into the
+        # SAME host assembly as the native path below — centering, ridge
+        # solve, and the LOO gate stay float64 on the host, so only the two
+        # large reductions change hands (allclose parity, ADR 0005).
+        backend = self.fit_backend
+        if (
+            k
+            and backend is not None
+            and getattr(backend, "supports_leaf_fit", False)
+            and order.shape[0] * emb_dim >= backend.leaf_fit_min_cells
+        ):
+            g_sum, h_sum, s_hz, A, gz, zmn, zmx = backend.leaf_fit_stats(
+                Z, grad, hess, order, offsets, linear.astype(np.int64),
+                use_f32=self.leaf_fit_precision == "float32_gram",
+            )
+            return self._leafvalues_from_native_stats(
+                g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, n_leaves, emb_dim,
+                gate=self._make_gate(Z, grad, hess, order, offsets, None),
+            )
 
         # float64 (the default) stays native to 256 dims (iter 011 probe);
         # the float32_gram opt-in keeps its BLAS path above 128 so opting in

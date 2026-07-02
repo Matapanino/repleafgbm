@@ -604,3 +604,107 @@ def test_wide_multiclass_fallback_native_per_class(monkeypatch):
         )
         np.testing.assert_array_equal(lv_n.z_min, lv_b.z_min)
         np.testing.assert_array_equal(lv_n.z_max, lv_b.z_max)
+
+
+# --------------------------------------------------------------------------- #
+# Device leaf-fit seam (fit_backend): CPU-testable contract via a fake backend
+# --------------------------------------------------------------------------- #
+class _FakeLeafFitBackend:
+    """NumPy stand-in honoring the CUDA backend's leaf_fit_stats contract."""
+
+    supports_leaf_fit = True
+    leaf_fit_min_cells = 0
+
+    def __init__(self):
+        self.calls = 0
+
+    def leaf_fit_stats(self, Z, grad, hess, order, offsets, linear, use_f32=False):
+        self.calls += 1
+        n_leaves = len(offsets) - 1
+        d = Z.shape[1]
+        seg = np.repeat(np.arange(n_leaves), np.diff(offsets))
+        Zs, gs, hs = Z[order], grad[order], hess[order]
+        g_sum = np.bincount(seg, weights=gs, minlength=n_leaves)
+        h_sum = np.bincount(seg, weights=hs, minlength=n_leaves)
+        k = linear.size
+        s_hz = np.empty((k, d))
+        A = np.empty((k, d, d))
+        gz = np.empty((k, d))
+        zmn = np.empty((k, d))
+        zmx = np.empty((k, d))
+        hZs = Zs * hs[:, None]
+        for j, i in enumerate(linear):
+            sl = slice(offsets[i], offsets[i + 1])
+            s_hz[j] = hZs[sl].sum(axis=0)
+            A[j] = Zs[sl].T @ hZs[sl]
+            gz[j] = gs[sl] @ Zs[sl]
+            zmn[j] = Zs[sl].min(axis=0)
+            zmx[j] = Zs[sl].max(axis=0)
+        return g_sum, h_sum, s_hz, A, gz, zmn, zmx
+
+
+def _seam_inputs(d=16, seed=12):
+    rng = np.random.default_rng(seed)
+    n = 1200
+    Z = rng.normal(size=(n, d))
+    resid = Z @ rng.normal(size=d) + rng.normal(0, 0.2, n)
+    g, h = -resid, np.abs(rng.normal(1.0, 0.3, n)) + 0.1
+    cuts = [0, 300, 800, 1195, 1200]  # last leaf sub-threshold -> constant
+    rows = [np.arange(cuts[i], cuts[i + 1]) for i in range(4)]
+    return rows, g, h, Z
+
+
+def test_fit_backend_seam_dispatches_and_matches_host():
+    rows, g, h, Z = _seam_inputs()
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+    lv_host = model.fit_leaves(rows, g, h, Z)
+    fake = _FakeLeafFitBackend()
+    model.fit_backend = fake
+    lv_dev = model.fit_leaves(rows, g, h, Z)
+    assert fake.calls == 1
+    # Documented leaf-fit tolerance (the host path may be native Rust).
+    np.testing.assert_allclose(lv_dev.bias, lv_host.bias, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(lv_dev.weights, lv_host.weights, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(lv_dev.z_min, lv_host.z_min)
+    np.testing.assert_allclose(lv_dev.z_max, lv_host.z_max)
+
+
+def test_fit_backend_seam_respects_min_cells():
+    rows, g, h, Z = _seam_inputs()
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+    fake = _FakeLeafFitBackend()
+    fake.leaf_fit_min_cells = 10**12  # tree work far below the crossover
+    model.fit_backend = fake
+    model.fit_leaves(rows, g, h, Z)
+    assert fake.calls == 0  # host path taken
+
+
+def test_fit_backend_seam_works_for_adaptive_gate():
+    rows, g, h, Z = _seam_inputs(seed=13)
+    model = AdaptiveLeafModel(l2=1.0, min_samples_linear=20, leaf_gate_margin=0.01)
+    lv_host = model.fit_leaves(rows, g, h, Z)
+    model.fit_backend = _FakeLeafFitBackend()
+    lv_dev = model.fit_leaves(rows, g, h, Z)
+    # Same gate verdicts (host-side LOO both times) and same kept weights.
+    np.testing.assert_array_equal(
+        np.abs(lv_dev.weights).sum(axis=1) > 0,
+        np.abs(lv_host.weights).sum(axis=1) > 0,
+    )
+    np.testing.assert_allclose(lv_dev.weights, lv_host.weights, rtol=1e-6, atol=1e-8)
+
+
+def test_booster_hands_fit_backend_to_leaf_model():
+    from repleafgbm.core.booster import Booster, BoosterParams
+    from repleafgbm.core.objectives import get_objective
+    from repleafgbm.data import RepLeafDataset
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(200, 4))
+    y = X[:, 0] + rng.normal(0, 0.1, 200)
+    lm = ConstantLeafModel()
+    booster = Booster(
+        BoosterParams(n_estimators=2, split_backend="numpy"),
+        get_objective("squared_error"),
+    )
+    booster.fit(RepLeafDataset(X, y), None, lm)
+    assert lm.fit_backend is booster.split_backend_
