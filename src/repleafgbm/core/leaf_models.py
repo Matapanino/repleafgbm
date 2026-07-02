@@ -761,7 +761,10 @@ def make_leaf_model(
     ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit
     (``leaf_gate_margin``/``leaf_gate`` are ignored by the other models).
     ``leaf_fit_precision`` only affects the wide-embedding (emb>128) BLAS leaf-fit
-    of the linear models (and multi-output vector leaves); it is inert for ``constant``.
+    of the linear models (and multi-output vector leaves); it is inert for
+    ``constant``. Note the float64 default takes the *native* pass up to 256
+    dims (``_NATIVE_STATS_MAX_DIM_SCALAR_F64``) — choosing ``"float32_gram"``
+    at 128 < emb <= 256 therefore switches both the precision and the kernel.
     """
     if leaf_fit_precision not in _LEAF_FIT_PRECISIONS:
         raise ValueError(

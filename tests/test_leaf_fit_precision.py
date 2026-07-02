@@ -67,6 +67,11 @@ def test_wide_gate_is_precision_dependent(monkeypatch):
     ).fit_leaves(rows, grad, hess, Z)
     assert calls == []  # f32_gram -> BLAS at emb=200
 
+    rows, grad, hess, Z = _leaf_inputs(emb=256, seed=5)
+    EmbeddedLinearLeafModel(l2=1.0).fit_leaves(rows, grad, hess, Z)
+    assert calls == ["leaf_linear_stats"]  # boundary: 256 is still native
+    calls.clear()
+
     rows, grad, hess, Z = _leaf_inputs(emb=300, seed=4)
     EmbeddedLinearLeafModel(l2=1.0).fit_leaves(rows, grad, hess, Z)
     assert calls == []  # past 256 even f64 falls back to BLAS
