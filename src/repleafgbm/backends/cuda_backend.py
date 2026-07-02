@@ -206,6 +206,28 @@ def _resolve_batched_scan() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+# Private kill switch for the leafwise children-pair batched scan (default on).
+# The leafwise grower scans the two children of each heap expansion in one
+# batched device call (M=2 — halves the per-node launch count that dominates
+# the leafwise scan); set REPLEAFGBM_CUDA_LEAFWISE_BATCH to a falsy value to
+# fall back to the per-node scan. Subordinate to REPLEAFGBM_CUDA_BATCHED_SCAN
+# (no batched scans at all when that is off). Not part of the public API; read
+# once at construction.
+_LEAFWISE_BATCH_ENV = "REPLEAFGBM_CUDA_LEAFWISE_BATCH"
+
+
+def _resolve_leafwise_batch() -> bool:
+    """Whether the leafwise grower batches children-pair scans. Default True.
+
+    Reads ``REPLEAFGBM_CUDA_LEAFWISE_BATCH``. Unset/empty → True. A falsy value
+    (``0``/``false``/``no``/``off``, case-insensitive) → per-node scans.
+    """
+    raw = os.environ.get(_LEAFWISE_BATCH_ENV)
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 # Private kill switch for the device leaf-fit statistics (default on). With
 # split_backend="cuda", per-tree leaf-fit statistics (the per-leaf weighted Gram
 # stacks + gradient projections that dominate wide-embedding fits) are computed
@@ -307,6 +329,12 @@ class CudaSplitBackend(BaseSplitBackend):
         # (shadows the base-class default of False). See _resolve_batched_scan.
         self._batched_scan = _resolve_batched_scan()
         self.supports_batched_scan = self._batched_scan
+        # Leafwise children-pair batching (Task B): subordinate to the batched
+        # scan itself; the leafwise grower checks this attr (host backends
+        # default False → bitwise per-node behavior).
+        self.supports_leafwise_batched_scan = (
+            self._batched_scan and _resolve_leafwise_batch()
+        )
         # Device leaf-fit statistics (default ON, kill switch + adaptive
         # crossover), resolved once. The leaf models discover the capability via
         # ``supports_leaf_fit`` + ``leaf_fit_min_cells`` and call

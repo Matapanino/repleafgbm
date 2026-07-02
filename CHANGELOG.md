@@ -37,6 +37,14 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   bit-for-bit (identity transform). Backward-compatible read; minor version bump.
 
 ### Performance
+- **Leafwise children-pair batched CUDA scan (Task B).** The leafwise grower
+  (the default `grow_policy`) scans the two children of each heap expansion in
+  one batched device call instead of one launch per child — attacking the
+  32.2% split_scan share measured on leafwise CUDA fits (the depthwise A/B put
+  per-node device-scan launch overhead at ~89%). On by default for
+  `split_backend="cuda"`; `REPLEAFGBM_CUDA_LEAFWISE_BATCH=0` is the kill
+  switch. Heap tie-breaking and candidate order are preserved exactly: host
+  NumPy/Rust trees are bitwise-identical (tested on tie-heavy data).
 - **Device leaf-fit statistics for `split_backend="cuda"` (GPU leaf ridge,
   roadmap Phase 4.3).** Scalar leaf fitting — measured at 65-73% of CUDA fit
   time once the split scans went on-device — now computes its per-leaf weighted

@@ -129,3 +129,52 @@ def test_depthwise_batched_grower_is_bitwise_identical(
     assert _trees_identical(per_node.booster_.trees_, batched.booster_.trees_)
     # predictions identical too (sanity on the leaf side)
     assert np.array_equal(per_node.predict(X), batched.predict(X))
+
+
+@pytest.mark.parametrize("backend_cls", _BACKENDS)
+@pytest.mark.parametrize("est_data", ["regression", "binary"])
+def test_leafwise_batched_grower_is_bitwise_identical(
+    backend_cls, est_data, monkeypatch
+):
+    """Task B: the leafwise children-pair batched scan == per-node, bitwise.
+
+    Force ``supports_leafwise_batched_scan`` on the host backend so the grower
+    batches each expansion's two children through the (host per-node loop)
+    batched scan; candidate order and heap tie-breaking must be preserved
+    exactly, so the trees match byte-for-byte. Tie-heavy data (few distinct
+    values) stresses the tie-break path.
+    """
+    rng = np.random.default_rng(2)
+    # Tie-heavy: quantized features produce many equal-gain candidates.
+    X = np.round(rng.normal(size=(800, 8)), 1)
+    backend_name = "numpy" if backend_cls is NumPySplitBackend else "rust"
+    common = dict(
+        grow_policy="leafwise", num_leaves=31, n_estimators=8,
+        leaf_model="constant", split_backend=backend_name, random_state=0,
+    )
+    if est_data == "regression":
+        y = 2 * X[:, 0] + np.sin(X[:, 1]) + rng.normal(scale=0.1, size=800)
+        make = lambda: RepLeafRegressor(**common)  # noqa: E731
+    else:
+        y = (X[:, 0] + X[:, 2] > 0).astype(int)
+        make = lambda: RepLeafClassifier(**common)  # noqa: E731
+
+    per_node = make().fit(X, y)
+    monkeypatch.setattr(backend_cls, "supports_leafwise_batched_scan", True)
+    batched = make().fit(X, y)
+    assert _trees_identical(per_node.booster_.trees_, batched.booster_.trees_)
+    assert np.array_equal(per_node.predict(X), batched.predict(X))
+
+
+def test_leafwise_batch_env_resolution(monkeypatch):
+    """REPLEAFGBM_CUDA_LEAFWISE_BATCH resolves without a GPU (module fn)."""
+    from repleafgbm.backends.cuda_backend import _resolve_leafwise_batch
+
+    monkeypatch.delenv("REPLEAFGBM_CUDA_LEAFWISE_BATCH", raising=False)
+    assert _resolve_leafwise_batch() is True
+    monkeypatch.setenv("REPLEAFGBM_CUDA_LEAFWISE_BATCH", "0")
+    assert _resolve_leafwise_batch() is False
+    monkeypatch.setenv("REPLEAFGBM_CUDA_LEAFWISE_BATCH", "off")
+    assert _resolve_leafwise_batch() is False
+    monkeypatch.setenv("REPLEAFGBM_CUDA_LEAFWISE_BATCH", "1")
+    assert _resolve_leafwise_batch() is True
