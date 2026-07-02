@@ -28,6 +28,19 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   / multi-output-squared models keep writing v3/v5/v6, and all v3–v6 models load
   bit-for-bit (identity transform). Backward-compatible read; minor version bump.
 
+### Performance
+- **Wide-embedding scalar leaf fits (float64) stay native up to 256 dims** (gate
+  raised from 128; `_NATIVE_STATS_MAX_DIM_SCALAR_F64`). An interleaved A/B probe
+  showed the rayon `leaf_linear_stats` kernel beats the per-leaf BLAS Gram loop at
+  every width to 256 in both threading regimes (small per-leaf GEMMs thread
+  pathologically inside BLAS): end-to-end wide fit (60k rows, 200-dim identity
+  embedding) is **1.62x faster** with default BLAS threading / 1.47x with
+  OMP_NUM_THREADS=1. The `leaf_fit_precision="float32_gram"` opt-in keeps its BLAS
+  path above 128 dims (that is where its float32 reductions apply), and the
+  pooled-multiclass kernel keeps the 128 gate; wide multiclass fallbacks now take
+  the native scalar path per class. Same allclose-vs-BLAS parity class as the
+  earlier 64→128 raise (docs/perf-notes/experiment-log.md iter 011).
+
 ## [1.9.0] - 2026-06-25
 
 Performance release: faster wide-embedding leaf fitting on the CPU path and a faster
