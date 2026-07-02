@@ -888,14 +888,16 @@ class CudaSplitBackend(BaseSplitBackend):
         ``_leafvalues_from_native_stats`` (centering, ridge solve, and the LOO
         gate stay on the host in float64, byte-identical code).
 
-        Batching layout: the O(n) reductions (``g_sum``/``h_sum``/``s_hz``/
-        ``gz``/``z_min``/``z_max``) are single scatter/bincount kernels over the
-        whole tree; the per-leaf Gram is one cuBLAS GEMM per linear leaf —
-        real O(n_leaf·d²) work per launch, unlike the launch-bound per-node
-        scans this backend batches elsewhere. With ``use_f32`` the two large
-        reductions (Gram + gradient projection) accumulate in float32
-        (the ``leaf_fit_precision="float32_gram"`` contract); everything else
-        stays float64.
+        Batching layout: the O(n) sum reductions (``g_sum``/``h_sum``/``s_hz``/
+        ``gz``) are single scatter/bincount kernels over the whole tree; the
+        per-leaf Gram is one cuBLAS GEMM per linear leaf — real O(n_leaf·d²)
+        work per launch, unlike the launch-bound per-node scans this backend
+        batches elsewhere — and ``z_min``/``z_max`` ride the same per-leaf loop
+        as exact slice reductions (CuPy's float scatter_min/max round through
+        float32, and guard bounds must match the host exactly). With
+        ``use_f32`` the two large reductions (Gram + gradient projection)
+        accumulate in float32 (the ``leaf_fit_precision="float32_gram"``
+        contract); everything else stays float64.
 
         Parity: allclose, never bitwise (device reduction order; ADR 0005).
         """
@@ -932,10 +934,14 @@ class CudaSplitBackend(BaseSplitBackend):
         cupyx.scatter_add(s_hz_d, seg_d, hZs)
         gz_all_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float64)
         cupyx.scatter_add(gz_all_d, seg_d, Zs * gs[:, None])
-        zmn_d = cp.full((n_leaves, emb_dim), cp.inf, dtype=cp.float64)
-        cupyx.scatter_min(zmn_d, seg_d, Zs)
-        zmx_d = cp.full((n_leaves, emb_dim), -cp.inf, dtype=cp.float64)
-        cupyx.scatter_max(zmx_d, seg_d, Zs)
+
+        # z_min/z_max are computed per linear leaf with exact slice reductions
+        # in the GEMM loop below — CuPy's float scatter_min/scatter_max round
+        # through float32 (measured ~5e-8 relative error on a T4), and the
+        # extrapolation-guard bounds must match the host values exactly (min/
+        # max of the same numbers involves no arithmetic).
+        zmn_d = cp.empty((k, emb_dim), dtype=cp.float64)
+        zmx_d = cp.empty((k, emb_dim), dtype=cp.float64)
 
         A_d = cp.empty((k, emb_dim, emb_dim), dtype=cp.float64)
         if use_f32:
@@ -948,6 +954,8 @@ class CudaSplitBackend(BaseSplitBackend):
                 A_d[j] = (Z32[sl].T @ hZ32[sl]).astype(cp.float64)
             else:
                 A_d[j] = Zs[sl].T @ hZs[sl]
+            zmn_d[j] = Zs[sl].min(axis=0)
+            zmx_d[j] = Zs[sl].max(axis=0)
         if use_f32:
             # The float32_gram contract narrows the projection too; recompute
             # gz for the linear leaves from the f32 gather in one GEMM-like
@@ -964,8 +972,8 @@ class CudaSplitBackend(BaseSplitBackend):
         s_hz = cp.asnumpy(s_hz_d[linear_d])
         A = cp.asnumpy(A_d)
         gz = cp.asnumpy(gz_all_d[linear_d])
-        zmn = cp.asnumpy(zmn_d[linear_d])
-        zmx = cp.asnumpy(zmx_d[linear_d])
+        zmn = cp.asnumpy(zmn_d)
+        zmx = cp.asnumpy(zmx_d)
         self._bump(
             "leaffit_d2h_bytes",
             8 * (2 * n_leaves + k * (emb_dim * emb_dim + 4 * emb_dim)),
