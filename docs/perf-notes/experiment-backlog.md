@@ -134,14 +134,14 @@ already reasoned to reject (record + skip the build).
 - **GPU bottleneck shifted to leaf_fit** (65–73% depthwise, 49% leafwise post-batch).
   The next CUDA lever is **leaf_fit** (E02 native-rust wide Gram, or GPU leaf-fit), not
   histogram/scan.
-- **Task B (leafwise frontier-batch) → BUILD-CANDIDATE (measured, narrow)** — leafwise
-  split_scan is 32.2% of fit; M=2 batching at the measured ~89%-launch-bound ratio →
-  ~1.8× scan → **~14% whole-fit ceiling**. Stage host-bitwise (reuse
-  `_make_candidates_batched`) then the CuPy M-axis device lift. Reach is `cuda ∩ leafwise`
-  only (cuda is opt-in) — narrow but low-risk and measured.
-- **Next-session plan:** cheap-probe **E02** (broad reach — default rust leaf-fit + CUDA's
-  now-dominant 65–73% phase; unmeasured, high Rust+parity risk) and **Task-B** (narrow —
-  `cuda ∩ leafwise` only; measured ~14%, low-risk host-bitwise) **in parallel (local); the
-  +3% gate picks the build order** — E02 first if its native-vs-BLAS f32 micro-bench is
-  clear, else Task-B's measured win. Then E14 float32 `predict_linear` / E17 float32
-  embedding cache as filler. (iter-010 batched histogram stays HOLD.)
+- **Task B (leafwise frontier-batch) → SHIPPED (iter 013, 2026-07-02, PR #47)** —
+  children-pair (M=2) batching through `_make_candidates_batched`; T4 wide fit
+  **1.16× (−13.8%, 5/5)** = the full ~14% projected ceiling; host bitwise-identical.
+  Default ON, `REPLEAFGBM_CUDA_LEAFWISE_BATCH=0` kill switch.
+- **2026-07-02 session outcome:** the probe resolved E02 as a **pure gate raise**
+  (iter 011, PR #45: scalar f64 native to 256 dims, wide fit 1.62×/1.47× — no new
+  Rust), and the CUDA leaf ridge shipped as **iter 012** (PR #46: device
+  `leaf_fit_stats`, T4 wide 1.72× / narrow 1.23×, default ON). Remaining leaf-fit
+  levers: **mc-pooled + MO vector `leaf_fit_stats` variants** (same seam, needs
+  per-class/K-column stats + own A/B), `_MIN_CELLS` crossover sweep, and the
+  E14/E17 float32 fillers. (iter-010 batched histogram stays HOLD.)

@@ -290,23 +290,31 @@ Acceptance criteria:
 - Batched and full transform outputs match within tolerance.
 - Peak memory decreases on high-dimensional PLR/projection cases.
 
-### 3. GPU Leaf Ridge
+### 3. GPU Leaf Ridge — SHIPPED for scalar leaves (2026-07-02, iter 012)
 
 Target:
 
-- `EmbeddedLinearLeafModel`
-- `fit_vector_leaves`
+- `EmbeddedLinearLeafModel` — **done**: `CudaSplitBackend.leaf_fit_stats` computes
+  the per-leaf statistics on-device (Z uploaded once per fit; scatter/bincount
+  sums + one cuBLAS GEMM per linear leaf); the ridge *solve*, centering, and the
+  LOO gate deliberately stay on the host in float64 (same assembly as the native
+  path), which the T4 A/B shows is not the bottleneck. T4: wide fit 1.72×,
+  narrow 1.23×, quality-equivalent (|Δr²| < 5e-3), parity 53/53
+  (`experiments/results/2026-07-02-cuda-leaf-ridge-ab.md`). Default ON;
+  `REPLEAFGBM_CUDA_LEAF_FIT=0` kill switch, `_MIN_CELLS` crossover env.
+- `fit_vector_leaves` (multi-output) and the pooled-multiclass pass — **open
+  follow-up**: same seam, needs per-class grad-column / K-column-rhs stat
+  variants and their own A/B.
 
-Plan:
+Plan (remaining):
 
-- Only start after profiling shows leaf fitting dominates.
-- Implement batched statistics and solve on device for wide embeddings.
-- Keep Rust and NumPy paths as reference/fallback.
+- Sweep `REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS` per GPU (provisional 1e6; narrow
+  100k×30 still wins at 3M cells, so no measured regression case yet).
+- Device batched solve (`cupy.linalg.solve` on the (k, d, d) stacks) only if a
+  future profile shows the host solve mattering.
 
-Acceptance criteria:
-
-- Parity and fallback behavior are documented.
-- End-to-end fit improves for high `max_leaf_emb_dim` and many leaves.
+Acceptance criteria: met for scalar leaves (parity + fallback documented in
+docs/cuda.md and ADR 0005; e2e fit improves at both wide and narrow shapes).
 
 ## Phase 5: Device-aware Dataset And Large Data
 
