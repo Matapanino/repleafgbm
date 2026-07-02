@@ -37,6 +37,17 @@ winning split's scalars cross back. The same adaptive threshold routes narrow
 nodes to the host scan, and ``REPLEAFGBM_CUDA_MO_DEVICE_SCAN=0`` forces the host
 stack + host scan (the pre-device behavior) as a kill switch.
 
+Device leaf-fit statistics (GPU leaf ridge, roadmap Phase 4.3): scalar leaf
+fitting — the dominant CUDA-fit phase once the scans went on-device — computes
+its per-leaf weighted Gram stacks / gradient projections / z-range guards on
+the GPU (``leaf_fit_stats``), with the embedding matrix uploaded once per fit
+and identity-cached like the binned matrix. The method returns the exact
+statistics tuple the native Rust ``leaf_linear_stats`` produces, so the leaf
+model feeds it into the same host float64 assembly (centering, ridge solve,
+LOO gate). Default ON with an adaptive work crossover
+(``REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS``); ``REPLEAFGBM_CUDA_LEAF_FIT=0`` is the
+kill switch. Multiclass-pooled and multi-output vector leaves stay on the host.
+
 Differences from the Rust backend (see ``docs/adr/0005-cuda-backend-cupy.md``):
 
 * Parity is **allclose, not bitwise.** GPU histogram reduction uses
@@ -195,6 +206,57 @@ def _resolve_batched_scan() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+# Private kill switch for the device leaf-fit statistics (default on). With
+# split_backend="cuda", per-tree leaf-fit statistics (the per-leaf weighted Gram
+# stacks + gradient projections that dominate wide-embedding fits) are computed
+# on the GPU; set REPLEAFGBM_CUDA_LEAF_FIT to a falsy value to keep leaf fitting
+# entirely on the host (the pre-device behavior). Not part of the public API;
+# read once at construction.
+_LEAF_FIT_ENV = "REPLEAFGBM_CUDA_LEAF_FIT"
+
+#: Minimum per-tree leaf-fit work (gathered rows × emb_dim cells) for the device
+#: path; smaller trees fit faster on the host (kernel-launch + transfer overhead
+#: dominates tiny GEMMs — the same adaptive-crossover principle as
+#: ``_GPU_SCAN_MIN_CELLS``). Provisional default pending the T4 sweep; override
+#: with the env var below for profiling.
+_GPU_LEAF_FIT_MIN_CELLS = 1_000_000
+_LEAF_FIT_MIN_CELLS_ENV = "REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS"
+
+
+def _resolve_leaf_fit() -> bool:
+    """Whether leaf-fit statistics run on-device. Default True.
+
+    Reads ``REPLEAFGBM_CUDA_LEAF_FIT``. Unset/empty → True. A falsy value
+    (``0``/``false``/``no``/``off``, case-insensitive) → host leaf fitting.
+    """
+    raw = os.environ.get(_LEAF_FIT_ENV)
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _resolve_leaf_fit_min_cells() -> int:
+    """Effective device leaf-fit crossover: the env override or the default.
+
+    Reads ``REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS``. Unset/empty →
+    ``_GPU_LEAF_FIT_MIN_CELLS``. A non-integer value is ignored (warns, keeps
+    the default); negatives clamp to 0 (forces the device path for every tree).
+    """
+    raw = os.environ.get(_LEAF_FIT_MIN_CELLS_ENV)
+    if raw is None or not raw.strip():
+        return _GPU_LEAF_FIT_MIN_CELLS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        warnings.warn(
+            f"Ignoring {_LEAF_FIT_MIN_CELLS_ENV}={raw!r} (not an integer); "
+            f"using default {_GPU_LEAF_FIT_MIN_CELLS}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _GPU_LEAF_FIT_MIN_CELLS
+
+
 class CudaSplitBackend(BaseSplitBackend):
     """GPU histogram build + GPU numeric split scan (CuPy); categoricals host."""
 
@@ -245,6 +307,16 @@ class CudaSplitBackend(BaseSplitBackend):
         # (shadows the base-class default of False). See _resolve_batched_scan.
         self._batched_scan = _resolve_batched_scan()
         self.supports_batched_scan = self._batched_scan
+        # Device leaf-fit statistics (default ON, kill switch + adaptive
+        # crossover), resolved once. The leaf models discover the capability via
+        # ``supports_leaf_fit`` + ``leaf_fit_min_cells`` and call
+        # ``leaf_fit_stats`` (below) per tree; off → they never look at us.
+        self.supports_leaf_fit = _resolve_leaf_fit()
+        self.leaf_fit_min_cells = _resolve_leaf_fit_min_cells()
+        # Resident embedding cache, keyed like the binned cache: Z is the same
+        # object for every tree of a fit, so it is uploaded once and reused.
+        self._Z_key: tuple[int, tuple[int, ...]] | None = None
+        self._Z_d = None
         # Private transfer/work counters (profiling only; not part of the public
         # API or the BaseSplitBackend contract). They are plain integer adds at
         # each H2D/D2H boundary — negligible next to a kernel launch — and let
@@ -266,6 +338,11 @@ class CudaSplitBackend(BaseSplitBackend):
             "n_small_scans": 0,
             "n_gpu_scans": 0,
             "n_cat_slices": 0,
+            "z_h2d_bytes": 0,
+            "z_uploads": 0,
+            "leaffit_h2d_bytes": 0,
+            "leaffit_d2h_bytes": 0,
+            "n_leaf_fits": 0,
             # Effective adaptive-scan threshold in force for this backend (env
             # override or default). Config, not a transfer counter — re-seeded
             # (not zeroed) by reset_transfer_stats so a benchmark always records
@@ -771,3 +848,135 @@ class CudaSplitBackend(BaseSplitBackend):
             n_left=int(packed[2]),
             n_right=int(packed[3]),
         )
+
+    # ------------------------------------------------------------------ #
+    # Device leaf-fit statistics (GPU leaf ridge, roadmap Phase 4.3)
+    # ------------------------------------------------------------------ #
+    def _device_Z(self, Z: np.ndarray):
+        """Return Z as a resident C-contiguous float64 device array.
+
+        Uploaded once per fit and cached by object identity + shape (the
+        embedding matrix is the same object for every tree), mirroring
+        ``_device_binned``.
+        """
+        key = (id(Z), Z.shape)
+        if self._Z_key != key:
+            self._Z_d = self._cp.asarray(
+                np.ascontiguousarray(Z, dtype=np.float64)
+            )
+            self._Z_key = key
+            self._bump("z_h2d_bytes", 8 * int(np.prod(Z.shape)))
+            self._bump("z_uploads", 1)
+        return self._Z_d
+
+    def leaf_fit_stats(
+        self,
+        Z: np.ndarray,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        order: np.ndarray,
+        offsets: np.ndarray,
+        linear: np.ndarray,
+        use_f32: bool = False,
+    ) -> tuple[np.ndarray, ...]:
+        """One tree's leaf-fit statistics on the GPU.
+
+        Returns the exact host tuple the native ``leaf_linear_stats`` returns —
+        ``(g_sum, h_sum, s_hz, A, gz, z_min, z_max)`` with ``A`` the *uncentered*
+        per-leaf weighted Gram stack ``Σ h z zᵀ`` and ``gz = Σ g z``, both over
+        the ``linear`` leaves only — so the caller feeds it straight into
+        ``_leafvalues_from_native_stats`` (centering, ridge solve, and the LOO
+        gate stay on the host in float64, byte-identical code).
+
+        Batching layout: the O(n) sum reductions (``g_sum``/``h_sum``/``s_hz``/
+        ``gz``) are single scatter/bincount kernels over the whole tree; the
+        per-leaf Gram is one cuBLAS GEMM per linear leaf — real O(n_leaf·d²)
+        work per launch, unlike the launch-bound per-node scans this backend
+        batches elsewhere — and ``z_min``/``z_max`` ride the same per-leaf loop
+        as exact slice reductions (CuPy's float scatter_min/max round through
+        float32, and guard bounds must match the host exactly). With
+        ``use_f32`` the two large reductions (Gram + gradient projection)
+        accumulate in float32 (the ``leaf_fit_precision="float32_gram"``
+        contract); everything else stays float64.
+
+        Parity: allclose, never bitwise (device reduction order; ADR 0005).
+        """
+        import cupyx
+
+        cp = self._cp
+        n_leaves = len(offsets) - 1
+        emb_dim = int(Z.shape[1])
+        k = int(linear.size)
+
+        Z_d = self._device_Z(Z)
+        order_d = cp.asarray(np.ascontiguousarray(order, dtype=np.int64))
+        g_d = cp.asarray(np.ascontiguousarray(grad, dtype=np.float64))
+        h_d = cp.asarray(np.ascontiguousarray(hess, dtype=np.float64))
+        # Per-row leaf ids for the scatter reductions, built host-side from the
+        # (tiny) offsets array.
+        sizes = np.diff(offsets)
+        seg = np.repeat(np.arange(n_leaves, dtype=np.int64), sizes)
+        seg_d = cp.asarray(seg)
+        # order + seg (int64) and grad + hess (float64) cross per tree.
+        self._bump("leaffit_h2d_bytes", 8 * (2 * order.shape[0] + 2 * grad.shape[0]))
+        self._bump("n_leaf_fits", 1)
+
+        # Gather once in leaf order on-device; per-leaf data is a contiguous view.
+        Zs = Z_d[order_d]  # (n_sel, d)
+        gs = g_d[order_d]
+        hs = h_d[order_d]
+        hZs = Zs * hs[:, None]
+
+        g_sum_d = cp.bincount(seg_d, weights=gs, minlength=n_leaves)
+        h_sum_d = cp.bincount(seg_d, weights=hs, minlength=n_leaves)
+
+        s_hz_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float64)
+        cupyx.scatter_add(s_hz_d, seg_d, hZs)
+        if not use_f32:  # the f32 branch below computes its own projection
+            gz_all_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float64)
+            cupyx.scatter_add(gz_all_d, seg_d, Zs * gs[:, None])
+
+        # z_min/z_max are computed per linear leaf with exact slice reductions
+        # in the GEMM loop below — CuPy's float scatter_min/scatter_max round
+        # through float32 (measured ~5e-8 relative error on a T4), and the
+        # extrapolation-guard bounds must match the host values exactly (min/
+        # max of the same numbers involves no arithmetic).
+        zmn_d = cp.empty((k, emb_dim), dtype=cp.float64)
+        zmx_d = cp.empty((k, emb_dim), dtype=cp.float64)
+
+        A_d = cp.empty((k, emb_dim, emb_dim), dtype=cp.float64)
+        if use_f32:
+            Z32 = Zs.astype(cp.float32)
+            hZ32 = hZs.astype(cp.float32)
+        for j in range(k):
+            i = int(linear[j])
+            sl = slice(int(offsets[i]), int(offsets[i + 1]))
+            if use_f32:
+                A_d[j] = (Z32[sl].T @ hZ32[sl]).astype(cp.float64)
+            else:
+                A_d[j] = Zs[sl].T @ hZs[sl]
+            zmn_d[j] = Zs[sl].min(axis=0)
+            zmx_d[j] = Zs[sl].max(axis=0)
+        if use_f32:
+            # The float32_gram contract narrows the projection too; recompute
+            # gz for the linear leaves from the f32 gather in one GEMM-like
+            # scatter pass (still a single kernel).
+            gz32_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float32)
+            cupyx.scatter_add(
+                gz32_d, seg_d, Z32 * gs.astype(cp.float32)[:, None]
+            )
+            gz_all_d = gz32_d.astype(cp.float64)
+
+        linear_d = cp.asarray(np.ascontiguousarray(linear, dtype=np.int64))
+        g_sum = cp.asnumpy(g_sum_d)
+        h_sum = cp.asnumpy(h_sum_d)
+        s_hz = cp.asnumpy(s_hz_d[linear_d])
+        A = cp.asnumpy(A_d)
+        gz = cp.asnumpy(gz_all_d[linear_d])
+        zmn = cp.asnumpy(zmn_d)
+        zmx = cp.asnumpy(zmx_d)
+        self._bump(
+            "leaffit_d2h_bytes",
+            8 * (2 * n_leaves + k * (emb_dim * emb_dim + 4 * emb_dim)),
+        )
+        return g_sum, h_sum, s_hz, A, gz, zmn, zmx

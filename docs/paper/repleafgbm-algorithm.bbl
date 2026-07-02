@@ -1,0 +1,206 @@
+\begin{thebibliography}{29}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Akiba et~al.(2019)Akiba, Sano, Yanase, Ohta, and
+  Koyama]{akiba2019optuna}
+Takuya Akiba, Shotaro Sano, Toshihiko Yanase, Takeru Ohta, and Masanori Koyama.
+\newblock Optuna: A next-generation hyperparameter optimization framework.
+\newblock In \emph{Proceedings of the 25th ACM SIGKDD International Conference
+  on Knowledge Discovery and Data Mining (KDD)}, pages 2623--2631, 2019.
+
+\bibitem[Arik and Pfister(2021)]{arik2021tabnet}
+Sercan~{\"O}. Arik and Tomas Pfister.
+\newblock {TabNet}: Attentive interpretable tabular learning.
+\newblock In \emph{Proceedings of the AAAI Conference on Artificial
+  Intelligence}, volume~35, pages 6679--6687, 2021.
+
+\bibitem[Chen and Guestrin(2016)]{chen2016xgboost}
+Tianqi Chen and Carlos Guestrin.
+\newblock {XGBoost}: A scalable tree boosting system.
+\newblock In \emph{Proceedings of the 22nd ACM SIGKDD International Conference
+  on Knowledge Discovery and Data Mining (KDD)}, pages 785--794, 2016.
+
+\bibitem[Dem{\v{s}}ar(2006)]{demsar2006statistical}
+Janez Dem{\v{s}}ar.
+\newblock Statistical comparisons of classifiers over multiple data sets.
+\newblock \emph{Journal of Machine Learning Research}, 7:\penalty0 1--30, 2006.
+
+\bibitem[Duan et~al.(2020)Duan, Avati, Ding, Thai, Basu, Ng, and
+  Schuler]{duan2020ngboost}
+Tony Duan, Anand Avati, Daisy~Yi Ding, Khanh~K. Thai, Sanjay Basu, Andrew~Y.
+  Ng, and Alejandro Schuler.
+\newblock {NGBoost}: Natural gradient boosting for probabilistic prediction.
+\newblock In \emph{Proceedings of the 37th International Conference on Machine
+  Learning (ICML)}, pages 2690--2700, 2020.
+
+\bibitem[Erickson et~al.(2025)Erickson, Purucker, Tschalzev, Holzm{\"u}ller,
+  {Mutalik Desai}, Salinas, and Hutter]{erickson2025tabarena}
+Nick Erickson, Lennart Purucker, Andrej Tschalzev, David Holzm{\"u}ller,
+  Prateek {Mutalik Desai}, David Salinas, and Frank Hutter.
+\newblock {TabArena}: A living benchmark for machine learning on tabular data.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS),
+  Datasets and Benchmarks Track}, 2025.
+
+\bibitem[Friedman et~al.(2000)Friedman, Hastie, and
+  Tibshirani]{friedman2000additive}
+Jerome Friedman, Trevor Hastie, and Robert Tibshirani.
+\newblock Additive logistic regression: A statistical view of boosting.
+\newblock \emph{The Annals of Statistics}, 28\penalty0 (2):\penalty0 337--407,
+  2000.
+
+\bibitem[Friedman(2001)]{friedman2001greedy}
+Jerome~H. Friedman.
+\newblock Greedy function approximation: A gradient boosting machine.
+\newblock \emph{The Annals of Statistics}, 29\penalty0 (5):\penalty0
+  1189--1232, 2001.
+
+\bibitem[Golub et~al.(1979)Golub, Heath, and Wahba]{golub1979gcv}
+Gene~H. Golub, Michael Heath, and Grace Wahba.
+\newblock Generalized cross-validation as a method for choosing a good ridge
+  parameter.
+\newblock \emph{Technometrics}, 21\penalty0 (2):\penalty0 215--223, 1979.
+
+\bibitem[Gorishniy et~al.(2021)Gorishniy, Rubachev, Khrulkov, and
+  Babenko]{gorishniy2021revisiting}
+Yury Gorishniy, Ivan Rubachev, Valentin Khrulkov, and Artem Babenko.
+\newblock Revisiting deep learning models for tabular data.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2021.
+
+\bibitem[Gorishniy et~al.(2022)Gorishniy, Rubachev, and
+  Babenko]{gorishniy2022embeddings}
+Yury Gorishniy, Ivan Rubachev, and Artem Babenko.
+\newblock On embeddings for numerical features in tabular deep learning.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2022.
+
+\bibitem[Grinsztajn et~al.(2022)Grinsztajn, Oyallon, and
+  Varoquaux]{grinsztajn2022why}
+L{\'e}o Grinsztajn, Edouard Oyallon, and Ga{\"e}l Varoquaux.
+\newblock Why do tree-based models still outperform deep learning on typical
+  tabular data?
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS),
+  Datasets and Benchmarks Track}, 2022.
+
+\bibitem[Hoerl and Kennard(1970)]{hoerl1970ridge}
+Arthur~E. Hoerl and Robert~W. Kennard.
+\newblock Ridge regression: Biased estimation for nonorthogonal problems.
+\newblock \emph{Technometrics}, 12\penalty0 (1):\penalty0 55--67, 1970.
+
+\bibitem[Hollmann et~al.(2025)Hollmann, M{\"u}ller, Purucker, Krishnakumar,
+  K{\"o}rfer, Hoo, Schirrmeister, and Hutter]{hollmann2025tabpfn}
+Noah Hollmann, Samuel M{\"u}ller, Lennart Purucker, Arjun Krishnakumar, Max
+  K{\"o}rfer, Shi~Bin Hoo, Robin~Tibor Schirrmeister, and Frank Hutter.
+\newblock Accurate predictions on small data with a tabular foundation model.
+\newblock \emph{Nature}, 637\penalty0 (8045):\penalty0 319--326, 2025.
+
+\bibitem[Huber(1964)]{huber1964robust}
+Peter~J. Huber.
+\newblock Robust estimation of a location parameter.
+\newblock \emph{The Annals of Mathematical Statistics}, 35\penalty0
+  (1):\penalty0 73--101, 1964.
+
+\bibitem[Ke et~al.(2017)Ke, Meng, Finley, Wang, Chen, Ma, Ye, and
+  Liu]{ke2017lightgbm}
+Guolin Ke, Qi~Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei
+  Ye, and Tie-Yan Liu.
+\newblock {LightGBM}: A highly efficient gradient boosting decision tree.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, volume~30, 2017.
+
+\bibitem[Ke et~al.(2019)Ke, Xu, Zhang, Bian, and Liu]{ke2019deepgbm}
+Guolin Ke, Zhenhui Xu, Jia Zhang, Jiang Bian, and Tie-Yan Liu.
+\newblock {DeepGBM}: A deep learning framework distilled by {GBDT} for online
+  prediction tasks.
+\newblock In \emph{Proceedings of the 25th ACM SIGKDD International Conference
+  on Knowledge Discovery and Data Mining (KDD)}, pages 384--394, 2019.
+
+\bibitem[Kontschieder et~al.(2015)Kontschieder, Fiterau, Criminisi, and
+  Rota~Bul{\`o}]{kontschieder2015deep}
+Peter Kontschieder, Madalina Fiterau, Antonio Criminisi, and Samuel
+  Rota~Bul{\`o}.
+\newblock Deep neural decision forests.
+\newblock In \emph{Proceedings of the IEEE International Conference on Computer
+  Vision (ICCV)}, pages 1467--1475, 2015.
+
+\bibitem[Landwehr et~al.(2005)Landwehr, Hall, and Frank]{landwehr2005lmt}
+Niels Landwehr, Mark Hall, and Eibe Frank.
+\newblock Logistic model trees.
+\newblock \emph{Machine Learning}, 59\penalty0 (1--2):\penalty0 161--205, 2005.
+
+\bibitem[Lou et~al.(2012)Lou, Caruana, and Gehrke]{lou2012intelligible}
+Yin Lou, Rich Caruana, and Johannes Gehrke.
+\newblock Intelligible models for classification and regression.
+\newblock In \emph{Proceedings of the 18th ACM SIGKDD International Conference
+  on Knowledge Discovery and Data Mining (KDD)}, pages 150--158, 2012.
+
+\bibitem[Lou et~al.(2013)Lou, Caruana, Gehrke, and Hooker]{lou2013accurate}
+Yin Lou, Rich Caruana, Johannes Gehrke, and Giles Hooker.
+\newblock Accurate intelligible models with pairwise interactions.
+\newblock In \emph{Proceedings of the 19th ACM SIGKDD International Conference
+  on Knowledge Discovery and Data Mining (KDD)}, pages 623--631, 2013.
+
+\bibitem[McElfresh et~al.(2023)McElfresh, Khandagale, Valverde, {Prasad C.},
+  Ramakrishnan, Goldblum, and White]{mcelfresh2023when}
+Duncan~C. McElfresh, Sujay Khandagale, Jonathan Valverde, Vishak {Prasad C.},
+  Ganesh Ramakrishnan, Micah Goldblum, and Colin White.
+\newblock When do neural nets outperform boosted trees on tabular data?
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS),
+  Datasets and Benchmarks Track}, 2023.
+
+\bibitem[Pedregosa et~al.(2011)Pedregosa, Varoquaux, Gramfort, Michel, Thirion,
+  Grisel, Blondel, Prettenhofer, Weiss, Dubourg, Vanderplas, Passos,
+  Cournapeau, Brucher, Perrot, and Duchesnay]{pedregosa2011scikit}
+Fabian Pedregosa, Ga{\"e}l Varoquaux, Alexandre Gramfort, Vincent Michel,
+  Bertrand Thirion, Olivier Grisel, Mathieu Blondel, Peter Prettenhofer, Ron
+  Weiss, Vincent Dubourg, Jake Vanderplas, Alexandre Passos, David Cournapeau,
+  Matthieu Brucher, Matthieu Perrot, and {\'E}douard Duchesnay.
+\newblock Scikit-learn: Machine learning in {Python}.
+\newblock \emph{Journal of Machine Learning Research}, 12:\penalty0 2825--2830,
+  2011.
+
+\bibitem[Popov et~al.(2020)Popov, Morozov, and Babenko]{popov2020node}
+Sergei Popov, Stanislav Morozov, and Artem Babenko.
+\newblock Neural oblivious decision ensembles for deep learning on tabular
+  data.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2020.
+
+\bibitem[Prokhorenkova et~al.(2018)Prokhorenkova, Gusev, Vorobev, Dorogush, and
+  Gulin]{prokhorenkova2018catboost}
+Liudmila Prokhorenkova, Gleb Gusev, Aleksandr Vorobev, Anna~Veronika Dorogush,
+  and Andrey Gulin.
+\newblock {CatBoost}: Unbiased boosting with categorical features.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, volume~31, 2018.
+
+\bibitem[Quinlan(1992)]{quinlan1992m5}
+J.~Ross Quinlan.
+\newblock Learning with continuous classes.
+\newblock In \emph{Proceedings of the 5th Australian Joint Conference on
+  Artificial Intelligence}, pages 343--348, 1992.
+
+\bibitem[Shi et~al.(2019)Shi, Li, and Li]{shi2019gbdtpl}
+Yu~Shi, Jian Li, and Zhize Li.
+\newblock Gradient boosting with piece-wise linear regression trees.
+\newblock In \emph{Proceedings of the 28th International Joint Conference on
+  Artificial Intelligence (IJCAI)}, pages 3432--3438, 2019.
+
+\bibitem[Vanschoren et~al.(2014)Vanschoren, van Rijn, Bischl, and
+  Torgo]{vanschoren2014openml}
+Joaquin Vanschoren, Jan~N. van Rijn, Bernd Bischl, and Luis Torgo.
+\newblock {OpenML}: Networked science in machine learning.
+\newblock \emph{ACM SIGKDD Explorations Newsletter}, 15\penalty0 (2):\penalty0
+  49--60, 2014.
+
+\bibitem[Wang and Witten(1997)]{wang1997m5prime}
+Yong Wang and Ian~H. Witten.
+\newblock Inducing model trees for continuous classes.
+\newblock In \emph{Proceedings of the 9th European Conference on Machine
+  Learning (Poster Papers)}, pages 128--137, 1997.
+
+\end{thebibliography}
