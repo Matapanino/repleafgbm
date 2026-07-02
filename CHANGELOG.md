@@ -7,6 +7,14 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+### Added
+- **`verbose` parameter on the estimators**: `verbose=N` prints eval_set scores
+  to stdout every N boosting rounds in the familiar GBM-CLI format
+  (`[10]  valid_0's rmse: 0.123456`), plus a best-iteration line when early
+  stopping triggers. Works identically for scalar, multiclass, and multi-output
+  boosting. Default `verbose=0` keeps training silent; without an eval_set
+  there is nothing to report, so training stays silent for any value.
+
 ### Changed
 - **Robust regression objectives (`huber`, `quantile`) now auto-standardize the
   target per output** (median / 1.4826·MAD) before boosting, and un-standardize

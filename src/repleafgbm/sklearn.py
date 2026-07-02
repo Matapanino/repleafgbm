@@ -133,6 +133,11 @@ class BaseRepLeafModel(BaseEstimator):
             regression and "logloss" for classification. Custom metrics are
             saved by name only: a reloaded model must be given the metric
             object again before refitting with eval sets.
+        verbose: Print eval_set scores to stdout every ``verbose`` boosting
+            rounds (LightGBM-style ``[10]  valid_0's rmse: 0.123456`` lines,
+            plus a best-iteration line when early stopping triggers). 0
+            (default) is silent. Without an eval_set there is nothing to
+            report, so training stays silent for any value.
         objective: Regression loss override: a registered name
             ("squared_error", "huber", "quantile", "poisson") or a
             :class:`~repleafgbm.core.objectives.BaseObjective` instance for
@@ -223,6 +228,7 @@ class BaseRepLeafModel(BaseEstimator):
         split_backend: str = "auto",
         early_stopping_rounds: int | None = None,
         eval_metric: str | BaseMetric | Any | None = None,
+        verbose: int = 0,
         objective: str | BaseObjective | None = None,
         label_smoothing: float = 0.0,
         class_weight: dict | str | None = None,
@@ -250,6 +256,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.split_backend = split_backend
         self.early_stopping_rounds = early_stopping_rounds
         self.eval_metric = eval_metric
+        self.verbose = verbose
         self.objective = objective
         self.label_smoothing = label_smoothing
         self.class_weight = class_weight
@@ -340,6 +347,7 @@ class BaseRepLeafModel(BaseEstimator):
             max_cat_threshold=self.max_cat_threshold,
             split_backend=self.split_backend,
             early_stopping_rounds=self.early_stopping_rounds,
+            verbose=self.verbose,
         )
         self.booster_ = self._make_booster(params)
         if target_transform is not None:

@@ -29,6 +29,7 @@ from repleafgbm.core.prediction import predict_raw_multiclass
 from repleafgbm.core.profiling import PhaseProfiler, timed
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
+from repleafgbm.core.verbose import EvalLogger
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders.base import BaseEncoder
 
@@ -139,7 +140,8 @@ class MulticlassBooster:
         leaf_idx = np.empty(y.shape[0], dtype=np.int64)
         best_score: float | None = None
         rounds_since_best = 0
-        for _ in range(p.n_estimators):
+        logger = EvalLogger(p.verbose)
+        for it in range(p.n_estimators):
             grad, hess = self.objective.grad_hess(y, F)
             grad, hess = weight_grad_hess(grad, hess, w)
             round_trees: list[tuple[Tree, LeafValues]] = []
@@ -179,6 +181,7 @@ class MulticlassBooster:
                         self.evals_result_[name][eval_metric.name].append(
                             eval_metric(ye, pred)
                         )
+                logger.log_round(it + 1, self.evals_result_)
                 if p.early_stopping_rounds is not None:
                     score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
                     improved = best_score is None or (
@@ -192,6 +195,9 @@ class MulticlassBooster:
                     else:
                         rounds_since_best += 1
                         if rounds_since_best >= p.early_stopping_rounds:
+                            logger.log_early_stop(
+                                self.best_iteration_, self.evals_result_
+                            )
                             break
         return self
 

@@ -27,6 +27,7 @@ from repleafgbm.core.prediction import predict_raw
 from repleafgbm.core.profiling import PhaseProfiler, timed
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
+from repleafgbm.core.verbose import EvalLogger
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders.base import BaseEncoder
 
@@ -74,6 +75,9 @@ class BoosterParams:
     #: Stop when the first eval set's metric has not improved for this many
     #: rounds. None disables early stopping. Requires eval_sets + eval_metric.
     early_stopping_rounds: int | None = None
+    #: Print eval-set scores to stdout every ``verbose`` rounds (0 = silent).
+    #: Only reports when eval sets are present; see core/verbose.py.
+    verbose: int = 0
 
 
 class Booster:
@@ -247,7 +251,8 @@ class Booster:
         leaf_idx = np.empty(y.shape[0], dtype=np.int64)
         best_score: float | None = None
         rounds_since_best = 0
-        for _ in range(n_rounds):
+        logger = EvalLogger(p.verbose)
+        for it in range(n_rounds):
             grad, hess = self.objective.grad_hess(y, F)
             grad, hess = weight_grad_hess(grad, hess, w)
             tree, leaf_rows = next_tree(grad, hess)
@@ -275,6 +280,7 @@ class Booster:
                         self.evals_result_[name][eval_metric.name].append(
                             eval_metric(ye, pred)
                         )
+                logger.log_round(it + 1, self.evals_result_)
                 if p.early_stopping_rounds is not None:
                     # Monitor the first eval set, honoring the metric direction.
                     score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
@@ -289,6 +295,9 @@ class Booster:
                     else:
                         rounds_since_best += 1
                         if rounds_since_best >= p.early_stopping_rounds:
+                            logger.log_early_stop(
+                                self.best_iteration_, self.evals_result_
+                            )
                             break
         return self
 
