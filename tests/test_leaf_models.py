@@ -112,18 +112,19 @@ def test_batched_fit_matches_reference_implementation():
         np.testing.assert_array_equal(lv.z_max[i], Z[rows].max(axis=0))
 
 
-@pytest.mark.parametrize("d", [8, 33, 48, 64])
+@pytest.mark.parametrize("d", [8, 33, 48, 64, 200])
 def test_native_and_numpy_stat_paths_agree(monkeypatch, d):
     """The Rust fused-stats path and the NumPy/BLAS path must produce the same
-    leaf models (to float noise) across the embedding widths the native gate
-    now covers (``_NATIVE_STATS_MAX_DIM`` == 64). With n=1500 rows, d=8/33 take
-    the native serial branch while d=48/64 exceed ``LEAF_PARALLEL_MIN_CELLS``
-    and exercise the rayon leaf-parallel branch; d>32 also guards the raised
-    gate (native vs BLAS up to d=64)."""
+    leaf models (to float noise) across the embedding widths the scalar f64
+    native gate covers (``_NATIVE_STATS_MAX_DIM_SCALAR_F64`` == 256). With
+    n=1500 rows, d=8/33 take the native serial branch while d>=48 exceed
+    ``LEAF_PARALLEL_MIN_CELLS`` and exercise the rayon leaf-parallel branch;
+    d=200 guards the wide-emb gate raised by the iter-011 probe."""
     pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
     import repleafgbm.core.leaf_models as lm
 
-    assert d <= lm._NATIVE_STATS_MAX_DIM  # every case must reach the native path
+    # every case must reach the native path
+    assert d <= lm._NATIVE_STATS_MAX_DIM_SCALAR_F64
     rng = np.random.default_rng(10)
     n = 1500
     Z = rng.normal(size=(n, d))
