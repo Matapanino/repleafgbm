@@ -297,6 +297,18 @@ class TreeGrower:
 
         A max-heap on split gain pops the most promising leaf each step until
         ``num_leaves`` is reached.
+
+        When the backend opts in (``supports_leafwise_batched_scan``, the CUDA
+        backend's default) and targets are scalar, the (up to two) splittable
+        children of each expansion are scanned in ONE
+        ``find_best_split_batched`` call instead of one per child — halving
+        the per-node kernel launches that dominate
+        the leafwise device scan (Task B, ~89% launch overhead measured on the
+        depthwise A/B). Candidate order and heap tie-breaking are preserved
+        exactly (``_make_candidates_batched`` advances the counter in input
+        order), so on a host backend — where the batched scan is the per-node
+        loop — the produced tree is **bitwise-identical** (asserted in
+        tests/test_batched_scan.py).
         """
         store = self._new_store()
         counter = itertools.count()  # deterministic heap tie-break
@@ -308,11 +320,19 @@ class TreeGrower:
             if root is not None:
                 heapq.heappush(heap, root)
 
+        batched = grad.ndim == 1 and getattr(
+            self.splitter.backend, "supports_leafwise_batched_scan", False
+        )
         n_leaves = 1
         while heap and n_leaves < self.num_leaves:
             cand = heapq.heappop(heap)
             n_leaves += 1
-            for node_index, rows, depth, hist in self._expand(store, grad, hess, cand):
+            children = self._expand(store, grad, hess, cand)
+            if batched:
+                for child in self._make_candidates_batched(counter, children):
+                    heapq.heappush(heap, child)
+                continue
+            for node_index, rows, depth, hist in children:
                 child = self._make_candidate(counter, node_index, rows, depth, hist)
                 if child is not None:
                     heapq.heappush(heap, child)

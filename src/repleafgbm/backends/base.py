@@ -208,6 +208,13 @@ class BaseSplitBackend(ABC):
     #: ``supports_leaf_fit`` without tuning the crossover.
     leaf_fit_min_cells: int = 1 << 62
 
+    #: Whether the *leafwise* grower may batch each expansion's two children
+    #: through :meth:`find_best_split_batched` (Task B — halves the per-node
+    #: launch count on a device backend). Default off → per-node scans
+    #: (NumPy/Rust, bitwise-unchanged). The CUDA backend sets it on by default
+    #: (kill switch REPLEAFGBM_CUDA_LEAFWISE_BATCH=0).
+    supports_leafwise_batched_scan: bool = False
+
     def find_best_split_batched(
         self,
         hists,

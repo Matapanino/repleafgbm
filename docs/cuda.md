@@ -79,6 +79,16 @@ Measured on a T4 (`experiments/results/2026-06-25-batched-scan-ab.md`): split_sc
 **5–9x**, whole depthwise fit **1.9–3.9x**, quality-equivalent; the same
 `_scan_min_cells` crossover still routes tiny frontiers to the host loop.
 
+The default `grow_policy="leafwise"` cannot batch a whole level (it expands one
+best-gain leaf at a time), but each expansion produces two children whose scans
+are independent — they are batched into one device call (M=2), halving the
+per-node launch count that the depthwise A/B measured at ~89% of the device
+scan (Task B; split_scan was 32.2% of leafwise CUDA fit). **On by default** for
+the CUDA backend; `REPLEAFGBM_CUDA_LEAFWISE_BATCH=0` falls back to per-node
+scans (and `REPLEAFGBM_CUDA_BATCHED_SCAN=0` disables both). Candidate order and
+heap tie-breaking are preserved exactly, so the host path stays
+bitwise-identical.
+
 **Device leaf-fit statistics (GPU leaf ridge, roadmap Phase 4.3).** After the
 batched scan shipped, profiling showed CUDA fits are **leaf_fit-bound** (65–73%
 of depthwise fit — `experiments/results/2026-06-25-cuda-sizing.md`), so the

@@ -59,7 +59,11 @@ def ensure_cupy():
 
 def run_parity_tests():
     proc = _run(
-        [sys.executable, "-m", "pytest", "tests/test_cuda_backend.py", "-q"],
+        [
+            sys.executable, "-m", "pytest",
+            "tests/test_cuda_backend.py", "tests/test_cuda_leaf_fit.py",
+            "-q", "--tb=line",
+        ],
         cwd=REPO, env=ENV, capture_output=True, text=True,
     )
     print(proc.stdout, flush=True)
@@ -280,7 +284,8 @@ def main():
         "# CUDA backend parity report",
         "",
         f"- GPU: **{gpu}**",
-        f"- Parity tests (`tests/test_cuda_backend.py`): "
+        f"- Parity tests (`tests/test_cuda_backend.py` + "
+        f"`tests/test_cuda_leaf_fit.py`): "
         f"**{'PASS' if rc == 0 else 'FAIL'}** — `{summary}`",
         "",
         "## Histogram micro-benchmark",
