@@ -7,6 +7,17 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-07-05
+
+Feature + performance + evidence release: training verbosity, scale-consistent
+robust objectives (a behavior change for `huber`/`quantile`), a substantially
+faster leaf-fit path on both CPU (wide embeddings 1.62x) and GPU (device leaf-fit
+statistics 1.72x wide + leafwise batched scans), and a 10-seed production rerun of
+the fair Grinsztajn leaderboard backing every published number. Model format gains
+a backward-compatible v7 (bump-on-use for robust-objective models); all v3-v6
+models load bit-for-bit. The optional `repleafgbm-native` extension is unchanged
+(still 0.3.0).
+
 ### Added
 - **`verbose` parameter on the estimators**: `verbose=N` prints eval_set scores
   to stdout every N boosting rounds in the familiar GBM-CLI format
