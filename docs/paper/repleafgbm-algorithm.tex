@@ -30,7 +30,7 @@
 \title{RepLeafGBM: Gradient Boosting with Raw-Feature Routing\\
 and Representation-Conditioned Leaves}
 \author{Masaya Kawamata}
-\date{\today}
+\date{July 2026}
 
 \begin{document}
 \maketitle
@@ -38,32 +38,28 @@ and Representation-Conditioned Leaves}
 \begin{abstract}
 RepLeafGBM is a gradient-boosted tree ensemble whose trees \emph{route} on raw,
 interpretable features while each \emph{leaf} predicts through a learned, frozen
-representation $\zt(x)$. It occupies the space between classic gradient-boosted
-decision trees (GBDTs), whose leaves emit a constant, and tabular deep learning,
-which embeds features but discards the axis-aligned tree. Routing stays
-axis-aligned, categorical-native, and readable; expressivity is added only inside
-the leaf, as an $h$-weighted ridge fit of an affine model on $\zt(x)$. We give the
-additive/Newton formulation, the constant and embedded-linear leaf models, and a
-supervised \emph{pretrain-then-freeze} encoder, together with a proposition showing
-that updating the encoder during boosting breaks the stage-wise additive structure
-of gradient boosting---which is why the encoder is frozen. We then study the method
-empirically and report an honest picture. Under a \emph{shared}
-hyperparameter-optimization budget on the Grinsztajn tabular benchmarks, with significance
-testing, RepLeafGBM is a competitive \emph{mid-pack} learner---not state-of-the-art on
-average. Its distinctive value is in niche regimes: the representation-conditioned leaf is a
-genuine, separable contribution (refitting an external GBDT's own routes with
-embedded-linear leaves improves regression RMSE by $5$--$9\%$ on synthetic targets and
-significantly---Wilcoxon $p=0.002$ over ten seeds, no losses---on every real regression
-dataset tested), and joint vector-leaf routing with robust objectives is decisive under
-target contamination (beating squared error on $10/10$ seeds at every contamination level
-on all five real multi-target datasets)---where we identify and fix a scale bug in
-saturated-gradient (Huber/quantile) objectives through per-output target standardization,
-making them robust \emph{consistently} across target scales. Equally, we
-document where the idea does \emph{not} help---binary classification (the logistic Hessian
-starves the leaf-linear fit), and \emph{learned} encoders, which beat \texttt{identity} on
-structured synthetic data but fail to transfer to real tabular targets. We release an
-open-source implementation with parity-tested NumPy, Rust ($\sim$5.8$\times$), and
-CUDA (up to 5.5$\times$) backends.
+representation $\zt(x)$---between classic GBDTs, whose leaves emit a constant,
+and tabular deep learning, which embeds features but discards the axis-aligned
+tree. Expressivity is added only inside the leaf, as an $h$-weighted ridge fit
+of an affine model on $\zt(x)$. We give the additive/Newton formulation, the
+leaf models, and a supervised \emph{pretrain-then-freeze} encoder, with a
+proposition showing that updating the encoder during boosting breaks stage-wise
+additivity---which is why it is frozen. Empirically we report an honest
+picture. Under a shared hyperparameter-optimization budget on the Grinsztajn
+benchmarks (ten seeds, significance-tested), RepLeafGBM is \emph{mid-pack}: a
+clean third of five on both regression suites, fourth--fifth on classification.
+Its distinctive value is in niche regimes: refitting an external GBDT's own
+routes with embedded-linear leaves improves regression RMSE by $5$--$9\%$ on
+synthetic targets and significantly (Wilcoxon $p=0.002$, no losses) on every
+real regression dataset tested, and vector-leaf routing with robust objectives
+is decisive under target contamination ($10/10$ seeds at every contamination
+level on all five real multi-target datasets)---where we identify and fix a
+scale bug in saturated-gradient (Huber/quantile) objectives via per-output
+target standardization. Equally, we document where the idea does \emph{not}
+help: binary classification (the logistic Hessian starves the leaf-linear fit)
+and learned encoders, which win on structured synthetic data but do not
+transfer to real targets. We release an open-source implementation with
+parity-tested NumPy, Rust ($\sim$5.8$\times$), and CUDA backends.
 \end{abstract}
 
 \section{Introduction}
