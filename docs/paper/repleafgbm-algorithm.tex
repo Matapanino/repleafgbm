@@ -612,7 +612,7 @@ benchmarks---numerical and categorical $\times$ regression and classification (O
 study identifiers 336/337/335/334; $19/16/17/7$ datasets)---under a uniform protocol: each
 model family (RepLeafGBM, LightGBM, XGBoost, CatBoost, scikit-learn HistGB) is tuned by
 Optuna TPE~\citep{akiba2019optuna} with an \emph{identical} number of trials ($50$ trials
-$\times$ $5$ seeds), a $70/15/15$ split, and a 10k-row training cap; there is no
+$\times$ $10$ seeds), a $70/15/15$ split, and a 10k-row training cap; there is no
 tuned-versus-default asymmetry. We report mean ranks with Friedman tests, Nemenyi
 critical-difference diagrams, Wilcoxon signed-rank tests, and bootstrap confidence
 intervals~\citep{demsar2006statistical}; a result is highlighted only when it is both
@@ -622,18 +622,24 @@ same ordinal-encoded matrix, so RepLeafGBM's native categorical subset splits ar
 here: categorical performance is therefore fair, but native-categorical handling is left
 untested.
 
-The honest summary (Table~\ref{tab:openml}) is that RepLeafGBM is a \emph{consistent
-mid-pack} learner. Its mean rank is $3.18$--$3.43$ out of five in \emph{every} suite; it is
-never the leader, and it is never both significantly \emph{and} practically worse than the
-best baseline, nor significantly better (on numerical regression the Wilcoxon test against
-the best baseline is $p=0.055$, not significant). The categorical suites are statistically
-flat (Friedman $p=0.375$ and $0.788$; the categorical-classification suite has only seven
-datasets and correspondingly low power). RepLeafGBM is thus competitive but not
-state-of-the-art on average---a useful, honestly-positioned tabular learner whose
-distinctive value lies in the niche regimes studied below, not in the aggregate
-leaderboard. Full per-dataset tables and the critical-difference diagrams
-(Figure~\ref{fig:cd}) are produced by the shipped leaderboard harness
-(Appendix~\ref{app:repro}).
+The honest summary (Table~\ref{tab:openml}) is that RepLeafGBM is a \emph{mid-pack}
+learner with a clear task-type split. Its mean rank spans $3.00$--$3.81$ out of five: on
+\emph{both regression suites} it is a clean third ($3.00$), ahead of XGBoost and HistGB,
+while on the classification suites it slips to fourth--fifth ($3.81$/$3.71$)---consistent
+with the binary-Hessian limitation documented in \S\ref{sec:exp-ablations} (the logistic
+$h=p(1-p)$ starves the embedded-linear leaf, so the leaf-expressivity edge is a
+regression-side phenomenon). It is never the leader, and it is never both significantly
+\emph{and} practically worse than the best baseline (on numerical regression the Wilcoxon
+test against the best baseline, CatBoost, is $p=0.37$; on numerical classification the
+sign of a deficit against LightGBM is significant, $p=3.4\times10^{-3}$, but below the
+minimum-relevant-difference band on most datasets). With ten seeds the categorical
+regression suite is no longer statistically flat (Friedman $p=0.025$); only
+categorical classification remains flat ($p=0.438$; seven datasets, correspondingly
+low power). RepLeafGBM is thus competitive but not state-of-the-art on average---a
+useful, honestly-positioned tabular learner whose distinctive value lies in regression
+and in the niche regimes studied below, not in the aggregate leaderboard. Full
+per-dataset tables and the critical-difference diagrams (Figure~\ref{fig:cd}) are
+produced by the shipped leaderboard harness (Appendix~\ref{app:repro}).
 
 \begin{figure}[t]
 \centering
@@ -641,28 +647,29 @@ leaderboard. Full per-dataset tables and the critical-difference diagrams
 \includegraphics[width=0.49\linewidth]{figures/leaderboard-cd-grinsztajn_num_cls.png}\\[2pt]
 \includegraphics[width=0.49\linewidth]{figures/leaderboard-cd-grinsztajn_cat_reg.png}\hfill
 \includegraphics[width=0.49\linewidth]{figures/leaderboard-cd-grinsztajn_cat_cls.png}
-\caption{Critical-difference diagrams (Nemenyi, $\alpha{=}0.05$) for the four Grinsztajn
-suites under the shared HPO budget. Models joined by a bar are not statistically
-separable. RepLeafGBM sits mid-pack in every suite and is never separated from the leading
-GBDTs; the categorical suites are statistically flat.}
+\caption{Critical-difference diagrams (Nemenyi, $\alpha{=}0.05$, ten seeds) for the four
+Grinsztajn suites under the shared HPO budget. Models joined by a bar are not
+statistically separable. RepLeafGBM is a clean third on both regression suites and
+fourth--fifth on classification (where it separates from the leading GBDT on numerical
+classification); categorical classification is statistically flat.}
 \label{fig:cd}
 \end{figure}
 
 \begin{table}[t]
 \centering
 \caption{Grinsztajn suites under a shared HPO budget: RepLeafGBM mean rank ($\downarrow$;
-among five tuned model families, $5$ seeds). RepLeafGBM is mid-pack in every suite, with no
-significant-and-practical win or loss against the best baseline; the categorical suites are
-statistically flat. The Friedman $p$ is over all five models.}
+among five tuned model families, $10$ seeds). RepLeafGBM is a clean third on both
+regression suites and fourth--fifth on classification, with no significant-and-practical
+loss against the best baseline anywhere. The Friedman $p$ is over all five models.}
 \label{tab:openml}
 \begin{tabular}{lcc}
 \toprule
 Grinsztajn suite (\# datasets) & RepLeafGBM mean rank (of $5$) & Friedman $p$ \\
 \midrule
-Numerical regression (19)      & $3.32$ & $1.6\times10^{-4}$ \\
-Numerical classification (16)  & $3.38$ & $3.3\times10^{-3}$ \\
-Categorical regression (17)    & $3.18$ & $0.375$ (flat) \\
-Categorical classification (7) & $3.43$ & $0.788$ (flat) \\
+Numerical regression (19)      & $3.00$ & $2.2\times10^{-3}$ \\
+Numerical classification (16)  & $3.81$ & $4.3\times10^{-4}$ \\
+Categorical regression (17)    & $3.00$ & $0.025$ \\
+Categorical classification (7) & $3.71$ & $0.438$ (flat) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -888,11 +895,12 @@ at every split rather than learning a default direction.
 (v) Our baselines are GBDTs and scikit-learn; we have not yet benchmarked against neural
 tabular models such as TabNet~\citep{arik2021tabnet}, NODE~\citep{popov2020node}, or
 FT-Transformer~\citep{gorishniy2021revisiting}, so the positioning relative to tabular deep
-learning is argued rather than measured. (vi) The fair leaderboard uses five seeds and fifty
-HPO trials per model (a ten-seed replication is the obvious firming-up step); the two niche
-studies (robust multi-output, router extraction) were rerun at ten seeds and are
-significant (two-sided Wilcoxon $p=0.002$), but the smaller synthetic and guard studies
-remain five-seed and should be read as indicative. (vii) The per-output
+learning is argued rather than measured. (vi) The fair leaderboard and the two niche
+studies (robust multi-output, router extraction) all use ten seeds; the ten-seed
+leaderboard replication sharpened the picture---a clean third on both regression suites
+and a small, sign-significant (but mostly below the relevance band) deficit on numerical
+classification---while the smaller synthetic and guard studies remain five-seed and
+should be read as indicative. (vii) The per-output
 target standardization that makes robust objectives scale-consistent gives up a little peak
 robustness on small-scale targets; a tuned sub-unit $\delta/\sigma$ ratio is left to future
 work. (viii) Two empirical questions are open: why joint vector-leaf routing trails
@@ -976,7 +984,7 @@ HistGradientBoosting, and RepLeafGBM (whose search space spans
 constant/embedded-linear/adaptive leaves and identity/PLR encoders)---receives the
 \emph{same} budget of $50$ Optuna TPE trials per dataset, selected on a validation
 split and scored once on a held-out test split ($70/15/15$, stratified for
-classification), over five seeds, with datasets capped at $10{,}000$ rows. All models
+classification), over ten seeds, with datasets capped at $20{,}000$ rows. All models
 are fit on the identical ordinal-encoded matrix (RepLeafGBM's native categorical subset
 splits are disabled for symmetry). Significance uses Friedman tests with Nemenyi
 critical-difference diagrams, per-pair Wilcoxon signed-rank tests, and bootstrap
@@ -985,7 +993,7 @@ minimum-relevant-difference band. The resumable ledger, per-dataset tables, and 
 harness that produced every number ship with the open-source release. The
 leaf-channel isolation (Table~\ref{tab:routerx}) and robust multi-output
 (\S\ref{sec:exp-multioutput}) studies use ten seeds. Package versions: Python 3.11,
-numpy 1.23.5, scikit-learn 1.2.0, lightgbm 4.6.0, xgboost 3.2.0, catboost 1.2.10,
+numpy 1.26.4, scikit-learn 1.9.0, lightgbm 4.6.0, xgboost 3.2.0, catboost 1.2.10,
 torch 2.9.1. The NumPy and Rust backends are parity-tested \emph{bitwise} (identical
 histograms, leaf fits, and predictions); the CUDA backend is parity-tested at
 \texttt{allclose} because GPU atomic-add reordering precludes bitwise equality.
