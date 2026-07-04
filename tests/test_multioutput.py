@@ -228,3 +228,64 @@ def test_multioutput_huber_robust_to_outliers():
     se_err = np.sqrt(np.mean((se.predict(Xte) - clean_te) ** 2))
     hub_err = np.sqrt(np.mean((hub.predict(Xte) - clean_te) ** 2))
     assert hub_err < se_err
+
+
+def test_fit_backend_seam_vector_leaves_match_host():
+    """The device vector-leaf stats path must match the host loop (fake
+    backend computing the same sums in NumPy; embedded_linear + adaptive)."""
+    from repleafgbm.core.leaf_models import AdaptiveLeafModel, EmbeddedLinearLeafModel
+    from repleafgbm.core.multioutput import fit_vector_leaves
+
+    class _FakeVectorBackend:
+        supports_leaf_fit = True
+        leaf_fit_min_cells = 0
+        calls = 0
+
+        def leaf_fit_stats_vector(self, Z, grad, hess, order, offsets, linear,
+                                  use_f32=False):
+            self.calls += 1
+            d = Z.shape[1]
+            K = grad.shape[1]
+            k = linear.size
+            h_sum = np.empty(k)
+            s_wz = np.empty((k, d))
+            M = np.empty((k, d, d))
+            C = np.empty((k, d, K))
+            t_wsum = np.empty((k, K))
+            zmn = np.empty((k, d))
+            zmx = np.empty((k, d))
+            Zs, gs = Z[order], grad[order]
+            ws = hess[order][:, 0]
+            for j, i in enumerate(linear):
+                sl = slice(offsets[i], offsets[i + 1])
+                w = ws[sl]
+                h_sum[j] = w.sum()
+                s_wz[j] = (w[:, None] * Zs[sl]).sum(axis=0)
+                M[j] = (Zs[sl] * w[:, None]).T @ Zs[sl]
+                C[j] = -(Zs[sl].T @ gs[sl])
+                t_wsum[j] = -gs[sl].sum(axis=0)
+                zmn[j] = Zs[sl].min(axis=0)
+                zmx[j] = Zs[sl].max(axis=0)
+            return h_sum, s_wz, M, C, t_wsum, zmn, zmx
+
+    rng = np.random.default_rng(50)
+    n, K, d = 800, 3, 6
+    Z = rng.normal(size=(n, d))
+    grad = rng.normal(size=(n, K))
+    hess = np.ones((n, K))  # multi-output invariant: identical columns
+    cuts = [0, 250, 600, 795, 800]  # last leaf sub-threshold
+    rows = [np.arange(cuts[i], cuts[i + 1]) for i in range(4)]
+
+    for cls in (EmbeddedLinearLeafModel, AdaptiveLeafModel):
+        model = cls(l2=1.0, min_samples_linear=20)
+        host = fit_vector_leaves(model, rows, grad, hess, Z, 1.0)
+        fake = _FakeVectorBackend()
+        model.fit_backend = fake
+        dev = fit_vector_leaves(model, rows, grad, hess, Z, 1.0)
+        model.fit_backend = None
+        assert fake.calls == 1
+        np.testing.assert_allclose(dev.bias, host.bias, rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(dev.weights, host.weights,
+                                   rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(dev.z_min, host.z_min)
+        np.testing.assert_allclose(dev.z_max, host.z_max)

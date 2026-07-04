@@ -499,7 +499,11 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
             raise ValueError("EmbeddedLinearLeafModel requires an embedding matrix Z")
         emb_dim = Z.shape[1]
         n_classes = len(leaf_rows_per_class)
-        if (
+        backend = self.fit_backend
+        device_ok = backend is not None and getattr(
+            backend, "supports_leaf_fit", False
+        )
+        if not device_ok and (
             _native is None
             or not hasattr(_native, "leaf_linear_stats_mc")
             or emb_dim > _NATIVE_STATS_MAX_DIM
@@ -524,15 +528,39 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         )
         min_n = max(self.min_samples_linear, emb_dim + 2)
         linear = np.flatnonzero(sizes >= min_n)
-        g_sum, h_sum, s_hz, A, gz, zmn, zmx = _native.leaf_linear_stats_mc(
-            np.ascontiguousarray(Z),
-            np.ascontiguousarray(grad),
-            np.ascontiguousarray(hess),
-            order,
-            offsets,
-            linear.astype(np.int64),
-            leaf_class,
-        )
+        if (
+            device_ok
+            and hasattr(backend, "leaf_fit_stats_mc")
+            and order.shape[0] * emb_dim >= backend.leaf_fit_min_cells
+        ):
+            # Device pooled statistics (same contract as the native kernel;
+            # host assembly below is identical — allclose parity, ADR 0005).
+            g_sum, h_sum, s_hz, A, gz, zmn, zmx = backend.leaf_fit_stats_mc(
+                Z, grad, hess, order, offsets, linear.astype(np.int64),
+                leaf_class,
+                use_f32=self.leaf_fit_precision == "float32_gram",
+            )
+        elif (
+            _native is not None
+            and hasattr(_native, "leaf_linear_stats_mc")
+            and emb_dim <= _NATIVE_STATS_MAX_DIM
+        ):
+            g_sum, h_sum, s_hz, A, gz, zmn, zmx = _native.leaf_linear_stats_mc(
+                np.ascontiguousarray(Z),
+                np.ascontiguousarray(grad),
+                np.ascontiguousarray(hess),
+                order,
+                offsets,
+                linear.astype(np.int64),
+                leaf_class,
+            )
+        else:  # device below crossover and no pooled native at this width
+            return [
+                self.fit_leaves(
+                    leaf_rows_per_class[k], grad[:, k], hess[:, k], Z
+                )
+                for k in range(n_classes)
+            ]
         pooled = self._leafvalues_from_native_stats(
             g_sum, h_sum, s_hz, A, gz, zmn, zmx, linear, total_leaves, emb_dim,
             gate=self._make_gate(Z, grad, hess, order, offsets, leaf_class),

@@ -78,6 +78,17 @@ def fit_vector_leaves(
     # ``None`` for constant/embedded_linear leaves leaves the gate off.
     gate_margin = getattr(leaf_model, "leaf_gate_margin", None)
     gate_insample = getattr(leaf_model, "leaf_gate", "loo") == "insample"
+    # Device leaf-fit statistics (split_backend="cuda"): the boosting loop
+    # hands its backend to the leaf model (transient fit_backend, as in the
+    # scalar path). The device computes the per-leaf weighted Gram / cross /
+    # weight sums; centering, the K-column ridge solve, and the LOO gate stay
+    # host float64 (allclose parity, ADR 0005).
+    backend = getattr(leaf_model, "fit_backend", None)
+    use_device = (
+        backend is not None
+        and getattr(backend, "supports_leaf_fit", False)
+        and hasattr(backend, "leaf_fit_stats_vector")
+    )
     # Opt-in float32 leaf-fit (mirrors the scalar EmbeddedLinearLeafModel.fit_leaves
     # branch): accumulate ONLY the two large per-leaf reductions — the weighted Gram
     # and the target projection — in float32 (~1.3x on those reductions, ~5.5% whole
@@ -86,6 +97,56 @@ def fit_vector_leaves(
     # path below is byte-identical; the float32 path is allclose (~1e-5), NOT bitwise
     # (near-tied LOO-gate decisions can flip) — quality-equivalent, opt-in only.
     use_f32 = getattr(leaf_model, "leaf_fit_precision", "float64") == "float32_gram"
+
+    if use_device:
+        sizes = np.array([r.shape[0] for r in leaf_rows], dtype=np.int64)
+        order = (np.concatenate(leaf_rows) if leaf_rows
+                 else np.empty(0, np.int64)).astype(np.int64)
+        if order.shape[0] * emb_dim >= backend.leaf_fit_min_cells:
+            offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+            linear = np.flatnonzero(sizes >= min_n).astype(np.int64)
+            h_sum_l, s_wz, M, C, t_wsum, zmn, zmx = backend.leaf_fit_stats_vector(
+                Z, grad, hess, order, offsets, linear, use_f32=use_f32
+            )
+            eye = l2 * np.eye(emb_dim)
+            for j, i in enumerate(linear):
+                z_mean = s_wz[j] / h_sum_l[j]
+                A = M[j] - np.outer(z_mean, s_wz[j]) + eye
+                rhs = C[j] - np.outer(z_mean, t_wsum[j])
+                t_mean = t_wsum[j] / h_sum_l[j]
+                try:
+                    W = np.linalg.solve(A, rhs)
+                except np.linalg.LinAlgError:
+                    continue
+                if not np.all(np.isfinite(W)):
+                    continue
+                if gate_margin is not None:
+                    # The LOO gate needs the centered rows; recompute on host
+                    # (adaptive-only, same verdict math as the host loop).
+                    rows = leaf_rows[i]
+                    Zl = Z[rows]
+                    Zc = Zl - z_mean
+                    w = hess[rows][:, 0]
+                    t = -grad[rows] / hess[rows]
+                    H, H0 = _loo_leverages(Zc, w, A)
+                    resid = Zc @ W + (t_mean[None, :] - t)
+                    if gate_insample:
+                        e_lin = float(np.sum(w[:, None] * resid * resid))
+                    else:
+                        e_lin = float(np.sum(
+                            w[:, None] * (resid / (1.0 - H)[:, None]) ** 2
+                        ))
+                    resid0 = t_mean[None, :] - t
+                    e_const = float(np.sum(
+                        w[:, None] * (resid0 / (1.0 - H0)[:, None]) ** 2
+                    ))
+                    if e_lin >= (1.0 - gate_margin) * e_const:
+                        continue
+                weights[i] = W
+                bias[i] = t_mean - W.T @ z_mean
+                z_min[i] = zmn[j]
+                z_max[i] = zmx[j]
+            return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
 
     for i, rows in enumerate(leaf_rows):
         if rows.shape[0] < min_n:
@@ -226,6 +287,9 @@ class MultiOutputBooster:
             profiler=profiler,
         )
         self.split_backend_ = splitter.backend
+        # Transient device leaf-fit handle, as in Booster.fit (the leaf model
+        # is a fit-local; reset before returning).
+        leaf_model.fit_backend = splitter.backend
         grower = TreeGrower(
             splitter,
             num_leaves=p.num_leaves,
@@ -295,6 +359,7 @@ class MultiOutputBooster:
                                 self.best_iteration_, self.evals_result_
                             )
                             break
+        leaf_model.fit_backend = None
         return self
 
     # ------------------------------------------------------------------ #

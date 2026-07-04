@@ -719,3 +719,79 @@ def test_booster_hands_fit_backend_to_leaf_model():
     assert len(seen) == 2  # one per round
     assert all(b is booster.split_backend_ for b in seen)  # handed during fit
     assert lm.fit_backend is None  # reset afterwards
+
+
+class _FakeLeafFitBackendMC(_FakeLeafFitBackend):
+    """Adds the pooled-multiclass stats method (NumPy stand-in)."""
+
+    def leaf_fit_stats_mc(self, Z, grad, hess, order, offsets, linear,
+                          leaf_class, use_f32=False):
+        self.calls += 1
+        n_leaves = len(offsets) - 1
+        seg = np.repeat(np.arange(n_leaves), np.diff(offsets))
+        cls = leaf_class[seg]
+        gs = grad[order, cls]
+        hs = hess[order, cls]
+        d = Z.shape[1]
+        Zs = Z[order]
+        g_sum = np.bincount(seg, weights=gs, minlength=n_leaves)
+        h_sum = np.bincount(seg, weights=hs, minlength=n_leaves)
+        k = linear.size
+        s_hz = np.empty((k, d))
+        A = np.empty((k, d, d))
+        gz = np.empty((k, d))
+        zmn = np.empty((k, d))
+        zmx = np.empty((k, d))
+        hZs = Zs * hs[:, None]
+        for j, i in enumerate(linear):
+            sl = slice(offsets[i], offsets[i + 1])
+            s_hz[j] = hZs[sl].sum(axis=0)
+            A[j] = Zs[sl].T @ hZs[sl]
+            gz[j] = gs[sl] @ Zs[sl]
+            zmn[j] = Zs[sl].min(axis=0)
+            zmx[j] = Zs[sl].max(axis=0)
+        return g_sum, h_sum, s_hz, A, gz, zmn, zmx
+
+
+def test_fit_backend_seam_multiclass_pooled_matches_host():
+    """The device pooled-multiclass path must match per-class host fits."""
+    rng = np.random.default_rng(31)
+    n, K, d = 900, 3, 8
+    Z = np.ascontiguousarray(rng.normal(size=(n, d)))
+    grad = np.ascontiguousarray(rng.normal(size=(n, K)))
+    hess = np.ascontiguousarray(np.abs(rng.normal(1.0, 0.3, (n, K))) + 0.1)
+    rows_per_class = [
+        [np.sort(p).astype(np.int64) for p in
+         np.array_split(np.random.default_rng(40 + c).permutation(n), 4)]
+        for c in range(K)
+    ]
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+    host = model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+    fake = _FakeLeafFitBackendMC()
+    model.fit_backend = fake
+    dev = model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+    model.fit_backend = None
+    assert fake.calls == 1
+    for lv_h, lv_d in zip(host, dev):
+        np.testing.assert_allclose(lv_d.bias, lv_h.bias, rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(
+            lv_d.weights, lv_h.weights, rtol=1e-6, atol=1e-8
+        )
+        np.testing.assert_allclose(lv_d.z_min, lv_h.z_min)
+        np.testing.assert_allclose(lv_d.z_max, lv_h.z_max)
+
+
+def test_fit_backend_seam_multiclass_respects_min_cells():
+    rng = np.random.default_rng(32)
+    n, K, d = 300, 2, 4
+    Z = rng.normal(size=(n, d))
+    grad = rng.normal(size=(n, K))
+    hess = np.abs(rng.normal(1.0, 0.3, (n, K))) + 0.1
+    rows_per_class = [[np.arange(n)] for _ in range(K)]
+    model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
+    fake = _FakeLeafFitBackendMC()
+    fake.leaf_fit_min_cells = 10**12
+    model.fit_backend = fake
+    model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
+    model.fit_backend = None
+    assert fake.calls == 0  # native/per-class host path taken

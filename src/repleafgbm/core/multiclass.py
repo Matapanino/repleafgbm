@@ -115,6 +115,9 @@ class MulticlassBooster:
             profiler=profiler,
         )
         self.split_backend_ = splitter.backend
+        # Transient device leaf-fit handle, as in Booster.fit (the leaf model
+        # is a fit-local; reset before returning).
+        leaf_model.fit_backend = splitter.backend
         grower = TreeGrower(
             splitter,
             num_leaves=p.num_leaves,
@@ -199,6 +202,7 @@ class MulticlassBooster:
                                 self.best_iteration_, self.evals_result_
                             )
                             break
+        leaf_model.fit_backend = None
         return self
 
     # ------------------------------------------------------------------ #
