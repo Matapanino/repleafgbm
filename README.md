@@ -193,9 +193,27 @@ encoder updates during boosting, GPU / distributed training) is in
 
 ## Benchmarks
 
-These small benchmarks track development progress; they are not performance
-claims. Two reproducible snapshots — a real-data leaderboard and a controlled
-synthetic signal.
+**Fair-budget Grinsztajn leaderboard (10 seeds).** Every model family is tuned by
+Optuna TPE under an *identical* budget (50 trials per dataset, 70/15/15 split,
+10 seeds) on the four Grinsztajn suites; all models see the same ordinal-encoded
+matrix. RepLeafGBM's mean rank among the five tuned families (lower is better):
+
+| Grinsztajn suite (datasets) | RepLeafGBM mean rank (of 5) | Friedman p |
+|---|---|---|
+| Numerical regression (19) | **3.00** (3rd) | 2.2e-3 |
+| Numerical classification (16) | 3.81 (4th) | 4.3e-4 |
+| Categorical regression (17) | **3.00** (3rd) | 0.025 |
+| Categorical classification (7) | 3.71 | 0.438 (flat) |
+
+Honest summary: mid-pack overall — a clean third on both regression suites (ahead
+of XGBoost and HistGB), fourth–fifth on classification (consistent with the
+documented binary-Hessian limitation), never the leader, and never significantly
+*and* practically worse than the best baseline. Full reports:
+`experiments/results/leaderboard-grinsztajn_*-10seed.md`; consolidated verdict:
+`experiments/results/2026-07-04-grinsztajn-10seed-consolidated-verdict.md`.
+
+The two snapshots below are older development-tracking benchmarks (unequal
+tuning; kept for breadth); they are not performance claims.
 
 **Real data — OpenML** mean rank across 9 standard datasets, 3 seeds, a 60/20/20
 split with early stopping. Rank is among **all 11 models** in the suite (lower is
