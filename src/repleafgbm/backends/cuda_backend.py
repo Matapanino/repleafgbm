@@ -241,9 +241,19 @@ _LEAF_FIT_ENV = "REPLEAFGBM_CUDA_LEAF_FIT"
 #: Minimum per-tree leaf-fit work (gathered rows × emb_dim cells) for the device
 #: path; smaller trees fit faster on the host (kernel-launch + transfer overhead
 #: dominates tiny GEMMs — the same adaptive-crossover principle as
-#: ``_GPU_SCAN_MIN_CELLS``). Provisional default pending the T4 sweep; override
-#: with the env var below for profiling.
+#: ``_GPU_SCAN_MIN_CELLS``). T4-validated (iter 012 sweep: a 200k-cell tree is
+#: ~20% faster on the host; the 1e6 default keeps it there). Override with the
+#: env var below for profiling.
 _GPU_LEAF_FIT_MIN_CELLS = 1_000_000
+
+#: The multi-output *vector* path needs a higher crossover: its per-leaf device
+#: work at narrow embeddings (one Gram + a (d, K) cross GEMM) is too small to
+#: beat the host loop — the iter-015 T4 A/B measured a −4.7% regression at
+#: 50k×emb30 (1.5M cells) while 30k×emb200 (6M cells) wins 1.26×. 4M splits the
+#: two measured points. An explicit ``REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS``
+#: override applies to BOTH paths (so forcing the device for tests/profiling
+#: keeps working).
+_GPU_LEAF_FIT_MIN_CELLS_VECTOR = 4_000_000
 _LEAF_FIT_MIN_CELLS_ENV = "REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS"
 
 
@@ -343,6 +353,13 @@ class CudaSplitBackend(BaseSplitBackend):
         # ``leaf_fit_stats`` (below) per tree; off → they never look at us.
         self.supports_leaf_fit = _resolve_leaf_fit()
         self.leaf_fit_min_cells = _resolve_leaf_fit_min_cells()
+        # Vector (multi-output) leaves use their own, higher crossover unless
+        # the env var explicitly overrides the threshold (then both follow it).
+        self.leaf_fit_min_cells_vector = (
+            self.leaf_fit_min_cells
+            if os.environ.get(_LEAF_FIT_MIN_CELLS_ENV, "").strip()
+            else _GPU_LEAF_FIT_MIN_CELLS_VECTOR
+        )
         # Resident embedding cache, keyed like the binned cache: Z is the same
         # object for every tree of a fit, so it is uploaded once and reused.
         self._Z_key: tuple[int, tuple[int, ...]] | None = None

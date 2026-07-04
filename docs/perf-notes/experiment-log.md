@@ -250,3 +250,15 @@ emb>128 or small phases): E04/E14/E15/E16/E19. Meta-lesson: re-measure tuned gat
 - Hypothesis (ledger Task-B sizing): leafwise split_scan = 32.2% share, per-node device scan ~89% launch overhead → M=2 batching projects ~1.8× scan ≈ ~14% whole-fit ceiling.
 - Measure (T4, 5 interleaved reps, off→on, device leaf-fit ON in both arms): **wide 50k×200 10.24→8.83 s = 1.16× (−13.8%, 5/5)** — the full predicted ceiling. Host NumPy/Rust trees bitwise-identical (forced-path test, reg+binary, tie-heavy quantized data).
 - Decision: **ACCEPT, default ON** (kill switch). Reach: cuda ∩ leafwise (the default grow_policy). Combined with iter 012, leafwise-wide CUDA fit is ~2.0× the pre-session build; backend suite vs numpy: reg-wide 1.99×, mc 3.06×, MO 5.34×.
+
+### 014 — pooled-multiclass device leaf-fit (`leaf_fit_stats_mc`)   [ACCEPT — default ON]   2026-07-05
+- Surface: `backends/cuda_backend.py` (`leaf_fit_stats_mc` + `_gather_tree`/`_leaf_fit_stats_core` refactor), `core/leaf_models.py` (`fit_leaves_multiclass` prefers device > pooled native > per-class), `core/multiclass.py` (transient `fit_backend`, try/finally)   Backend: cuda (PR pending)
+- Hypothesis: mc leaf_fit was 73% of CUDA mc fit (2026-06-25 sizing); the scalar seam extends with a per-row class-column gather (`grad[order, leaf_class[seg]]`), same host assembly.
+- Measure (T4, 5 interleaved reps, off→on): **mc5 30k×200f emb64: 14.21→12.46 s = 1.14× (−12.3%, 5/5)** — vs the *fast* pooled native Rust baseline. Parity 50/50 incl. new tests; forced-device e2e |Δacc|<5e-3.
+- Decision: **ACCEPT, default ON** (same `REPLEAFGBM_CUDA_LEAF_FIT` gates; shared 1e6 crossover). Evidence: `experiments/results/2026-07-05-cuda-leaf-fit-mc-mo-ab.md`.
+
+### 015 — multi-output vector device leaf-fit (`leaf_fit_stats_vector`)   [ACCEPT — default ON, vector crossover 4e6]   2026-07-05
+- Surface: `backends/cuda_backend.py` (`leaf_fit_stats_vector`, `_GPU_LEAF_FIT_MIN_CELLS_VECTOR=4e6`, `leaf_fit_min_cells_vector`), `core/multioutput.py` (device branch in `fit_vector_leaves` + transient handle in the booster)   Backend: cuda (PR pending)
+- Hypothesis: the shared-w invariant (hess columns identical for all MO objectives) collapses per-output Newton cross terms to gradient sums (C=−Z'G, t_wsum=−Σg), so one Gram + one (d,K) GEMM per leaf serves K outputs; host keeps the K-RHS solve + shared-leverage gate.
+- Measure (T4, off→on): **wide MO5 30k×200f emb200: 12.53→9.95 s = 1.26× (−20.6%, 5/5)**; narrow 50k×30f emb30 initially regressed −4.7% (2/5) at 1.5M cells → **vector-specific crossover 4e6** (env override still applies to both paths); post-fix narrow = parity within noise (order-swapped rechecks, wins 2–3/5, ±13% spread). Scalar-sweep follow-up validated the 1e6 default (forced-device on a 200k-cell tree costs ~20%).
+- Decision: **ACCEPT, default ON with the two-tier crossover.** Harness follow-up: `cuda_overnight_loop --mode ab` lacks `--n-classes/--n-outputs` (A/B ran via direct gpu_profile). Evidence: `experiments/results/2026-07-05-cuda-leaf-fit-mc-mo-ab.md`.

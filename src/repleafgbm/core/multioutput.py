@@ -102,7 +102,10 @@ def fit_vector_leaves(
         sizes = np.array([r.shape[0] for r in leaf_rows], dtype=np.int64)
         order = (np.concatenate(leaf_rows) if leaf_rows
                  else np.empty(0, np.int64)).astype(np.int64)
-        if order.shape[0] * emb_dim >= backend.leaf_fit_min_cells:
+        vector_min_cells = getattr(
+            backend, "leaf_fit_min_cells_vector", backend.leaf_fit_min_cells
+        )
+        if order.shape[0] * emb_dim >= vector_min_cells:
             offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
             linear = np.flatnonzero(sizes >= min_n).astype(np.int64)
             h_sum_l, s_wz, M, C, t_wsum, zmn, zmx = backend.leaf_fit_stats_vector(
