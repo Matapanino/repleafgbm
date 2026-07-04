@@ -290,77 +290,81 @@ class MultiOutputBooster:
         # Transient device leaf-fit handle, as in Booster.fit (the leaf model
         # is a fit-local; reset before returning).
         leaf_model.fit_backend = splitter.backend
-        grower = TreeGrower(
-            splitter,
-            num_leaves=p.num_leaves,
-            max_depth=p.max_depth,
-            grow_policy=p.grow_policy,
-        )
+        try:
+            grower = TreeGrower(
+                splitter,
+                num_leaves=p.num_leaves,
+                max_depth=p.max_depth,
+                grow_policy=p.grow_policy,
+            )
 
-        self.init_score_ = self.objective.init_score(y, weight=w)
-        F = np.tile(self.init_score_, (y.shape[0], 1))
+            self.init_score_ = self.objective.init_score(y, weight=w)
+            F = np.tile(self.init_score_, (y.shape[0], 1))
 
-        evals: list[tuple[str, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]] = []
-        if eval_sets:
-            for name, ds in eval_sets:
-                if ds.y is None:
-                    raise ValueError(f"eval_set {name!r} must contain a target (y)")
-                Ze = ds.get_embeddings(encoder) if leaf_model.uses_embeddings else None
-                Fe = np.tile(self.init_score_, (ds.n_rows, 1))
-                ye = np.asarray(ds.y, dtype=np.float64)
-                evals.append((name, ds.get_raw_features(), ye, Ze, Fe))
-            self.evals_result_ = {name: {eval_metric.name: []} for name, *_ in evals}
+            evals: list[tuple[str, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]] = []
+            if eval_sets:
+                for name, ds in eval_sets:
+                    if ds.y is None:
+                        raise ValueError(f"eval_set {name!r} must contain a target (y)")
+                    Ze = ds.get_embeddings(encoder) if leaf_model.uses_embeddings else None
+                    Fe = np.tile(self.init_score_, (ds.n_rows, 1))
+                    ye = np.asarray(ds.y, dtype=np.float64)
+                    evals.append((name, ds.get_raw_features(), ye, Ze, Fe))
+                self.evals_result_ = {name: {eval_metric.name: []} for name, *_ in evals}
 
-        leaf_idx = np.empty(y.shape[0], dtype=np.int64)
-        best_score: float | None = None
-        rounds_since_best = 0
-        logger = EvalLogger(p.verbose)
-        for it in range(p.n_estimators):
-            grad, hess = self.objective.grad_hess(y, F)
-            grad, hess = weight_grad_hess(grad, hess, w)
-            tree, leaf_rows = grower.grow(grad, hess)
-            with timed(profiler, "leaf_fit"):
-                leaf_values = fit_vector_leaves(
-                    leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
-                )
-            self.trees_.append(tree)
-            self.leaf_values_.append(leaf_values)
-
-            with timed(profiler, "eval"):
-                for i, rows in enumerate(leaf_rows):
-                    leaf_idx[rows] = i
-                # clip=False is exact on training rows (see Booster).
-                F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
-
-            if evals and eval_metric is not None:
-                with timed(profiler, "eval"):
-                    for name, Xe, ye, Ze, Fe in evals:
-                        Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
-                        # eval_set y is raw-scale; un-standardize (identity default).
-                        pred = self.objective.transform(self.target_loc_ + self.target_scale_ * Fe)
-                        self.evals_result_[name][eval_metric.name].append(
-                            eval_metric(ye, pred)
-                        )
-                logger.log_round(it + 1, self.evals_result_)
-                if p.early_stopping_rounds is not None:
-                    score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
-                    improved = best_score is None or (
-                        score < best_score if eval_metric.minimize else score > best_score
+            leaf_idx = np.empty(y.shape[0], dtype=np.int64)
+            best_score: float | None = None
+            rounds_since_best = 0
+            logger = EvalLogger(p.verbose)
+            for it in range(p.n_estimators):
+                grad, hess = self.objective.grad_hess(y, F)
+                grad, hess = weight_grad_hess(grad, hess, w)
+                tree, leaf_rows = grower.grow(grad, hess)
+                with timed(profiler, "leaf_fit"):
+                    leaf_values = fit_vector_leaves(
+                        leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
                     )
-                    if improved:
-                        best_score = score
-                        self.best_iteration_ = self.n_trees
-                        self.best_score_ = score
-                        rounds_since_best = 0
-                    else:
-                        rounds_since_best += 1
-                        if rounds_since_best >= p.early_stopping_rounds:
-                            logger.log_early_stop(
-                                self.best_iteration_, self.evals_result_
+                self.trees_.append(tree)
+                self.leaf_values_.append(leaf_values)
+
+                with timed(profiler, "eval"):
+                    for i, rows in enumerate(leaf_rows):
+                        leaf_idx[rows] = i
+                    # clip=False is exact on training rows (see Booster).
+                    F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
+
+                if evals and eval_metric is not None:
+                    with timed(profiler, "eval"):
+                        for name, Xe, ye, Ze, Fe in evals:
+                            Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
+                            # eval_set y is raw-scale; un-standardize (identity default).
+                            pred = self.objective.transform(
+                            self.target_loc_ + self.target_scale_ * Fe
+                        )
+                            self.evals_result_[name][eval_metric.name].append(
+                                eval_metric(ye, pred)
                             )
-                            break
-        leaf_model.fit_backend = None
-        return self
+                    logger.log_round(it + 1, self.evals_result_)
+                    if p.early_stopping_rounds is not None:
+                        score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
+                        improved = best_score is None or (
+                            score < best_score if eval_metric.minimize else score > best_score
+                        )
+                        if improved:
+                            best_score = score
+                            self.best_iteration_ = self.n_trees
+                            self.best_score_ = score
+                            rounds_since_best = 0
+                        else:
+                            rounds_since_best += 1
+                            if rounds_since_best >= p.early_stopping_rounds:
+                                logger.log_early_stop(
+                                    self.best_iteration_, self.evals_result_
+                                )
+                                break
+            return self
+        finally:
+            leaf_model.fit_backend = None
 
     # ------------------------------------------------------------------ #
     # Prediction

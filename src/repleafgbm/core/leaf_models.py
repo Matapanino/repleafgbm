@@ -530,6 +530,7 @@ class EmbeddedLinearLeafModel(BaseLeafModel):
         linear = np.flatnonzero(sizes >= min_n)
         if (
             device_ok
+            and linear.size
             and hasattr(backend, "leaf_fit_stats_mc")
             and order.shape[0] * emb_dim >= backend.leaf_fit_min_cells
         ):

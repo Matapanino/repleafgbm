@@ -765,6 +765,10 @@ def test_fit_backend_seam_multiclass_pooled_matches_host():
          np.array_split(np.random.default_rng(40 + c).permutation(n), 4)]
         for c in range(K)
     ]
+    # A sub-threshold leaf keeps the constant-fallback branch covered.
+    rows_per_class[1].append(
+        np.sort(rng.choice(n, 5, replace=False)).astype(np.int64)
+    )
     model = EmbeddedLinearLeafModel(l2=1.0, min_samples_linear=20)
     host = model.fit_leaves_multiclass(rows_per_class, grad, hess, Z)
     fake = _FakeLeafFitBackendMC()

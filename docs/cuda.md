@@ -104,8 +104,13 @@ fits with an adaptive work crossover (`REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS`,
 default 1e6 gathered-row×dim cells; small trees stay on the host);
 `REPLEAFGBM_CUDA_LEAF_FIT=0` is the kill switch. `leaf_fit_precision=
 "float32_gram"` narrows the two large device reductions to float32, mirroring
-the host contract. Multiclass (pooled) and multi-output vector leaves still
-fit on the host (follow-up).
+the host contract. The same seam covers all three leaf-fit paths: scalar
+(`leaf_fit_stats`), pooled multiclass (`leaf_fit_stats_mc`, the exact native
+`leaf_linear_stats_mc` contract with per-row class-column gathers), and
+shared-routing multi-output vector leaves (`leaf_fit_stats_vector`, which
+exploits the multi-output invariant that Hessian columns are identical, so
+the per-output Newton cross terms collapse to pure gradient sums; the
+K-column ridge solve and the shared-leverage LOO gate stay host float64).
 
 The end-to-end gain is bounded because tree growth and the categorical subset
 scan still run on the host. The CUDA backend helps most when the histogram or

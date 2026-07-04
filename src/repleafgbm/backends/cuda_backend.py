@@ -46,7 +46,9 @@ statistics tuple the native Rust ``leaf_linear_stats`` produces, so the leaf
 model feeds it into the same host float64 assembly (centering, ridge solve,
 LOO gate). Default ON with an adaptive work crossover
 (``REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS``); ``REPLEAFGBM_CUDA_LEAF_FIT=0`` is the
-kill switch. Multiclass-pooled and multi-output vector leaves stay on the host.
+kill switch. The seam covers all three leaf-fit paths: scalar
+(``leaf_fit_stats``), pooled multiclass (``leaf_fit_stats_mc``), and
+shared-routing multi-output vector leaves (``leaf_fit_stats_vector``).
 
 Differences from the Rust backend (see ``docs/adr/0005-cuda-backend-cupy.md``):
 
@@ -930,7 +932,7 @@ class CudaSplitBackend(BaseSplitBackend):
         Parity: allclose, never bitwise (device reduction order; ADR 0005).
         """
         cp = self._cp
-        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.shape[0])
+        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.size)
         g_d = cp.asarray(np.ascontiguousarray(grad, dtype=np.float64))
         h_d = cp.asarray(np.ascontiguousarray(hess, dtype=np.float64))
         gs = g_d[order_d]
@@ -958,7 +960,7 @@ class CudaSplitBackend(BaseSplitBackend):
         selects per-row columns on-device; everything else is the scalar core.
         """
         cp = self._cp
-        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.shape[0])
+        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.size)
         g_d = cp.asarray(np.ascontiguousarray(grad, dtype=np.float64))
         h_d = cp.asarray(np.ascontiguousarray(hess, dtype=np.float64))
         cls_d = cp.asarray(
@@ -1005,7 +1007,7 @@ class CudaSplitBackend(BaseSplitBackend):
         emb_dim = int(Z.shape[1])
         n_outputs = int(grad.shape[1])
         k = int(linear.size)
-        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.shape[0])
+        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.size)
         g_d = cp.asarray(np.ascontiguousarray(grad, dtype=np.float64))
         h_d = cp.asarray(np.ascontiguousarray(hess, dtype=np.float64))
         gs = g_d[order_d]  # (n_sel, K)
@@ -1056,8 +1058,13 @@ class CudaSplitBackend(BaseSplitBackend):
         )
         return out
 
-    def _gather_tree(self, Z, order, offsets, n_rows):
-        """Upload/gather one tree's rows: resident Z + order + per-row leaf ids."""
+    def _gather_tree(self, Z, order, offsets, n_gradhess_values):
+        """Upload/gather one tree's rows: resident Z + order + per-row leaf ids.
+
+        ``n_gradhess_values`` is ``grad.size`` (== ``hess.size``) — rows for
+        the scalar path, rows×K for the multiclass/vector paths — so the H2D
+        byte counter stays accurate across all three entry points.
+        """
         cp = self._cp
         Z_d = self._device_Z(Z)
         order_d = cp.asarray(np.ascontiguousarray(order, dtype=np.int64))
@@ -1067,7 +1074,10 @@ class CudaSplitBackend(BaseSplitBackend):
         seg = np.repeat(np.arange(len(offsets) - 1, dtype=np.int64), sizes)
         seg_d = cp.asarray(seg)
         # order + seg (int64) and grad + hess (float64) cross per tree.
-        self._bump("leaffit_h2d_bytes", 8 * (2 * order.shape[0] + 2 * n_rows))
+        self._bump(
+            "leaffit_h2d_bytes",
+            8 * (2 * order.shape[0] + 2 * n_gradhess_values),
+        )
         self._bump("n_leaf_fits", 1)
         return Z_d[order_d], seg_d, order_d
 
