@@ -205,8 +205,11 @@ class BaseSplitBackend(ABC):
     #: Minimum per-tree leaf-fit work (gathered rows × emb_dim cells) before a
     #: capable backend's device path engages; the effectively-infinite default
     #: keeps host-only backends inert even if a subclass flips
-    #: ``supports_leaf_fit`` without tuning the crossover.
+    #: ``supports_leaf_fit`` without tuning the crossover. The multi-output
+    #: vector path consults ``leaf_fit_min_cells_vector`` (its per-leaf device
+    #: work is smaller, so it needs a higher crossover).
     leaf_fit_min_cells: int = 1 << 62
+    leaf_fit_min_cells_vector: int = 1 << 62
 
     #: Whether the *leafwise* grower may batch each expansion's two children
     #: through :meth:`find_best_split_batched` (Task B — halves the per-node

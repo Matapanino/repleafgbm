@@ -78,6 +78,17 @@ def fit_vector_leaves(
     # ``None`` for constant/embedded_linear leaves leaves the gate off.
     gate_margin = getattr(leaf_model, "leaf_gate_margin", None)
     gate_insample = getattr(leaf_model, "leaf_gate", "loo") == "insample"
+    # Device leaf-fit statistics (split_backend="cuda"): the boosting loop
+    # hands its backend to the leaf model (transient fit_backend, as in the
+    # scalar path). The device computes the per-leaf weighted Gram / cross /
+    # weight sums; centering, the K-column ridge solve, and the LOO gate stay
+    # host float64 (allclose parity, ADR 0005).
+    backend = getattr(leaf_model, "fit_backend", None)
+    use_device = (
+        backend is not None
+        and getattr(backend, "supports_leaf_fit", False)
+        and hasattr(backend, "leaf_fit_stats_vector")
+    )
     # Opt-in float32 leaf-fit (mirrors the scalar EmbeddedLinearLeafModel.fit_leaves
     # branch): accumulate ONLY the two large per-leaf reductions — the weighted Gram
     # and the target projection — in float32 (~1.3x on those reductions, ~5.5% whole
@@ -86,6 +97,59 @@ def fit_vector_leaves(
     # path below is byte-identical; the float32 path is allclose (~1e-5), NOT bitwise
     # (near-tied LOO-gate decisions can flip) — quality-equivalent, opt-in only.
     use_f32 = getattr(leaf_model, "leaf_fit_precision", "float64") == "float32_gram"
+
+    if use_device:
+        sizes = np.array([r.shape[0] for r in leaf_rows], dtype=np.int64)
+        order = (np.concatenate(leaf_rows) if leaf_rows
+                 else np.empty(0, np.int64)).astype(np.int64)
+        vector_min_cells = getattr(
+            backend, "leaf_fit_min_cells_vector", backend.leaf_fit_min_cells
+        )
+        if order.shape[0] * emb_dim >= vector_min_cells:
+            offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+            linear = np.flatnonzero(sizes >= min_n).astype(np.int64)
+            h_sum_l, s_wz, M, C, t_wsum, zmn, zmx = backend.leaf_fit_stats_vector(
+                Z, grad, hess, order, offsets, linear, use_f32=use_f32
+            )
+            eye = l2 * np.eye(emb_dim)
+            for j, i in enumerate(linear):
+                z_mean = s_wz[j] / h_sum_l[j]
+                A = M[j] - np.outer(z_mean, s_wz[j]) + eye
+                rhs = C[j] - np.outer(z_mean, t_wsum[j])
+                t_mean = t_wsum[j] / h_sum_l[j]
+                try:
+                    W = np.linalg.solve(A, rhs)
+                except np.linalg.LinAlgError:
+                    continue
+                if not np.all(np.isfinite(W)):
+                    continue
+                if gate_margin is not None:
+                    # The LOO gate needs the centered rows; recompute on host
+                    # (adaptive-only, same verdict math as the host loop).
+                    rows = leaf_rows[i]
+                    Zl = Z[rows]
+                    Zc = Zl - z_mean
+                    w = hess[rows][:, 0]
+                    t = -grad[rows] / hess[rows]
+                    H, H0 = _loo_leverages(Zc, w, A)
+                    resid = Zc @ W + (t_mean[None, :] - t)
+                    if gate_insample:
+                        e_lin = float(np.sum(w[:, None] * resid * resid))
+                    else:
+                        e_lin = float(np.sum(
+                            w[:, None] * (resid / (1.0 - H)[:, None]) ** 2
+                        ))
+                    resid0 = t_mean[None, :] - t
+                    e_const = float(np.sum(
+                        w[:, None] * (resid0 / (1.0 - H0)[:, None]) ** 2
+                    ))
+                    if e_lin >= (1.0 - gate_margin) * e_const:
+                        continue
+                weights[i] = W
+                bias[i] = t_mean - W.T @ z_mean
+                z_min[i] = zmn[j]
+                z_max[i] = zmx[j]
+            return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
 
     for i, rows in enumerate(leaf_rows):
         if rows.shape[0] < min_n:
@@ -226,76 +290,84 @@ class MultiOutputBooster:
             profiler=profiler,
         )
         self.split_backend_ = splitter.backend
-        grower = TreeGrower(
-            splitter,
-            num_leaves=p.num_leaves,
-            max_depth=p.max_depth,
-            grow_policy=p.grow_policy,
-        )
+        # Transient device leaf-fit handle, as in Booster.fit (the leaf model
+        # is a fit-local; reset before returning).
+        leaf_model.fit_backend = splitter.backend
+        try:
+            grower = TreeGrower(
+                splitter,
+                num_leaves=p.num_leaves,
+                max_depth=p.max_depth,
+                grow_policy=p.grow_policy,
+            )
 
-        self.init_score_ = self.objective.init_score(y, weight=w)
-        F = np.tile(self.init_score_, (y.shape[0], 1))
+            self.init_score_ = self.objective.init_score(y, weight=w)
+            F = np.tile(self.init_score_, (y.shape[0], 1))
 
-        evals: list[tuple[str, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]] = []
-        if eval_sets:
-            for name, ds in eval_sets:
-                if ds.y is None:
-                    raise ValueError(f"eval_set {name!r} must contain a target (y)")
-                Ze = ds.get_embeddings(encoder) if leaf_model.uses_embeddings else None
-                Fe = np.tile(self.init_score_, (ds.n_rows, 1))
-                ye = np.asarray(ds.y, dtype=np.float64)
-                evals.append((name, ds.get_raw_features(), ye, Ze, Fe))
-            self.evals_result_ = {name: {eval_metric.name: []} for name, *_ in evals}
+            evals: list[tuple[str, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]] = []
+            if eval_sets:
+                for name, ds in eval_sets:
+                    if ds.y is None:
+                        raise ValueError(f"eval_set {name!r} must contain a target (y)")
+                    Ze = ds.get_embeddings(encoder) if leaf_model.uses_embeddings else None
+                    Fe = np.tile(self.init_score_, (ds.n_rows, 1))
+                    ye = np.asarray(ds.y, dtype=np.float64)
+                    evals.append((name, ds.get_raw_features(), ye, Ze, Fe))
+                self.evals_result_ = {name: {eval_metric.name: []} for name, *_ in evals}
 
-        leaf_idx = np.empty(y.shape[0], dtype=np.int64)
-        best_score: float | None = None
-        rounds_since_best = 0
-        logger = EvalLogger(p.verbose)
-        for it in range(p.n_estimators):
-            grad, hess = self.objective.grad_hess(y, F)
-            grad, hess = weight_grad_hess(grad, hess, w)
-            tree, leaf_rows = grower.grow(grad, hess)
-            with timed(profiler, "leaf_fit"):
-                leaf_values = fit_vector_leaves(
-                    leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
-                )
-            self.trees_.append(tree)
-            self.leaf_values_.append(leaf_values)
-
-            with timed(profiler, "eval"):
-                for i, rows in enumerate(leaf_rows):
-                    leaf_idx[rows] = i
-                # clip=False is exact on training rows (see Booster).
-                F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
-
-            if evals and eval_metric is not None:
-                with timed(profiler, "eval"):
-                    for name, Xe, ye, Ze, Fe in evals:
-                        Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
-                        # eval_set y is raw-scale; un-standardize (identity default).
-                        pred = self.objective.transform(self.target_loc_ + self.target_scale_ * Fe)
-                        self.evals_result_[name][eval_metric.name].append(
-                            eval_metric(ye, pred)
-                        )
-                logger.log_round(it + 1, self.evals_result_)
-                if p.early_stopping_rounds is not None:
-                    score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
-                    improved = best_score is None or (
-                        score < best_score if eval_metric.minimize else score > best_score
+            leaf_idx = np.empty(y.shape[0], dtype=np.int64)
+            best_score: float | None = None
+            rounds_since_best = 0
+            logger = EvalLogger(p.verbose)
+            for it in range(p.n_estimators):
+                grad, hess = self.objective.grad_hess(y, F)
+                grad, hess = weight_grad_hess(grad, hess, w)
+                tree, leaf_rows = grower.grow(grad, hess)
+                with timed(profiler, "leaf_fit"):
+                    leaf_values = fit_vector_leaves(
+                        leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
                     )
-                    if improved:
-                        best_score = score
-                        self.best_iteration_ = self.n_trees
-                        self.best_score_ = score
-                        rounds_since_best = 0
-                    else:
-                        rounds_since_best += 1
-                        if rounds_since_best >= p.early_stopping_rounds:
-                            logger.log_early_stop(
-                                self.best_iteration_, self.evals_result_
+                self.trees_.append(tree)
+                self.leaf_values_.append(leaf_values)
+
+                with timed(profiler, "eval"):
+                    for i, rows in enumerate(leaf_rows):
+                        leaf_idx[rows] = i
+                    # clip=False is exact on training rows (see Booster).
+                    F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
+
+                if evals and eval_metric is not None:
+                    with timed(profiler, "eval"):
+                        for name, Xe, ye, Ze, Fe in evals:
+                            Fe += p.learning_rate * leaf_values.predict(tree.apply(Xe), Ze)
+                            # eval_set y is raw-scale; un-standardize (identity default).
+                            pred = self.objective.transform(
+                            self.target_loc_ + self.target_scale_ * Fe
+                        )
+                            self.evals_result_[name][eval_metric.name].append(
+                                eval_metric(ye, pred)
                             )
-                            break
-        return self
+                    logger.log_round(it + 1, self.evals_result_)
+                    if p.early_stopping_rounds is not None:
+                        score = self.evals_result_[evals[0][0]][eval_metric.name][-1]
+                        improved = best_score is None or (
+                            score < best_score if eval_metric.minimize else score > best_score
+                        )
+                        if improved:
+                            best_score = score
+                            self.best_iteration_ = self.n_trees
+                            self.best_score_ = score
+                            rounds_since_best = 0
+                        else:
+                            rounds_since_best += 1
+                            if rounds_since_best >= p.early_stopping_rounds:
+                                logger.log_early_stop(
+                                    self.best_iteration_, self.evals_result_
+                                )
+                                break
+            return self
+        finally:
+            leaf_model.fit_backend = None
 
     # ------------------------------------------------------------------ #
     # Prediction

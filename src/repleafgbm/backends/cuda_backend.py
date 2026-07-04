@@ -46,7 +46,9 @@ statistics tuple the native Rust ``leaf_linear_stats`` produces, so the leaf
 model feeds it into the same host float64 assembly (centering, ridge solve,
 LOO gate). Default ON with an adaptive work crossover
 (``REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS``); ``REPLEAFGBM_CUDA_LEAF_FIT=0`` is the
-kill switch. Multiclass-pooled and multi-output vector leaves stay on the host.
+kill switch. The seam covers all three leaf-fit paths: scalar
+(``leaf_fit_stats``), pooled multiclass (``leaf_fit_stats_mc``), and
+shared-routing multi-output vector leaves (``leaf_fit_stats_vector``).
 
 Differences from the Rust backend (see ``docs/adr/0005-cuda-backend-cupy.md``):
 
@@ -239,9 +241,19 @@ _LEAF_FIT_ENV = "REPLEAFGBM_CUDA_LEAF_FIT"
 #: Minimum per-tree leaf-fit work (gathered rows × emb_dim cells) for the device
 #: path; smaller trees fit faster on the host (kernel-launch + transfer overhead
 #: dominates tiny GEMMs — the same adaptive-crossover principle as
-#: ``_GPU_SCAN_MIN_CELLS``). Provisional default pending the T4 sweep; override
-#: with the env var below for profiling.
+#: ``_GPU_SCAN_MIN_CELLS``). T4-validated (iter 012 sweep: a 200k-cell tree is
+#: ~20% faster on the host; the 1e6 default keeps it there). Override with the
+#: env var below for profiling.
 _GPU_LEAF_FIT_MIN_CELLS = 1_000_000
+
+#: The multi-output *vector* path needs a higher crossover: its per-leaf device
+#: work at narrow embeddings (one Gram + a (d, K) cross GEMM) is too small to
+#: beat the host loop — the iter-015 T4 A/B measured a −4.7% regression at
+#: 50k×emb30 (1.5M cells) while 30k×emb200 (6M cells) wins 1.26×. 4M splits the
+#: two measured points. An explicit ``REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS``
+#: override applies to BOTH paths (so forcing the device for tests/profiling
+#: keeps working).
+_GPU_LEAF_FIT_MIN_CELLS_VECTOR = 4_000_000
 _LEAF_FIT_MIN_CELLS_ENV = "REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS"
 
 
@@ -341,6 +353,13 @@ class CudaSplitBackend(BaseSplitBackend):
         # ``leaf_fit_stats`` (below) per tree; off → they never look at us.
         self.supports_leaf_fit = _resolve_leaf_fit()
         self.leaf_fit_min_cells = _resolve_leaf_fit_min_cells()
+        # Vector (multi-output) leaves use their own, higher crossover unless
+        # the env var explicitly overrides the threshold (then both follow it).
+        self.leaf_fit_min_cells_vector = (
+            self.leaf_fit_min_cells
+            if os.environ.get(_LEAF_FIT_MIN_CELLS_ENV, "").strip()
+            else _GPU_LEAF_FIT_MIN_CELLS_VECTOR
+        )
         # Resident embedding cache, keyed like the binned cache: Z is the same
         # object for every tree of a fit, so it is uploaded once and reused.
         self._Z_key: tuple[int, tuple[int, ...]] | None = None
@@ -929,30 +948,167 @@ class CudaSplitBackend(BaseSplitBackend):
 
         Parity: allclose, never bitwise (device reduction order; ADR 0005).
         """
+        cp = self._cp
+        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.size)
+        g_d = cp.asarray(np.ascontiguousarray(grad, dtype=np.float64))
+        h_d = cp.asarray(np.ascontiguousarray(hess, dtype=np.float64))
+        gs = g_d[order_d]
+        hs = h_d[order_d]
+        return self._leaf_fit_stats_core(
+            Zs, gs, hs, seg_d, offsets, linear, len(offsets) - 1, use_f32
+        )
+
+    def leaf_fit_stats_mc(
+        self,
+        Z: np.ndarray,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        order: np.ndarray,
+        offsets: np.ndarray,
+        linear: np.ndarray,
+        leaf_class: np.ndarray,
+        use_f32: bool = False,
+    ) -> tuple[np.ndarray, ...]:
+        """Pooled-multiclass leaf-fit statistics on the GPU.
+
+        Identical contract to the native ``leaf_linear_stats_mc``: the pooled
+        leaf list concatenates every class's leaves, and each pooled leaf reads
+        its own class's grad/hess column (``leaf_class[leaf]``). The gather
+        selects per-row columns on-device; everything else is the scalar core.
+        """
+        cp = self._cp
+        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.size)
+        g_d = cp.asarray(np.ascontiguousarray(grad, dtype=np.float64))
+        h_d = cp.asarray(np.ascontiguousarray(hess, dtype=np.float64))
+        cls_d = cp.asarray(
+            np.ascontiguousarray(leaf_class, dtype=np.int64)
+        )[seg_d]
+        gs = g_d[order_d, cls_d]
+        hs = h_d[order_d, cls_d]
+        return self._leaf_fit_stats_core(
+            Zs, gs, hs, seg_d, offsets, linear, len(offsets) - 1, use_f32
+        )
+
+    def leaf_fit_stats_vector(
+        self,
+        Z: np.ndarray,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        order: np.ndarray,
+        offsets: np.ndarray,
+        linear: np.ndarray,
+        use_f32: bool = False,
+    ) -> tuple[np.ndarray, ...]:
+        """Shared-routing multi-output (vector-leaf) statistics on the GPU.
+
+        Mirrors ``core.multioutput.fit_vector_leaves``'s math, which relies on
+        the multi-output invariant that the Hessian is identical across output
+        columns (squared error and the constant-Hessian robust objectives; the
+        host path already uses ``hess[:, 0]`` as the shared weight ``w``). With
+        ``w == h_k`` per column, the per-output Newton cross terms collapse to
+        pure gradient sums: ``Σ w·z·t_kᵀ = −Σ z·g_k`` and ``Σ w·t_k = −Σ g_k``.
+
+        Returns per-``linear``-leaf stats ``(h_sum, s_wz, M, C, t_wsum, z_min,
+        z_max)``: ``h_sum (k,)`` the shared weight total, ``s_wz (k, d) =
+        Σ w·z``, ``M (k, d, d)`` the uncentered weighted Gram, ``C (k, d, K) =
+        Σ w·z·tᵀ = −Σ z·gᵀ``, ``t_wsum (k, K) = Σ w·t = −Σ g``, and the exact
+        z-range guards. The host assembles the centered system via
+        ``A = M − z̄·s_wzᵀ + l2·I`` and ``rhs = C − z̄·t_wsumᵀ`` and keeps the
+        solve + LOO gate in float64 (the constant-leaf bias for every leaf is
+        already computed on the host — it is O(n·K), not worth offloading).
+        """
         import cupyx
 
         cp = self._cp
         n_leaves = len(offsets) - 1
         emb_dim = int(Z.shape[1])
+        n_outputs = int(grad.shape[1])
         k = int(linear.size)
-
-        Z_d = self._device_Z(Z)
-        order_d = cp.asarray(np.ascontiguousarray(order, dtype=np.int64))
+        Zs, seg_d, order_d = self._gather_tree(Z, order, offsets, grad.size)
         g_d = cp.asarray(np.ascontiguousarray(grad, dtype=np.float64))
         h_d = cp.asarray(np.ascontiguousarray(hess, dtype=np.float64))
+        gs = g_d[order_d]  # (n_sel, K)
+        ws = h_d[order_d, 0]  # shared per-row weight (column 0, host contract)
+
+        g_colsum_d = cp.zeros((n_leaves, n_outputs), dtype=cp.float64)
+        cupyx.scatter_add(g_colsum_d, seg_d, gs)
+        h_sum_d = cp.bincount(seg_d, weights=ws, minlength=n_leaves)
+
+        wZs = Zs * ws[:, None]
+        s_wz_d = cp.zeros((n_leaves, emb_dim), dtype=cp.float64)
+        cupyx.scatter_add(s_wz_d, seg_d, wZs)
+
+        M_d = cp.empty((k, emb_dim, emb_dim), dtype=cp.float64)
+        C_d = cp.empty((k, emb_dim, n_outputs), dtype=cp.float64)
+        zmn_d = cp.empty((k, emb_dim), dtype=cp.float64)
+        zmx_d = cp.empty((k, emb_dim), dtype=cp.float64)
+        if use_f32:
+            Z32 = Zs.astype(cp.float32)
+            wZ32 = wZs.astype(cp.float32)
+            g32 = gs.astype(cp.float32)
+        for j in range(k):
+            i = int(linear[j])
+            sl = slice(int(offsets[i]), int(offsets[i + 1]))
+            if use_f32:
+                M_d[j] = (wZ32[sl].T @ Z32[sl]).astype(cp.float64)
+                C_d[j] = -(Z32[sl].T @ g32[sl]).astype(cp.float64)
+            else:
+                M_d[j] = wZs[sl].T @ Zs[sl]
+                C_d[j] = -(Zs[sl].T @ gs[sl])
+            zmn_d[j] = Zs[sl].min(axis=0)
+            zmx_d[j] = Zs[sl].max(axis=0)
+
+        linear_d = cp.asarray(np.ascontiguousarray(linear, dtype=np.int64))
+        out = (
+            cp.asnumpy(h_sum_d[linear_d]),
+            cp.asnumpy(s_wz_d[linear_d]),
+            cp.asnumpy(M_d),
+            cp.asnumpy(C_d),
+            cp.asnumpy(-g_colsum_d[linear_d]),
+            cp.asnumpy(zmn_d),
+            cp.asnumpy(zmx_d),
+        )
+        self._bump(
+            "leaffit_d2h_bytes",
+            8 * k * (emb_dim * emb_dim + emb_dim * n_outputs
+                     + n_outputs + 3 * emb_dim + 1),
+        )
+        return out
+
+    def _gather_tree(self, Z, order, offsets, n_gradhess_values):
+        """Upload/gather one tree's rows: resident Z + order + per-row leaf ids.
+
+        ``n_gradhess_values`` is ``grad.size`` (== ``hess.size``) — rows for
+        the scalar path, rows×K for the multiclass/vector paths — so the H2D
+        byte counter stays accurate across all three entry points.
+        """
+        cp = self._cp
+        Z_d = self._device_Z(Z)
+        order_d = cp.asarray(np.ascontiguousarray(order, dtype=np.int64))
         # Per-row leaf ids for the scatter reductions, built host-side from the
         # (tiny) offsets array.
         sizes = np.diff(offsets)
-        seg = np.repeat(np.arange(n_leaves, dtype=np.int64), sizes)
+        seg = np.repeat(np.arange(len(offsets) - 1, dtype=np.int64), sizes)
         seg_d = cp.asarray(seg)
         # order + seg (int64) and grad + hess (float64) cross per tree.
-        self._bump("leaffit_h2d_bytes", 8 * (2 * order.shape[0] + 2 * grad.shape[0]))
+        self._bump(
+            "leaffit_h2d_bytes",
+            8 * (2 * order.shape[0] + 2 * n_gradhess_values),
+        )
         self._bump("n_leaf_fits", 1)
+        return Z_d[order_d], seg_d, order_d
 
-        # Gather once in leaf order on-device; per-leaf data is a contiguous view.
-        Zs = Z_d[order_d]  # (n_sel, d)
-        gs = g_d[order_d]
-        hs = h_d[order_d]
+    def _leaf_fit_stats_core(
+        self, Zs, gs, hs, seg_d, offsets, linear, n_leaves, use_f32
+    ):
+        """Scalar per-leaf statistics from gathered rows (shared by the scalar
+        and pooled-multiclass entry points; the gather decides which grad/hess
+        column each row reads)."""
+        import cupyx
+
+        cp = self._cp
+        emb_dim = int(Zs.shape[1])
+        k = int(linear.size)
         hZs = Zs * hs[:, None]
 
         g_sum_d = cp.bincount(seg_d, weights=gs, minlength=n_leaves)

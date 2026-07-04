@@ -187,3 +187,139 @@ def test_direct_leaf_model_dispatch_on_device():
         np.testing.assert_allclose(
             lv_dev.weights, lv_host.weights, rtol=1e-6, atol=1e-8
         )
+
+
+def test_leaf_fit_stats_mc_parity_f64():
+    """Pooled-multiclass device stats vs a NumPy reference (allclose)."""
+    rng = np.random.default_rng(3)
+    n, K, d = 4000, 4, 32
+    Z = np.ascontiguousarray(rng.normal(size=(n, d)))
+    grad = np.ascontiguousarray(rng.normal(size=(n, K)))
+    hess = np.ascontiguousarray(np.abs(rng.normal(1.0, 0.3, (n, K))) + 0.1)
+    leaves = []
+    leaf_class = []
+    for c in range(K):
+        parts = np.array_split(np.random.default_rng(60 + c).permutation(n), 5)
+        leaves += [np.sort(p).astype(np.int64) for p in parts]
+        leaf_class += [c] * 5
+    sizes = np.array([r.shape[0] for r in leaves], dtype=np.int64)
+    order = np.concatenate(leaves).astype(np.int64)
+    offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+    leaf_class = np.asarray(leaf_class, dtype=np.int64)
+    linear = np.flatnonzero(sizes >= max(20, d + 2)).astype(np.int64)
+
+    backend = CudaSplitBackend()
+    got = backend.leaf_fit_stats_mc(
+        Z, grad, hess, order, offsets, linear, leaf_class
+    )
+    # Host reference: per-row class column selection, then the scalar math.
+    n_leaves = len(offsets) - 1
+    seg = np.repeat(np.arange(n_leaves), sizes)
+    cls = leaf_class[seg]
+    gs, hs = grad[order, cls], hess[order, cls]
+    Zs = Z[order]
+    g_sum = np.bincount(seg, weights=gs, minlength=n_leaves)
+    h_sum = np.bincount(seg, weights=hs, minlength=n_leaves)
+    k = linear.size
+    s_hz = np.empty((k, d))
+    A = np.empty((k, d, d))
+    gz = np.empty((k, d))
+    zmn = np.empty((k, d))
+    zmx = np.empty((k, d))
+    hZs = Zs * hs[:, None]
+    for j, i in enumerate(linear):
+        sl = slice(offsets[i], offsets[i + 1])
+        s_hz[j] = hZs[sl].sum(axis=0)
+        A[j] = Zs[sl].T @ hZs[sl]
+        gz[j] = gs[sl] @ Zs[sl]
+        zmn[j] = Zs[sl].min(axis=0)
+        zmx[j] = Zs[sl].max(axis=0)
+    for g, w in zip(got, (g_sum, h_sum, s_hz, A, gz, zmn, zmx)):
+        np.testing.assert_allclose(g, w, rtol=1e-9, atol=1e-9)
+
+
+def test_leaf_fit_stats_vector_parity_f64():
+    """Vector-leaf device stats vs a NumPy reference (allclose)."""
+    rng = np.random.default_rng(4)
+    n, K, d = 4000, 5, 48
+    Z = np.ascontiguousarray(rng.normal(size=(n, d)))
+    grad = np.ascontiguousarray(rng.normal(size=(n, K)))
+    hess = np.ones((n, K))
+    sizes = rng.multinomial(n, rng.dirichlet(np.full(8, 0.7)))
+    order = rng.permutation(n).astype(np.int64)
+    offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+    linear = np.flatnonzero(sizes >= max(20, d + 2)).astype(np.int64)
+
+    backend = CudaSplitBackend()
+    got = backend.leaf_fit_stats_vector(Z, grad, hess, order, offsets, linear)
+    Zs, gs = Z[order], grad[order]
+    ws = hess[order][:, 0]
+    k = linear.size
+    h_sum = np.empty(k)
+    s_wz = np.empty((k, d))
+    M = np.empty((k, d, d))
+    C = np.empty((k, d, K))
+    t_wsum = np.empty((k, K))
+    zmn = np.empty((k, d))
+    zmx = np.empty((k, d))
+    for j, i in enumerate(linear):
+        sl = slice(offsets[i], offsets[i + 1])
+        w = ws[sl]
+        h_sum[j] = w.sum()
+        s_wz[j] = (w[:, None] * Zs[sl]).sum(axis=0)
+        M[j] = (Zs[sl] * w[:, None]).T @ Zs[sl]
+        C[j] = -(Zs[sl].T @ gs[sl])
+        t_wsum[j] = -gs[sl].sum(axis=0)
+        zmn[j] = Zs[sl].min(axis=0)
+        zmx[j] = Zs[sl].max(axis=0)
+    for g, w in zip(got, (h_sum, s_wz, M, C, t_wsum, zmn, zmx)):
+        np.testing.assert_allclose(g, w, rtol=1e-9, atol=1e-9)
+
+
+def test_e2e_quality_equivalence_multiclass_forced_device(monkeypatch):
+    from sklearn.metrics import accuracy_score
+
+    from repleafgbm import RepLeafClassifier
+
+    rng = np.random.default_rng(7)
+    n = 6000
+    X = rng.normal(size=(n, 20))
+    y = (X[:, 0] + rng.normal(0, 0.8, n) > 0).astype(int) + (
+        X[:, 1] + rng.normal(0, 0.8, n) > 0.4
+    ).astype(int)
+    Xtr, ytr, Xte, yte = X[:4000], y[:4000], X[4000:], y[4000:]
+
+    def fit_acc(device: bool):
+        monkeypatch.setenv("REPLEAFGBM_CUDA_LEAF_FIT", "1" if device else "0")
+        monkeypatch.setenv("REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS", "0")
+        model = RepLeafClassifier(
+            n_estimators=20, num_leaves=15, leaf_model="embedded_linear",
+            encoder="identity", split_backend="cuda", random_state=0,
+        )
+        model.fit(Xtr, ytr)
+        return accuracy_score(yte, model.predict(Xte))
+
+    assert abs(fit_acc(True) - fit_acc(False)) < 5e-3
+
+
+def test_e2e_quality_equivalence_multioutput_forced_device(monkeypatch):
+    from sklearn.metrics import r2_score
+
+    rng = np.random.default_rng(8)
+    n = 6000
+    X = rng.normal(size=(n, 20))
+    Y = np.column_stack([X @ rng.normal(size=20) for _ in range(3)])
+    Y += rng.normal(0, 0.3, Y.shape)
+    Xtr, Ytr, Xte, Yte = X[:4000], Y[:4000], X[4000:], Y[4000:]
+
+    def fit_r2(device: bool):
+        monkeypatch.setenv("REPLEAFGBM_CUDA_LEAF_FIT", "1" if device else "0")
+        monkeypatch.setenv("REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS", "0")
+        model = RepLeafRegressor(
+            n_estimators=20, num_leaves=15, leaf_model="embedded_linear",
+            encoder="identity", split_backend="cuda", random_state=0,
+        )
+        model.fit(Xtr, Ytr)
+        return r2_score(Yte, model.predict(Xte))
+
+    assert abs(fit_r2(True) - fit_r2(False)) < 5e-3

@@ -104,6 +104,13 @@ tested locally or in CI.
   rtol/atol 1e-9 (atomic-order noise ~1e-12). T4: wide fit 1.72×, narrow 1.23×
   (`experiments/results/2026-07-02-cuda-leaf-ridge-ab.md`); kill switch
   `REPLEAFGBM_CUDA_LEAF_FIT=0`, crossover `REPLEAFGBM_CUDA_LEAF_FIT_MIN_CELLS`.
+  Extended 2026-07-05 to the two remaining leaf-fit paths under the same seam
+  and gates: `leaf_fit_stats_mc` (pooled multiclass — per-row class-column
+  gathers, the exact native `leaf_linear_stats_mc` contract) and
+  `leaf_fit_stats_vector` (shared-routing multi-output vector leaves — relies
+  on the multi-output invariant that Hessian columns are identical, collapsing
+  the per-output Newton cross terms to pure gradient sums; the K-column ridge
+  solve and shared-leverage LOO gate stay host float64).
 - **Phase B2 (shipped, adaptive):** resident histograms + an **adaptive**
   numeric split scan. `build_histograms` now *returns* the
   `(n_features, n_bins_max, 3)` histogram as a resident CuPy array instead of
