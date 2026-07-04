@@ -36,3 +36,6 @@ docs/paper/*.bbl
 docs/paper/*.blg
 docs/paper/*.out
 docs/paper/*.toc
+# Local 10-seed leaderboard run outputs (merged ledgers + shard logs); the
+# committed evidence is experiments/results/leaderboard-grinsztajn_*-10seed.md.
+benchmarks/results/colab10seed/
