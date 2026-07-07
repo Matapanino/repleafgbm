@@ -7,6 +7,40 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-07-07
+
+Feature release: a one-switch GPU opt-in (`device="cuda"`), a self-hosted
+coverage badge, and honest roadmap closure for the scale-out and
+encoder-evolution tracks. The optional `repleafgbm-native` extension is
+unchanged (still 0.3.0).
+
+### Added
+- **`device` parameter** (`"cpu"` default / `"cuda"`) on `RepLeafRegressor` /
+  `RepLeafClassifier` (ADR 0007): a thin macro over the existing knobs —
+  `device="cuda"` resolves `split_backend="auto"` to `"cuda"` (GPU histograms
+  + split scan + device leaf fit) and moves a named `torch_*` encoder's
+  pretraining to the GPU when `encoder_params` does not pin a device.
+  Explicitly set values always win; there is deliberately no `"auto"` device
+  (GPU stays an explicit opt-in); CuPy/GPU absent raises the existing clear
+  `ImportError`; prediction stays on the CPU. No new execution paths and no
+  serialization format change. T4-validated: 51 parity tests pass and the
+  macro is bitwise-equal to spelling `split_backend="cuda"` out.
+- **Coverage badge**, self-hosted: the docs workflow runs the suite with
+  coverage (94% at release) and ships a shields.io endpoint `coverage.json`
+  with the GitHub Pages site; the README badge reads it. No external service
+  or token (Codecov deliberately not adopted).
+
+### Documentation
+- Roadmap honesty pass: `device="cuda"` marked shipped; the stale "GPU leaf
+  fitting (C1) deferred" line corrected (it shipped in v1.10.x); multi-GPU /
+  distributed / out-of-core explicitly **deferred pending demand evidence**;
+  the encoder-evolution track put **on hold** with the accumulated evidence
+  and an explicit resume condition; the Windows/macOS docs/torch source-build
+  smoke closed as not adopted.
+- ADR number collision fixed: the second "ADR 0004" (weighting/metric
+  separation) is now ADR 0008; `docs/api_freeze.md`'s stale
+  `format_version = 6` corrected to 7.
+
 ## [1.10.1] - 2026-07-07
 
 Performance patch: the CUDA device leaf-fit statistics introduced in 1.10.0 now
