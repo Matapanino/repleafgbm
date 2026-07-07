@@ -7,6 +7,30 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-07-07
+
+Performance patch: the CUDA device leaf-fit statistics introduced in 1.10.0 now
+cover the two remaining leaf-fit paths — pooled multiclass and shared-routing
+multi-output vector leaves. No API changes and no numeric-contract changes; the
+optional `repleafgbm-native` extension is unchanged (still 0.3.0).
+
+### Performance
+- **Device leaf-fit statistics for pooled multiclass**
+  (`split_backend="cuda"`): `leaf_fit_stats_mc` gathers each row's class column
+  on device (`grad[order, leaf_class[seg]]`) and reuses the shared scalar stats
+  core; the float64 ridge solve + shared-leverage LOO gate stay on the host,
+  preserving the exact native `leaf_linear_stats_mc` contract. T4: multiclass
+  K=5, 30k x 200f = 1.14x fit (-12.3%, 5/5) vs the pooled native Rust baseline;
+  prediction parity 50/50.
+- **Device leaf-fit statistics for multi-output vector leaves**: the shared
+  hessian-column invariant collapses the per-output Newton cross terms to pure
+  gradient sums, so the device returns `C = -Z'G` and the host assembles the
+  centered K-column system in float64. T4: wide MO5 30k x 200f emb200 = 1.26x
+  (-20.6%, 5/5). The vector path gets its own device crossover
+  `_GPU_LEAF_FIT_MIN_CELLS_VECTOR = 4e6` (narrow cases stay on the fast native
+  path); the `REPLEAFGBM_CUDA_LEAF_FIT[_MIN_CELLS]` kill switches/overrides
+  apply to both paths unchanged.
+
 ## [1.10.0] - 2026-07-05
 
 Feature + performance + evidence release: training verbosity, scale-consistent
