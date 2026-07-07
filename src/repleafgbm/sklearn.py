@@ -118,9 +118,23 @@ class BaseRepLeafModel(BaseEstimator):
             order). See docs/categorical_features.md.
         split_backend: Split kernel implementation: "auto" (compiled Rust
             kernels when the optional ``repleafgbm_native`` extension is
-            installed, NumPy otherwise), "numpy", or "rust". Backends agree
-            to floating-point noise; same seed + same backend is fully
+            installed, NumPy otherwise), "numpy", "rust", or "cuda"
+            (experimental GPU path via the optional CuPy dependency,
+            docs/cuda.md; never chosen by "auto"). Backends agree to
+            floating-point noise; same seed + same backend is fully
             deterministic.
+        device: "cpu" (default) or "cuda". A convenience macro over the
+            existing knobs, not a separate execution path: "cuda" resolves
+            ``split_backend="auto"`` to "cuda" (GPU histograms + split scan +
+            device leaf fit) and fills in ``device="cuda"`` for a named
+            ``torch_*`` encoder's pretraining when ``encoder_params`` does not
+            set one. Explicitly set values always win — e.g. ``device="cuda",
+            split_backend="numpy"`` keeps the NumPy split path and only moves
+            encoder pretraining to the GPU. Requires CuPy and an NVIDIA GPU
+            when it selects the CUDA backend (ImportError otherwise); there is
+            deliberately no "auto" device — GPU use is always an explicit
+            opt-in. Prediction runs on the CPU either way. The GPU path is
+            allclose-not-bitwise vs the CPU backends (docs/cuda.md).
         early_stopping_rounds: Stop training when the first eval_set's metric
             has not improved for this many rounds; ``best_iteration_`` is set
             and ``predict`` uses the best iteration. Requires eval_set.
@@ -234,6 +248,7 @@ class BaseRepLeafModel(BaseEstimator):
         label_smoothing: float = 0.0,
         class_weight: dict | str | None = None,
         random_state: int | None = 42,
+        device: str = "cpu",
     ) -> None:
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -262,6 +277,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.label_smoothing = label_smoothing
         self.class_weight = class_weight
         self.random_state = random_state
+        self.device = device
 
     # ------------------------------------------------------------------ #
     # Fitting
@@ -291,6 +307,9 @@ class BaseRepLeafModel(BaseEstimator):
                 "freeze_encoder=False (encoder updates during boosting) is not "
                 "supported in v0; see docs/roadmap.md"
             )
+        # Validates ``device`` and applies the macro before any work happens;
+        # the resolved backend feeds BoosterParams below.
+        split_backend = self._resolved_split_backend()
 
         # Internal phase profiler (None unless REPLEAFGBM_PROFILE is set); threaded
         # through preprocessing, the encoder, and the booster, then exposed as the
@@ -346,7 +365,7 @@ class BaseRepLeafModel(BaseEstimator):
             cat_smooth=self.cat_smooth,
             min_data_per_group=self.min_data_per_group,
             max_cat_threshold=self.max_cat_threshold,
-            split_backend=self.split_backend,
+            split_backend=split_backend,
             early_stopping_rounds=self.early_stopping_rounds,
             verbose=self.verbose,
         )
@@ -546,16 +565,42 @@ class BaseRepLeafModel(BaseEstimator):
             )
         return dataset
 
+    def _resolved_split_backend(self) -> str:
+        """``split_backend`` after applying the ``device`` macro.
+
+        ``device="cuda"`` only upgrades the "auto" default; an explicit
+        ``split_backend`` always wins (ADR 0007). Also validates ``device``,
+        so :meth:`fit` calls this before doing any work.
+        """
+        if self.device not in ("cpu", "cuda"):
+            raise ValueError(
+                f"device={self.device!r} is not supported; use 'cpu' or "
+                "'cuda' (the CUDA path needs the optional CuPy dependency "
+                "and an NVIDIA GPU, see docs/cuda.md)"
+            )
+        if self.device == "cuda" and self.split_backend == "auto":
+            return "cuda"
+        return self.split_backend
+
     def _build_and_fit_encoder(self, dataset: RepLeafDataset) -> BaseEncoder:
         if self.leaf_model == "raw_linear":
             encoder: BaseEncoder = make_encoder("identity", standardize=True)
         elif isinstance(self.encoder, BaseEncoder):
             encoder = copy.deepcopy(self.encoder)
         else:
+            encoder_params = dict(self.encoder_params or {})
+            # device="cuda" macro: named torch_* encoders pretrain on the GPU
+            # unless encoder_params pins a device. Encoder *instances* are
+            # user-constructed and never mutated (explicit wins, ADR 0007).
+            # getattr: router-extraction estimators reuse this method but do
+            # not expose ``device`` in their signature.
+            device = getattr(self, "device", "cpu")
+            if device == "cuda" and self.encoder.startswith("torch_"):
+                encoder_params.setdefault("device", "cuda")
             encoder = make_encoder(
                 self.encoder,
                 _default_random_state=self.random_state,
-                **(self.encoder_params or {}),
+                **encoder_params,
             )
 
         X_num = dataset.get_numerical_features()

@@ -30,10 +30,12 @@ experiment harness in this repository.
 
 ## Project status & development notes
 
-- **GPU acceleration is an active work in progress.** The CUDA split backend
-  (`split_backend="cuda"`) accelerates wide / multi-output histograms, but
-  performance is still being optimized and is validated only on a limited set of
-  GPUs (e.g. NVIDIA T4). For most CPU workloads the Rust backend
+- **GPU acceleration is an active work in progress.** `device="cuda"` turns on
+  the GPU path in one switch (GPU histograms, split scan, and device leaf fit,
+  plus GPU pretraining for `torch_*` encoders; docs/cuda.md, ADR 0007) — it is
+  a macro over `split_backend="cuda"`, which remains available directly.
+  Performance is still being optimized and is validated only on a limited set
+  of GPUs (e.g. NVIDIA T4). For most CPU workloads the Rust backend
   (`repleafgbm-native`) is the faster, more mature path — treat GPU speed as
   evolving, not final.
 - **Built with Claude Code.** RepLeafGBM's implementation and architecture were

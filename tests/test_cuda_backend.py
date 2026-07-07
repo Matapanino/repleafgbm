@@ -171,6 +171,23 @@ def test_end_to_end_backend_agreement(regression_data):
     np.testing.assert_allclose(preds["numpy"], preds["cuda"], rtol=1e-6, atol=1e-8)
 
 
+def test_device_cuda_macro_matches_explicit_split_backend(regression_data):
+    """``device="cuda"`` (ADR 0007) must select the CUDA backend and follow the
+    exact same code path as spelling ``split_backend="cuda"`` out — same seed +
+    same backend is deterministic, so predictions agree bitwise."""
+    Xtr, ytr, Xte, _ = regression_data
+    common = dict(
+        n_estimators=30, num_leaves=8, min_samples_leaf=10,
+        leaf_model="embedded_linear", random_state=42,
+    )
+    via_macro = RepLeafRegressor(device="cuda", **common).fit(Xtr, ytr)
+    explicit = RepLeafRegressor(split_backend="cuda", **common).fit(Xtr, ytr)
+    assert isinstance(via_macro.booster_.split_backend_, CudaSplitBackend)
+    np.testing.assert_array_equal(
+        via_macro.predict(Xte), explicit.predict(Xte)
+    )
+
+
 def test_end_to_end_with_categoricals_and_missing():
     rng = np.random.default_rng(3)
     n = 1200

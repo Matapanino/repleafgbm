@@ -535,13 +535,22 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
   and multi-output scans stay on the host (allclose, not bitwise; ADR 0005,
   docs/cuda.md). Measured on a Tesla T4: ~52x histogram micro-benchmark; **~2.1x
   end-to-end on a wide fit (50k×200)**, ~1.5x on narrow (100k×30, host path).
-  Validated via the Colab dev loop. GPU leaf fitting (C1) was evaluated and **deferred**
-  (leaf stats are already Rust-accelerated; low marginal value).
-- GPU training (`device="cuda"`), multi-GPU (`multi_gpu=True`,
-  `distributed_strategy="data_parallel"`)
-- Distributed histogram building and leaf assignment
-- Out-of-core training; large-scale tabular dataset support
-- Distributed / data-parallel encoder computation and pretraining
+  Validated via the Colab dev loop. GPU leaf fitting (C1) was initially
+  deferred, then **shipped**: the `fit_backend` seam + GPU leaf ridge (PR #46)
+  and device leaf-fit for pooled multiclass / multi-output vector leaves
+  (PR #55), plus the node-batched device scan and opt-in float32 leaf-fit
+  (v1.9.0).
+- ~~GPU training (`device="cuda"`)~~ **shipped** (ADR 0007): a thin macro
+  over the knobs above — `device="cuda"` resolves `split_backend="auto"` to
+  `"cuda"` and moves named `torch_*` encoder pretraining to the GPU; explicit
+  settings always win, there is no "auto" device, prediction stays on CPU.
+- **Deferred pending demand evidence** (CLAUDE.md's "no premature
+  multi-GPU / distributed framework" guard; revisit only with a concrete
+  user/workload that exceeds a single GPU):
+  - multi-GPU (`multi_gpu=True`, `distributed_strategy="data_parallel"`)
+  - distributed histogram building and leaf assignment
+  - out-of-core training; large-scale tabular dataset support
+  - distributed / data-parallel encoder computation and pretraining
 
 ## Encoder evolution track (cross-cutting, post-v0)
 

@@ -26,19 +26,39 @@ pip install "repleafgbm[cuda]"   # adds cupy-cuda12x
 
 ## Use
 
+The one-switch form (XGBoost-style):
+
 ```python
 from repleafgbm import RepLeafRegressor
 
 model = RepLeafRegressor(
     n_estimators=200,
     leaf_model="embedded_linear",
-    split_backend="cuda",   # explicit-only; "auto" never picks the GPU
+    device="cuda",          # explicit-only; there is no "auto" device
 )
 model.fit(X, y)
 ```
 
-`split_backend="cuda"` raises a clear `ImportError` when CuPy or a usable GPU
-is missing — it never silently falls back, so a typo on a GPU box is visible.
+`device="cuda"` is a thin macro over the existing knobs (ADR 0007), not a
+separate execution path: it resolves `split_backend="auto"` to `"cuda"` (GPU
+histograms + split scan + device leaf fit) and fills in `device="cuda"` for a
+named `torch_*` encoder's pretraining when `encoder_params` does not set one.
+**Explicitly set values always win** — `device="cuda", split_backend="numpy"`
+keeps the CPU split path and only moves encoder pretraining to the GPU.
+Prediction runs on the CPU either way.
+
+The underlying knob remains available directly:
+
+```python
+model = RepLeafRegressor(
+    n_estimators=200,
+    leaf_model="embedded_linear",
+    split_backend="cuda",   # explicit-only; "auto" never picks the GPU
+)
+```
+
+Both spellings raise a clear `ImportError` when CuPy or a usable GPU is
+missing — they never silently fall back, so a typo on a GPU box is visible.
 Use `"numpy"` (always available) or `"rust"` (compiled CPU kernels) otherwise.
 
 ## Performance
