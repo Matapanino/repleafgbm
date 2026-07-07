@@ -414,7 +414,8 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
   cannot reweight rows (`RouterExtraction*`, frozen-route replay) drop weights
   with a `UserWarning` instead of raising; documented fallback is plain loss +
   built-in early-stopping metric + external balanced accuracy. Usage guide
-  (docs/weighting_and_metrics.md), ADR 0004, `get_metric` export. Tests
+  (docs/weighting_and_metrics.md), ADR 0004 + ADR 0008 (renumbered from a
+  duplicate 0004), `get_metric` export. Tests
   (tests/test_weight_capability.py).
 
 ## Phase 25 — OpenML benchmark suite ✅ (2026-06-15)
@@ -582,6 +583,17 @@ Listed here because v0 deliberately freezes the encoder:
 None of these are implemented; all of them interact with the stage-wise
 additive assumption analyzed in docs/math.md and must be designed against it.
 
+**Status (2026-07-07): on hold — the accumulated evidence is against this
+track.** Trainable-embedding gains on regression/binary were within seed
+noise, interaction-aware encoders (`cross`, `torch_mlp`) were negative on real
+data (encoder_interactions.md), and the raw-feature router already covers
+typical real tabular structure. Alternating optimization and its variants
+additionally carry the stage-wise-assumption design risk for that low expected
+value. Resume condition: a real-data niche where RepLeaf demonstrably loses
+*because* the frozen encoder is the bottleneck — then route **one** item
+through the research loop (literature-scout → research-proposer → validating
+experiment), not the list wholesale.
+
 ## OSS quality track
 
 - ~~CI (lint + tests)~~, ~~contribution guide~~ done (Phases 0.5 / 5);
@@ -600,5 +612,14 @@ additive assumption analyzed in docs/math.md and must be designed against it.
   (ubuntu/macos/windows)~~, ~~coverage gate (`pytest-cov` `fail_under`)~~, and
   ~~prebuilt native wheels for `repleafgbm-native` (Linux/macOS/Windows ×
   CPython 3.10-3.12 via maturin + OIDC trusted publishing)~~ done in Phase 28
-  (v1.0.2). Optional: a Codecov badge (needs an external service token) and a
-  Windows/macOS source-build smoke for the docs/torch lanes remain nice-to-haves.
+  (v1.0.2). The two remaining nice-to-haves were resolved 2026-07-07:
+  - ~~Coverage badge~~ done — self-hosted instead of Codecov: the docs job
+    computes coverage and ships a shields.io endpoint `coverage.json` with the
+    GitHub Pages site (no external service or token; Codecov deliberately not
+    adopted — its remaining value, PR diff-coverage comments, can be revisited
+    if ever needed).
+  - Windows/macOS source-build smoke for the docs/torch lanes: **not adopted.**
+    The `test` and `rust-backend` lanes already run on all three OSes; the
+    docs/torch lanes are pure-Python on top of that, so the smoke would mostly
+    detect upstream packaging drift at the cost of a slower, more brittle CI.
+    Revisit only on an actual user-reported OS-specific docs/torch failure.

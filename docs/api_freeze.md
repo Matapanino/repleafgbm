@@ -48,7 +48,7 @@ private names, and exact message text.
 
 ## Serialization
 
-Format is at `format_version = 6` with the full v1→v6 read ladder tested
+Format is at `format_version = 7` with the full v1→v7 read ladder tested
 (`docs/serialization.md`, `tests/test_serialization.py`). Declared **stable**:
 within a major version a model saved by version X loads in every version ≥ X;
 format changes bump the version and ship a migration test.
