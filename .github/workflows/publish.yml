@@ -94,3 +94,49 @@ jobs:
           # Idempotent re-runs (e.g. re-tag) skip already-published files
           # instead of failing on the duplicate.
           skip-existing: true
+
+  github-release:
+    # Convention (docs/publishing_checklist.md): every version tag gets a
+    # GitHub Release whose notes are that version's CHANGELOG section, with
+    # the sdist+wheel attached. Runs only after the PyPI publish succeeded so
+    # a Release never points at a version PyPI does not have.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Extract this version's CHANGELOG section
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          ver="${TAG#v}"
+          # Lines between "## [<ver>]" and the next "## [" header, minus
+          # leading blanks. Literal match (index==1), so dots in the version
+          # are not regex wildcards.
+          awk -v h="## [$ver]" \
+            'index($0, h) == 1 {flag=1; next}
+             /^## \[/ {flag=0}
+             flag && (found || NF) {found=1; print}' CHANGELOG.md > notes.md
+          if ! [ -s notes.md ]; then
+            echo "No CHANGELOG section found for $ver — add it before tagging." >&2
+            exit 1
+          fi
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Idempotent like the PyPI step: a re-run on an existing Release
+          # updates its notes instead of failing.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* --verify-tag --latest \
+              --title "$TAG" --notes-file notes.md
+          fi
