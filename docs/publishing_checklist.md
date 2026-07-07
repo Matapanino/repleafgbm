@@ -86,9 +86,30 @@ Manual one-time actions (PyPI / GitHub side — cannot be done from the repo):
       dry run) before the first `v1.0.2` tag.
 - [ ] **Dry run** `publish-native.yml` via `workflow_dispatch` and confirm all
       3 OS × 3 Python wheels + sdist build and upload to TestPyPI.
-- [ ] Optional: a Codecov (or shields.io endpoint) coverage badge — deferred
-      because it needs an external-service token; the CI `fail_under` gate is the
-      enforced contract.
+- [x] ~~Optional: a Codecov (or shields.io endpoint) coverage badge~~ — done in
+      v1.11.0 without an external service: the docs workflow ships a shields.io
+      endpoint `coverage.json` with the Pages site (Codecov deliberately not
+      adopted); the CI `fail_under` gate remains the enforced contract.
+
+## Release process (per version — current convention)
+
+1. Feature/fix PRs merge to `main` (ci-success required; source changes go
+   through the qa-verifier + core-reviewer ship loop).
+2. Release PR: bump `pyproject.toml` + `src/repleafgbm/__init__.py`, move the
+   `[Unreleased]` CHANGELOG content into a dated `## [X.Y.Z]` section. The
+   native package (`repleafgbm-native`) versions independently — bump it only
+   when `native/` changed.
+3. Merge, then tag the merge commit `vX.Y.Z` and push the tag. That triggers:
+   - `publish.yml` → sdist+wheel → PyPI via OIDC (tag/version match verified);
+   - `publish-native.yml` (native wheels) when relevant;
+   - the **`github-release` job** (added 2026-07-08): after the PyPI publish
+     succeeds it creates the GitHub Release for the tag — title `vX.Y.Z`,
+     notes extracted from that version's CHANGELOG section, sdist+wheel
+     attached, marked Latest. It fails loudly if the CHANGELOG section is
+     missing, and a re-run updates the existing Release instead of failing.
+4. Nothing manual remains on the GitHub side. (v1.9.0–v1.10.1 predate the
+   automation and were backfilled by hand on 2026-07-08; earlier releases
+   v1.0.0–v1.8.0 already had hand-written Release objects.)
 
 ## Working-copy location
 
