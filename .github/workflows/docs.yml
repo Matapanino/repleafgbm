@@ -32,8 +32,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[docs]"
+      - run: pip install -e ".[docs,dev]"
       - run: bash scripts/build_docs.sh site  # render into the Pages root
+      # Self-hosted coverage badge: run the suite once with coverage and ship a
+      # shields.io endpoint JSON alongside the API reference — no external
+      # service or token (the Codecov alternative was deliberately not
+      # adopted). The README badge points at
+      # https://img.shields.io/endpoint?url=.../coverage.json. A failing suite
+      # fails this job (and blocks the docs deploy), which is intended: main
+      # should be green.
+      - name: Compute coverage badge
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          python -m pytest tests/ -q --cov=repleafgbm --cov-report=
+          pct=$(python -m coverage report --format=total)
+          if   [ "$pct" -ge 90 ]; then color="brightgreen"
+          elif [ "$pct" -ge 80 ]; then color="green"
+          elif [ "$pct" -ge 70 ]; then color="yellowgreen"
+          else color="orange"; fi
+          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' \
+            "$pct" "$color" > site/coverage.json
+          cat site/coverage.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

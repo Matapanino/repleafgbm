@@ -1,6 +1,10 @@
-# ADR 0004 — Sample/class weighting and the loss/metric separation
+# ADR 0008 — Sample/class weighting and the loss/metric separation
 
-Status: accepted (2026-06-16, Phase 28 + capability follow-up)
+Status: accepted (2026-06-16, Phase 28 + capability follow-up). Renumbered
+from a duplicate "ADR 0004" on 2026-07-07 — it was filed the same day as
+ADR 0004 (sample weights via gradient/Hessian scaling) under the same number;
+0004 keeps the *mechanism* decision, this ADR keeps the *policy* decision
+(loss/metric separation + the `_supports_sample_weight` capability layer).
 
 ## Context
 

@@ -1,6 +1,7 @@
 # RepLeafGBM
 
 ![CI](https://github.com/Matapanino/repleafgbm/actions/workflows/ci.yml/badge.svg)
+![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fmatapanino.github.io%2Frepleafgbm%2Fcoverage.json)
 ![PyPI](https://img.shields.io/pypi/v/repleafgbm.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
