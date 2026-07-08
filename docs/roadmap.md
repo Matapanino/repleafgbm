@@ -498,9 +498,31 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
   and noisy-embedded targets. Provisional guidance: symmetric for strong
   low-order shared structure / multiclass / oblivious regularization; depthwise
   as a balanced, never-worst depth-bounded middle; leafwise otherwise.
-- **Open follow-ups:** a **real-data** policy comparison (the gate before any
-  default change — `benchmarks/openml_suite.py` + `benchmark_real_data.py`, a
-  capacity-match sensitivity sweep, ≥5 seeds, a ≥1σ-separation decision rule);
+- ✅ **Real-data gate (2026-07-08): keep `leafwise` — gate closed.** The
+  prescribed comparison ran on the 9 legacy OpenML datasets, 5 seeds, 24 arms
+  (3 policies × {constant, adaptive} × a capacity-match sweep: d∈{5,6},
+  leaf-wise in free and depth-capped shapes, `min_samples_leaf`∈{20,50}) via
+  `experiments/grow_policy_real_data.py` (resumable ledger + Friedman/CD/
+  Wilcoxon + paired ≥1σ flags; opt-in `--grow-policy-arms` /
+  `--grow-policy-sweep` arms also added to the two benchmark runners). The
+  pre-registered rule — beat *both* matched leaf-wise shapes by ≥1σ on a
+  majority of datasets — was decisively not met: best challenger 3/9
+  (symmetric, adaptive, d5 msl50); depthwise 0/9 in every regime (at
+  `num_leaves=2**d` it is provably identical to the capped leaf-wise shape,
+  and at the stock `2**d - 1` budget it still collapses onto it). The capacity
+  sweep confirms symmetric's synthetic edge was substantially a regularization
+  artifact — a depth-capped leaf-wise arm neutralizes it. Two corrections to
+  the synthetic-era record: multiclass **is** covered by symmetric (per-class
+  scalar routing trees; `NotImplementedError` is vector multi-output only),
+  and its multiclass edge survives only conditionally (vehicle under
+  adaptive, 5–6σ; wine is a tie). Surviving niches (opt-in guidance, **not**
+  defaults): symmetric + adaptive leaves on shared-structure multiclass
+  (vehicle) and small/categorical-heavy binary (credit_g, 1.5–4σ despite the
+  ordered-threshold categorical handicap); it loses 1.5–6.8σ on larger clean
+  numeric sets. Report
+  `experiments/results/2026-07-08-grow-policy-real-data.md`; verdict
+  `experiments/results/2026-07-08-grow-policy-real-data-verdict.md`.
+- **Open follow-ups (feature work; no longer gating any default):**
   categorical-subset and multi-output symmetric; a compact oblivious storage +
   bitwise-indexed predictor.
 

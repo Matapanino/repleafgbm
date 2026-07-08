@@ -240,13 +240,18 @@ def _split_indices(idx, y_sub, task, rng):
             np.array(te, dtype=int))
 
 
-def _repleaf_configs(learned_encoders: bool) -> list[tuple[str, dict]]:
+def _repleaf_configs(learned_encoders: bool,
+                     grow_policy_arms: bool = False) -> list[tuple[str, dict]]:
     """RepLeafGBM leaderboard arms. The stock arms — a constant leaf, embedded
     linear leaves over the identity and PLR (fixed) encoders, and the adaptive
     per-leaf LOO gate plus its in-sample baseline — are always present; the
     learned-encoder arms (supervised-pretrained, then frozen to NumPy) are opt-in
     via ``--learned-encoders`` and need the ``[torch]`` extra — skipped silently
-    if torch is absent, matching ``benchmark_real_data.py``."""
+    if torch is absent, matching ``benchmark_real_data.py``. ``grow_policy_arms``
+    adds capacity-matched depthwise/symmetric arms (ADR 0006) plus the
+    depth-capped leaf-wise shape; the stock arms are the leaf-wise free shape.
+    Symmetric covers multiclass (per-class scalar trees); its scalar-only v0
+    limit (ADR 0006) applies to vector multi-output targets only."""
     configs = [
         ("RepLeaf constant", dict(leaf_model="constant")),
         ("RepLeaf embedded_linear", dict(leaf_model="embedded_linear",
@@ -277,11 +282,29 @@ def _repleaf_configs(learned_encoders: bool) -> list[tuple[str, dict]]:
         except ImportError:
             print("  [skip] learned encoders: torch not installed "
                   "(`pip install \"repleafgbm[torch]\"`)")
+    if grow_policy_arms:
+        # Effective-capacity match at depth 5 (<= 32 leaves). Symmetric ignores
+        # num_leaves (complete 2**5 tree); depthwise keeps the stock 31-leaf
+        # budget — at num_leaves=32 it is identical to the capped leaf-wise
+        # shape (both grow every valid split to depth 5). The full sensitivity
+        # sweep lives in experiments/grow_policy_real_data.py.
+        for lm in ("constant", "adaptive"):
+            configs += [
+                (f"RepLeaf {lm} leafwise_capped_d5",
+                 dict(leaf_model=lm, encoder="identity", grow_policy="leafwise",
+                      num_leaves=32, max_depth=5)),
+                (f"RepLeaf {lm} depthwise_d5",
+                 dict(leaf_model=lm, encoder="identity", grow_policy="depthwise",
+                      num_leaves=31, max_depth=5)),
+                (f"RepLeaf {lm} symmetric_d5",
+                 dict(leaf_model=lm, encoder="identity", grow_policy="symmetric",
+                      num_leaves=32, max_depth=5)),
+            ]
     return configs
 
 
 def run_dataset(name, data_id, task, max_rows, seeds, strict=False,
-                learned_encoders=False):
+                learned_encoders=False, grow_policy_arms=False):
     X_all, y_all, task = load_dataset(name, data_id, task)
     X_all, cats = clean_features(X_all)
     classes = np.unique(y_all) if task != "regression" else None
@@ -320,13 +343,14 @@ def run_dataset(name, data_id, task, max_rows, seeds, strict=False,
 
         # --- RepLeafGBM variants (fit on the dataset objects) --------------
         native_cls = RepLeafRegressor if task == "regression" else RepLeafClassifier
-        for label, kwargs in _repleaf_configs(learned_encoders):
+        for label, kwargs in _repleaf_configs(learned_encoders, grow_policy_arms):
+            # Arm kwargs override the shared defaults (e.g. the grow-policy
+            # arms set their own num_leaves/max_depth capacity match).
+            params = dict(n_estimators=400, learning_rate=0.1, num_leaves=31,
+                          min_samples_leaf=20, early_stopping_rounds=ES_ROUNDS)
+            params.update(kwargs)
             try:
-                model = native_cls(
-                    n_estimators=400, learning_rate=0.1, num_leaves=31,
-                    min_samples_leaf=20, early_stopping_rounds=ES_ROUNDS,
-                    random_state=seed, **kwargs,
-                )
+                model = native_cls(random_state=seed, **params)
                 t0 = time.perf_counter()
                 model.fit(train_ds, eval_set=[valid_ds])
                 fit_s = time.perf_counter() - t0
@@ -334,6 +358,10 @@ def run_dataset(name, data_id, task, max_rows, seeds, strict=False,
                         else model.predict_proba(test_ds))
                 p, s = metrics(yte, pred)
                 record(label, p, s, fit_s)
+            except NotImplementedError as exc:
+                # Documented v0 limitation (symmetric is scalar-only, ADR
+                # 0006) — an n/a even under --strict, not a run failure.
+                print(f"  [n/a] {label} on {name}: {exc}")
             except Exception as exc:  # pragma: no cover - robustness
                 if strict:
                     raise
@@ -421,6 +449,13 @@ def main() -> None:
         help="also benchmark the learned encoders torch_periodic_plr / torch_mlp "
              "(needs the [torch] extra; slower — supervised pretraining per fit)",
     )
+    parser.add_argument(
+        "--grow-policy-arms", action="store_true",
+        help="also benchmark capacity-matched grow_policy arms (leafwise capped, "
+             "depthwise, symmetric at max_depth=5; ADR 0006); symmetric covers "
+             "multiclass and records n/a only on vector multi-output targets "
+             "(none in this suite)",
+    )
     parser.add_argument("--out", type=str, default=None,
                         help="output markdown path; default is the canonical "
                              "experiments/results/openml_benchmark.md (pass a "
@@ -449,7 +484,8 @@ def main() -> None:
         "",
         f"Settings: max_rows={args.max_rows}, seeds={seeds}, "
         f"early_stopping={ES_ROUNDS} rounds, "
-        f"learned_encoders={bool(args.learned_encoders)}.",
+        f"learned_encoders={bool(args.learned_encoders)}, "
+        f"grow_policy_arms={bool(args.grow_policy_arms)}.",
         "",
         *_version_manifest(selected, seeds, args),
     ]
@@ -462,7 +498,8 @@ def main() -> None:
         try:
             rows, task, n_used, n_cats = run_dataset(
                 name, data_id, task, args.max_rows, seeds, strict=args.strict,
-                learned_encoders=args.learned_encoders)
+                learned_encoders=args.learned_encoders,
+                grow_policy_arms=args.grow_policy_arms)
         except Exception as exc:
             if args.strict:
                 raise

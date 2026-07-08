@@ -119,7 +119,8 @@ def logloss(y, p):
 
 def run_dataset(name: str, max_rows: int, seeds: list[int],
                 robust: bool = False,
-                gate_margin_sweep: bool = False) -> tuple[dict, str, int, int]:
+                gate_margin_sweep: bool = False,
+                grow_policy_sweep: bool = False) -> tuple[dict, str, int, int]:
     X_all, y_all, task = load_dataset(name)
     X_all, cats = clean_features(X_all)
     score = rmse if task == "regression" else logloss
@@ -244,12 +245,32 @@ def run_dataset(name: str, max_rows: int, seeds: list[int],
                  dict(leaf_model="adaptive", encoder="identity", leaf_gate_margin=m))
                 for m in (0.0, 0.05)
             ]
+        if grow_policy_sweep:
+            # Capacity-matched grow_policy arms (ADR 0006): the stock arms
+            # above are the leaf-wise free shape. Symmetric ignores num_leaves
+            # (complete 2**5 tree); depthwise keeps the stock 31-leaf budget —
+            # at num_leaves=32 it is identical to the capped leaf-wise shape.
+            # All four datasets here are scalar tasks, so symmetric never
+            # raises. Full sweep: experiments/grow_policy_real_data.py.
+            for lm in ("constant", "adaptive"):
+                repleaf_configs += [
+                    (f"RepLeaf {lm} leafwise capped d5 (es)",
+                     dict(leaf_model=lm, encoder="identity",
+                          grow_policy="leafwise", num_leaves=32, max_depth=5)),
+                    (f"RepLeaf {lm} depthwise d5 (es)",
+                     dict(leaf_model=lm, encoder="identity",
+                          grow_policy="depthwise", num_leaves=31, max_depth=5)),
+                    (f"RepLeaf {lm} symmetric d5 (es)",
+                     dict(leaf_model=lm, encoder="identity",
+                          grow_policy="symmetric", num_leaves=32, max_depth=5)),
+                ]
         for label, kwargs in repleaf_configs:
-            model = native_cls(
-                n_estimators=400, learning_rate=0.1, num_leaves=31,
-                min_samples_leaf=20, early_stopping_rounds=ES_ROUNDS,
-                random_state=seed, **kwargs,
-            )
+            # Arm kwargs override the shared defaults (the grow-policy arms set
+            # their own num_leaves/max_depth capacity match).
+            params = dict(n_estimators=400, learning_rate=0.1, num_leaves=31,
+                          min_samples_leaf=20, early_stopping_rounds=ES_ROUNDS)
+            params.update(kwargs)
+            model = native_cls(random_state=seed, **params)
             t0 = time.perf_counter()
             model.fit(train_ds, eval_set=[valid_ds])
             record(label, model, rep_pred, train_ds, ytr, test_ds, yte,
@@ -282,6 +303,10 @@ def main() -> None:
     parser.add_argument("--gate-margin-sweep", action="store_true",
                         help="also fit adaptive leaves at leaf_gate_margin in "
                              "{0.0, 0.05} (sensitivity around the 0.01 default)")
+    parser.add_argument("--grow-policy-sweep", action="store_true",
+                        help="also fit capacity-matched grow_policy arms "
+                             "(leafwise capped / depthwise / symmetric at "
+                             "max_depth=5; ADR 0006)")
     parser.add_argument("--out", type=str, default=None,
                         help="output markdown path; default is the canonical "
                              "experiments/results/real_data_validation.md (pass a "
@@ -311,7 +336,8 @@ def main() -> None:
         print(f"=== dataset: {name} ===", flush=True)
         rows, task, n_used, n_cats = run_dataset(name, args.max_rows, seeds,
                                                   robust=args.robust,
-                                                  gate_margin_sweep=args.gate_margin_sweep)
+                                                  gate_margin_sweep=args.gate_margin_sweep,
+                                                  grow_policy_sweep=args.grow_policy_sweep)
         ordered = sorted(rows.values(), key=lambda r: np.mean(r.test))
         metric_name = "rmse" if task == "regression" else "logloss"
         for r in ordered:
