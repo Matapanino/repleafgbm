@@ -7,6 +7,19 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+### Added
+- LightGBM-style deterministic sampling controls on both estimators:
+  `subsample` plus `subsample_freq` for periodically refreshed row subsets,
+  and `colsample_bytree` for a fresh raw-feature subset per tree. Unsampled
+  rows are excluded from split histograms and leaf fits, `min_samples_leaf`
+  counts sampled rows, and fitted boosters expose compact row-count/fingerprint
+  and feature-index diagnostics.
+
+### Serialization
+- Sampling hyperparameters round-trip in the existing model config. No format
+  bump is needed: the layout is unchanged and older saved configs load with
+  disabled-sampling defaults.
+
 ## [1.11.0] - 2026-07-07
 
 Feature release: a one-switch GPU opt-in (`device="cuda"`), a self-hosted

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from repleafgbm import RepLeafClassifier, RepLeafRegressor
+from repleafgbm.core.sampling import TreeSampler
 
 
 def _data(seed=0, n_rows=320, n_features=10):
@@ -54,8 +55,11 @@ def test_sampling_is_exactly_reproducible_at_fixed_seed():
     second = RepLeafRegressor(**params).fit(X, y)
     assert _tree_signature(first) == _tree_signature(second)
     np.testing.assert_array_equal(first.predict(X), second.predict(X))
-    for a, b in zip(first.booster_.sampled_rows_, second.booster_.sampled_rows_):
-        np.testing.assert_array_equal(a, b)
+    assert first.booster_.sampled_row_counts_ == second.booster_.sampled_row_counts_
+    assert (
+        first.booster_.sampled_row_fingerprints_
+        == second.booster_.sampled_row_fingerprints_
+    )
     for a, b in zip(first.booster_.sampled_features_, second.booster_.sampled_features_):
         np.testing.assert_array_equal(a, b)
 
@@ -91,12 +95,13 @@ def test_rows_refresh_by_frequency_and_columns_refresh_per_tree():
         random_state=29,
         split_backend="numpy",
     ).fit(X, y)
-    rows = model.booster_.sampled_rows_
+    row_counts = model.booster_.sampled_row_counts_
+    row_fingerprints = model.booster_.sampled_row_fingerprints_
     features = model.booster_.sampled_features_
-    assert [len(value) for value in rows] == [150] * 5
-    np.testing.assert_array_equal(rows[0], rows[1])
-    np.testing.assert_array_equal(rows[2], rows[3])
-    assert not np.array_equal(rows[0], rows[2])
+    assert row_counts == [150] * 5
+    assert row_fingerprints[0] == row_fingerprints[1]
+    assert row_fingerprints[2] == row_fingerprints[3]
+    assert row_fingerprints[0] != row_fingerprints[2]
     assert [len(value) for value in features] == [4] * 5
     assert any(not np.array_equal(features[0], value) for value in features[1:])
     for tree, allowed in zip(model.booster_.trees_, features):
@@ -116,8 +121,12 @@ def test_min_samples_leaf_is_counted_on_sampled_rows():
         random_state=3,
         split_backend="numpy",
     ).fit(X, y)
-    assert len(model.booster_.sampled_rows_[0]) == 20
+    assert model.booster_.sampled_row_counts_[0] == 20
     assert model.booster_.trees_[0].n_leaves == 1
+    sampled = TreeSampler(100, 4, 0.2, 1, 1.0, 3).rows(0)
+    init = y.mean()
+    expected_bias = np.sum(y[sampled] - init) / (sampled.shape[0] + 1.0)
+    assert model.booster_.leaf_values_[0].bias[0] == pytest.approx(expected_bias)
 
 
 def test_subsample_freq_zero_disables_row_sampling():
@@ -129,15 +138,15 @@ def test_subsample_freq_zero_disables_row_sampling():
         subsample_freq=0,
         random_state=5,
     ).fit(X, y)
-    for rows in model.booster_.sampled_rows_:
-        np.testing.assert_array_equal(rows, np.arange(120))
+    assert model.booster_.sampled_row_counts_ == [120] * 3
+    assert len(set(model.booster_.sampled_row_fingerprints_)) == 1
 
 
 def test_sampling_numpy_rust_parity():
     pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
     X, y = _data(n_rows=400)
     predictions = {}
-    signatures = {}
+    trees = {}
     for backend in ("numpy", "rust"):
         model = RepLeafRegressor(
             n_estimators=8,
@@ -151,9 +160,13 @@ def test_sampling_numpy_rust_parity():
             split_backend=backend,
         ).fit(X, y)
         predictions[backend] = model.predict(X)
-        signatures[backend] = _tree_signature(model)
-    assert signatures["numpy"] == signatures["rust"]
-    np.testing.assert_array_equal(predictions["numpy"], predictions["rust"])
+        trees[backend] = model.booster_.trees_
+    for numpy_tree, rust_tree in zip(trees["numpy"], trees["rust"]):
+        np.testing.assert_array_equal(numpy_tree.feature, rust_tree.feature)
+        np.testing.assert_array_equal(numpy_tree.threshold, rust_tree.threshold)
+    np.testing.assert_allclose(
+        predictions["numpy"], predictions["rust"], rtol=1e-12, atol=1e-12
+    )
 
 
 def test_sampling_save_load_roundtrip(tmp_path):
@@ -190,7 +203,38 @@ def test_classifier_uses_same_sampling_semantics():
         random_state=41,
         split_backend="numpy",
     ).fit(X, y > np.median(y))
-    assert len(model.booster_.sampled_rows_) == 3
-    assert all(len(rows) == 120 for rows in model.booster_.sampled_rows_)
+    assert model.booster_.sampled_row_counts_ == [120] * 3
     assert len(model.booster_.sampled_features_) == 3
     assert all(len(features) == 4 for features in model.booster_.sampled_features_)
+
+
+def test_multiclass_and_multioutput_sampling_paths():
+    X, y = _data(n_rows=240, n_features=8)
+    multiclass = RepLeafClassifier(
+        n_estimators=2,
+        num_leaves=4,
+        min_samples_leaf=8,
+        leaf_model="constant",
+        subsample=0.5,
+        subsample_freq=1,
+        colsample_bytree=0.5,
+        random_state=43,
+        split_backend="numpy",
+    ).fit(X, np.digitize(y, np.quantile(y, [1 / 3, 2 / 3])))
+    assert multiclass.booster_.sampled_row_counts_ == [120, 120]
+    assert len(multiclass.booster_.sampled_features_) == 6
+    assert all(len(features) == 4 for features in multiclass.booster_.sampled_features_)
+
+    multioutput = RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=4,
+        min_samples_leaf=8,
+        leaf_model="constant",
+        subsample=0.5,
+        subsample_freq=1,
+        colsample_bytree=0.5,
+        random_state=47,
+        split_backend="numpy",
+    ).fit(X, np.column_stack([y, y + X[:, 3]]))
+    assert multioutput.booster_.sampled_row_counts_ == [120, 120]
+    assert len(multioutput.booster_.sampled_features_) == 2

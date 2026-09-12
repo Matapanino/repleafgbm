@@ -101,6 +101,9 @@ inside prediction, with the offending file named in the error:
   `test_save_load_roundtrip` in tests/test_multioutput.py).
 - Custom (callable) eval metrics are stored by name only; a reloaded model
   must be handed the metric object again before refitting with eval sets.
+- Additive estimator controls such as `subsample`, `subsample_freq`, and
+  `colsample_bytree` live in `model_config.json` and do not change the layout;
+  older configs load with their disabled defaults.
 
 ## Future extensions (not implemented)
 
