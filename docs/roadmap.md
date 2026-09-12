@@ -14,7 +14,8 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 - Native NumPy prototype (histogram split search, leaf-wise growth)
 - Regression (squared error) and binary classification (logistic)
 - Constant leaf, embedded linear leaf, raw linear leaf
-- Identity / simplified-PLR encoders, random projection to `max_leaf_emb_dim`
+- Identity / simplified-PLR encoders; explicit random, learned, or no
+  reduction to `max_leaf_emb_dim`; numerical-column-routed composition
 - Frozen encoder enforced (`freeze_encoder=True` only)
 - `RepLeafDataset` (pandas + categorical ordinal encoding, embedding cache)
 - Directory-based save/load

@@ -31,11 +31,12 @@ lives* is a dataset policy, not something scattered through the booster.
 
 | Lever | Status |
 |---|---|
-| `max_leaf_emb_dim` + random projection (cap Z width) | implemented |
+| `max_leaf_emb_dim` + explicit random/learned/none reduction | implemented |
+| Numerical-column routing via composable `column_subset` encoder | implemented |
 | Lazy transform (Z computed only if the leaf model needs it) | implemented |
 | Embedding cache with explicit invalidation | implemented (minimal) |
 | `transform_batch(dataset, rows)` row-chunked transforms | future (API reserved) |
-| Low-rank / learned compression instead of random projection | future |
+| Learned target-correlation compression instead of random projection | implemented |
 | float32 storage for Z | future (trivial, needs accuracy check) |
 | GPU-resident Z with device transfer policy | future |
 | Out-of-core raw features (memory-mapped / Arrow) | future |
@@ -64,3 +65,10 @@ rows × 100 features raw ≈ 800 MB float64 (before Z), so v0 is comfortable in
 the 10⁴–10⁵ row regime and usable at 10⁶ with narrow Z. Past that, the
 out-of-core and GPU items in the roadmap apply; the dataset API is the seam
 where they plug in.
+
+`leaf_reduction="none"` is intentionally uncapped. At the S6E9 probe shape,
+a 665-dimensional float64 embedding and at most 127 leaves produces a batched
+Gram of about 449 MB per tree; accumulation is about 4.3e10 multiply-adds per
+tree and the solves about 1.2e10 FLOPs. The native scalar leaf-stat kernel is
+used only through 256 dimensions, so routed/narrow encoders are the practical
+choice before selecting `"none"` for a wide PLR.
