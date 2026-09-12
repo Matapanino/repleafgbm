@@ -7,6 +7,13 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-09-12
+
+Feature release: explicit learned-leaf dimensionality control, routed numeric
+encoders, and deterministic LightGBM-style row/column sampling. Defaults keep
+1.11 behavior. The optional `repleafgbm-native` extension is unchanged at
+0.3.0.
+
 ### Added
 - Explicit learned-leaf dimensionality controls on both estimators:
   `leaf_reduction={"random_projection", "target_correlation", "none"}` keeps
@@ -30,6 +37,11 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 - Sampling hyperparameters round-trip in the existing model config. No format
   bump is needed: the layout is unchanged and older saved configs load with
   disabled-sampling defaults.
+
+### Documentation
+- Added S6E9-scale profiling at 130k rows × 151 columns. Across three 50-round
+  Rust runs, median wall time was 8.2972 seconds (0.16594 s/round); histogram
+  construction, split scan, and one-time binning were the top three phases.
 
 ## [1.11.0] - 2026-07-07
 
