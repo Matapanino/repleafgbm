@@ -151,12 +151,19 @@ targets (docs/math.md). Overfitting guards, all implemented:
   constant. Added in Phase 7 after real-data validation showed unguarded
   leaf-linear extrapolation blowing up on feature outliers
   (experiments/results/real_data_validation.md),
-- `max_leaf_emb_dim`: encoders wider than this are reduced by a fixed,
-  seeded Gaussian random projection. Note: experiments showed the projection
-  consistently *hurts* accuracy (experiments/results/plr_projection_gap.md),
-  so defaults are chosen to avoid it (PLR n_bins=4, max_leaf_emb_dim=64) and
-  a UserWarning fires when it engages; it remains as an OOM/cost guard, not
-  an accuracy feature.
+- `max_leaf_emb_dim` + `leaf_reduction`: encoders wider than the configured
+  width use the selected explicit policy. `"random_projection"` is the
+  behavior-preserving default, `"target_correlation"` learns a deterministic
+  projection from the initial Newton residual, and `"none"` leaves the width
+  uncapped. A warning fires only when a reduction is applied and the fitted
+  `leaf_embedding_input_dim_`, `leaf_embedding_dim_`, and `leaf_reduction_`
+  attributes expose the resolved path. The fitted `linear_leaf_fraction_`
+  records how often the dimensionality/sample gate retained a linear leaf.
+- `encoder="column_subset"` composes any registered base encoder with a list
+  of zero-based positions in `RepLeafDataset.get_numerical_features()`. For
+  example, `encoder_params={"columns": [0, 3], "base_name": "plr",
+  "base_config": {"n_bins": 4}}` applies PLR only to those two raw numeric
+  columns; categorical/full-matrix positions are deliberately not accepted.
 
 ## Multiclass training
 

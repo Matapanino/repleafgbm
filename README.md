@@ -148,7 +148,8 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `min_samples_leaf` | `20` | Minimum rows per leaf. |
 | `leaf_model` | `"embedded_linear"` | Leaf predictor (see below). |
 | `encoder` | `"identity"` | Representation `z_theta(x)` (see below). |
-| `max_leaf_emb_dim` | `64` | Cap on embedding dimension (random projection above it). |
+| `max_leaf_emb_dim` | `64` | Resolved embedding width when reduction is enabled. |
+| `leaf_reduction` | `"random_projection"` | Wide-embedding policy: compatibility projection, learned `"target_correlation"`, or `"none"`. |
 | `l2_leaf` | `1.0` | Ridge penalty for leaf models. |
 | `early_stopping_rounds` | `None` | Stop when an `eval_set` metric plateaus. |
 | `random_state` | `42` | Seed; same seed ⇒ same model. |

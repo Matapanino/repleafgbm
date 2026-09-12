@@ -1,5 +1,6 @@
 """Leaf embedding width, reduction, and numerical-column routing tests."""
 
+import json
 import warnings
 
 import numpy as np
@@ -13,6 +14,7 @@ from repleafgbm.encoders import (
     RandomProjectionEncoder,
     SimplePLREncoder,
     TargetCorrelationEncoder,
+    make_encoder,
 )
 
 
@@ -87,6 +89,27 @@ def test_reduction_warning_only_fires_when_width_is_reduced():
         ).fit(X, y)
     assert model.leaf_reduction_ == "none"
     assert model.leaf_embedding_input_dim_ == model.leaf_embedding_dim_ == 133
+
+
+def test_default_reduction_matches_explicit_compatibility_path():
+    X, y = _wide_data(n_rows=70)
+    common = dict(
+        n_estimators=1,
+        num_leaves=2,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        encoder="plr",
+        encoder_params={"n_bins": 4},
+        max_leaf_emb_dim=64,
+        random_state=13,
+    )
+    with pytest.warns(UserWarning):
+        default = RepLeafRegressor(**common).fit(X, y)
+    with pytest.warns(UserWarning):
+        explicit = RepLeafRegressor(
+            **common, leaf_reduction="random_projection"
+        ).fit(X, y)
+    np.testing.assert_array_equal(default.predict(X), explicit.predict(X))
 
 
 def test_target_reduction_recovers_wide_signal_lost_by_random_projection():
@@ -181,6 +204,10 @@ def test_reduction_determinism_and_save_load(tmp_path, reduction):
     np.testing.assert_array_equal(first.encoder_.transform(X), second.encoder_.transform(X))
     pred = first.predict(X)
     first.save_model(tmp_path / reduction)
+    config = json.loads((tmp_path / reduction / "model_config.json").read_text())
+    assert config["format_version"] == (
+        8 if reduction == "target_correlation" else 3
+    )
     loaded = RepLeafRegressor.load_model(tmp_path / reduction)
     np.testing.assert_allclose(loaded.predict(X), pred)
     assert loaded.leaf_reduction == reduction
@@ -198,12 +225,50 @@ def test_column_subset_encoder_state_roundtrip():
     np.testing.assert_allclose(fresh.transform(X), encoder.transform(X))
 
 
+def test_column_subset_routes_model_seed_to_nested_encoder():
+    encoder = make_encoder(
+        "column_subset",
+        _default_random_state=123,
+        columns=[0],
+        base_name="periodic",
+        base_config={},
+    )
+    assert encoder.base.random_state == 123
+
+
+def test_column_subset_model_save_load_uses_format_v8(tmp_path):
+    X, y = _wide_data(n_rows=100)
+    model = RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=2,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        encoder="column_subset",
+        encoder_params={
+            "columns": [0, 2, 4],
+            "base_name": "plr",
+            "base_config": {"n_bins": 3},
+        },
+        leaf_reduction="none",
+        random_state=9,
+    ).fit(X, y)
+    prediction = model.predict(X)
+    model.save_model(tmp_path / "subset")
+    config = json.loads((tmp_path / "subset" / "model_config.json").read_text())
+    assert config["format_version"] == 8
+    loaded = RepLeafRegressor.load_model(tmp_path / "subset")
+    np.testing.assert_allclose(loaded.predict(X), prediction)
+    assert loaded.encoder_.columns == (0, 2, 4)
+
+
 def test_invalid_reduction_and_subset_are_actionable():
     X, y = _wide_data(n_rows=40)
     with pytest.raises(ValueError, match="leaf_reduction"):
         RepLeafRegressor(leaf_reduction="magic").fit(X, y)
     with pytest.raises(ValueError, match="numerical-feature index"):
         ColumnSubsetEncoder(SimplePLREncoder(), columns=[133]).fit(X, y)
+    with pytest.raises(ValueError, match="non-empty sequence"):
+        ColumnSubsetEncoder(SimplePLREncoder(), columns=None)
 
 
 def test_classifier_exposes_same_reduction_controls():

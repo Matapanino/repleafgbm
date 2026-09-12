@@ -7,6 +7,21 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+### Added
+- Explicit learned-leaf dimensionality controls on both estimators:
+  `leaf_reduction={"random_projection", "target_correlation", "none"}` keeps
+  the existing seeded projection as the compatibility default while allowing
+  supervised frozen reduction or a deliberately uncapped embedding. Fitted
+  input/output dimensions, the applied policy, and linear-leaf fraction are
+  inspectable attributes.
+- Composable `column_subset` encoder for applying PLR or another registered
+  encoder to selected positions in the numerical-feature block.
+
+### Serialization
+- Model format v8 is written only for routed or target-correlation encoder
+  configs; the recursive config/state round-trips, versions 1–7 remain
+  readable, and unaffected models retain their older written format.
+
 ## [1.11.0] - 2026-07-07
 
 Feature release: a one-switch GPU opt-in (`device="cuda"`), a self-hosted

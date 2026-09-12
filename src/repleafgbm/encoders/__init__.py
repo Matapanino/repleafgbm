@@ -25,6 +25,8 @@ from repleafgbm.encoders.identity import IdentityEncoder
 from repleafgbm.encoders.periodic import PeriodicEncoder
 from repleafgbm.encoders.plr import SimplePLREncoder
 from repleafgbm.encoders.projection import RandomProjectionEncoder
+from repleafgbm.encoders.subset import ColumnSubsetEncoder
+from repleafgbm.encoders.target_reduction import TargetCorrelationEncoder
 from repleafgbm.encoders.torch_encoders import (
     TorchMLPEncoder,
     TorchPeriodicEncoder,
@@ -37,6 +39,7 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "plr": SimplePLREncoder,
     "periodic": PeriodicEncoder,
     "cross": CrossInteractionEncoder,
+    "column_subset": ColumnSubsetEncoder,
     # Learned encoders: torch needed only at fit time (see torch_encoders).
     "torch_periodic": TorchPeriodicEncoder,
     "torch_plr": TorchPLREncoder,
@@ -56,6 +59,13 @@ def make_encoder(name: str, _default_random_state: int | None = None, **kwargs) 
         raise ValueError(
             f"Unknown encoder {name!r}. Available encoders: {sorted(_ENCODER_REGISTRY)}"
         )
+    if name == ColumnSubsetEncoder.name:
+        base = encoder_from_config(
+            kwargs.pop("base_name"),
+            kwargs.pop("base_config", {}),
+            _default_random_state=_default_random_state,
+        )
+        return ColumnSubsetEncoder(base, **kwargs)
     cls = _ENCODER_REGISTRY[name]
     if (
         _default_random_state is not None
@@ -66,14 +76,27 @@ def make_encoder(name: str, _default_random_state: int | None = None, **kwargs) 
     return cls(**kwargs)
 
 
-def encoder_from_config(name: str, config: dict) -> BaseEncoder:
+def encoder_from_config(
+    name: str, config: dict, _default_random_state: int | None = None
+) -> BaseEncoder:
     """Rebuild an encoder (possibly projection-wrapped) from serialized config."""
     if name == RandomProjectionEncoder.name:
-        base = make_encoder(config["base_name"], **config["base_config"])
+        base = encoder_from_config(
+            config["base_name"],
+            config["base_config"],
+            _default_random_state=_default_random_state,
+        )
         return RandomProjectionEncoder(
             base, out_dim=config["out_dim"], random_state=config["random_state"]
         )
-    return make_encoder(name, **config)
+    if name == TargetCorrelationEncoder.name:
+        base = encoder_from_config(
+            config["base_name"],
+            config["base_config"],
+            _default_random_state=_default_random_state,
+        )
+        return TargetCorrelationEncoder(base, out_dim=config["out_dim"])
+    return make_encoder(name, _default_random_state=_default_random_state, **config)
 
 
 __all__ = [
@@ -87,6 +110,8 @@ __all__ = [
     "TorchPeriodicPLREncoder",
     "TorchMLPEncoder",
     "RandomProjectionEncoder",
+    "TargetCorrelationEncoder",
+    "ColumnSubsetEncoder",
     "make_encoder",
     "encoder_from_config",
 ]

@@ -26,7 +26,11 @@ from repleafgbm.core.objectives import BaseObjective, get_objective
 from repleafgbm.core.profiling import profiler_from_env, timed
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
-from repleafgbm.encoders import RandomProjectionEncoder, make_encoder
+from repleafgbm.encoders import (
+    RandomProjectionEncoder,
+    TargetCorrelationEncoder,
+    make_encoder,
+)
 from repleafgbm.encoders.base import BaseEncoder
 from repleafgbm.utils.validation import as_sample_weight
 
@@ -103,11 +107,16 @@ class BaseRepLeafModel(BaseEstimator):
         freeze_encoder: Must be True in v0. Encoder parameters are fitted once
             before boosting and never updated during boosting.
         max_leaf_emb_dim: Upper bound on the embedding dimension used by leaf
-            models. Wider encoders are reduced with a fixed random projection
-            — but note that projection consistently degraded accuracy in
-            experiments (experiments/results/plr_projection_gap.md); a
-            UserWarning is emitted when it engages. Prefer reducing the
-            encoder dimension (e.g. fewer PLR bins) instead.
+            models when ``leaf_reduction`` is not "none". This is the resolved
+            output width after reduction, not a hidden native-engine cap.
+        leaf_reduction: How encoder outputs wider than ``max_leaf_emb_dim`` are
+            reduced: "random_projection" (compatibility default),
+            "target_correlation" (learned supervised projection using the
+            initial Newton residual), or "none" (no cap). A warning names the
+            resolved input/output dimensions only when reduction is applied.
+            With "none", a 665-D PLR embedding can require a float64 batched
+            Gram of about 449 MB per 127-leaf tree, about 4.3e10 accumulation
+            MACs and 1.2e10 solve FLOPs at 96,289 rows; use it deliberately.
         l2_leaf: Ridge penalty for leaf models and the split gain denominator.
         max_bins: Histogram bins per feature for split search.
         cat_smooth / min_data_per_group / max_cat_threshold: Categorical
@@ -235,6 +244,7 @@ class BaseRepLeafModel(BaseEstimator):
         encoder_params: dict | None = None,
         freeze_encoder: bool = True,
         max_leaf_emb_dim: int = 64,
+        leaf_reduction: str = "random_projection",
         l2_leaf: float = 1.0,
         max_bins: int = 256,
         cat_smooth: float = 10.0,
@@ -264,6 +274,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.encoder_params = encoder_params
         self.freeze_encoder = freeze_encoder
         self.max_leaf_emb_dim = max_leaf_emb_dim
+        self.leaf_reduction = leaf_reduction
         self.l2_leaf = l2_leaf
         self.max_bins = max_bins
         self.cat_smooth = cat_smooth
@@ -346,6 +357,10 @@ class BaseRepLeafModel(BaseEstimator):
                 if leaf_model.uses_embeddings
                 else None
             )
+            if self.encoder_ is None:
+                self.leaf_embedding_input_dim_ = 0
+                self.leaf_embedding_dim_ = 0
+                self.leaf_reduction_ = "none"
 
         eval_sets = self._prepare_eval_sets(eval_set)
 
@@ -381,6 +396,7 @@ class BaseRepLeafModel(BaseEstimator):
             profiler=profiler,
         )
         self.evals_result_ = self.booster_.evals_result_
+        self.linear_leaf_fraction_ = self._linear_leaf_fraction()
         if profiler is not None:
             #: Per-phase fit wall-clock seconds (only when profiling is enabled);
             #: ``_predict_raw`` adds a "predict" entry. Internal/benchmark aid.
@@ -583,6 +599,16 @@ class BaseRepLeafModel(BaseEstimator):
         return self.split_backend
 
     def _build_and_fit_encoder(self, dataset: RepLeafDataset) -> BaseEncoder:
+        reduction = getattr(self, "leaf_reduction", "random_projection")
+        allowed = ("none", "random_projection", "target_correlation")
+        if reduction not in allowed:
+            raise ValueError(
+                f"leaf_reduction={reduction!r} is not supported; use one of {allowed}"
+            )
+        if self.max_leaf_emb_dim < 1:
+            raise ValueError(
+                f"max_leaf_emb_dim must be >= 1, got {self.max_leaf_emb_dim}"
+            )
         if self.leaf_model == "raw_linear":
             encoder: BaseEncoder = make_encoder("identity", standardize=True)
         elif isinstance(self.encoder, BaseEncoder):
@@ -614,26 +640,54 @@ class BaseRepLeafModel(BaseEstimator):
         # supervised pretraining target and loss so learned encoders honor it;
         # fixed encoders ignore it.
         weight = dataset.sample_weight
+        target = self._pretrain_target(dataset, sample_weight=weight)
         encoder.fit(
             X_num,
-            y=self._pretrain_target(dataset, sample_weight=weight),
+            y=target,
             sample_weight=weight,
         )
-        if encoder.output_dim > self.max_leaf_emb_dim:
+        self.leaf_embedding_input_dim_ = encoder.output_dim
+        self.leaf_reduction_ = "none"
+        if encoder.output_dim > self.max_leaf_emb_dim and reduction != "none":
+            input_dim = encoder.output_dim
             warnings.warn(
-                f"Encoder output dimension ({encoder.output_dim}) exceeds "
-                f"max_leaf_emb_dim ({self.max_leaf_emb_dim}); applying a random "
-                "projection. Projection consistently degraded accuracy in our "
-                "experiments (experiments/results/plr_projection_gap.md) — "
-                "prefer a lower-dimensional encoder (e.g. plr with fewer "
-                "n_bins) or a larger max_leaf_emb_dim.",
+                f"Encoder output dimension {input_dim} exceeds max_leaf_emb_dim "
+                f"{self.max_leaf_emb_dim}; leaf_reduction={reduction!r} reduces "
+                f"{input_dim} to {self.max_leaf_emb_dim} dimensions. Random "
+                "projection degraded accuracy in experiments/results/"
+                "plr_projection_gap.md; inspect leaf_embedding_input_dim_, "
+                "leaf_embedding_dim_, and leaf_reduction_ after fit.",
                 UserWarning,
                 stacklevel=2,
             )
-            encoder = RandomProjectionEncoder(
-                encoder, out_dim=self.max_leaf_emb_dim, random_state=self.random_state
-            ).fit(X_num)
+            if reduction == "random_projection":
+                encoder = RandomProjectionEncoder(
+                    encoder,
+                    out_dim=self.max_leaf_emb_dim,
+                    random_state=self.random_state,
+                ).fit_reduction(X_num)
+            else:
+                encoder = TargetCorrelationEncoder(
+                    encoder, out_dim=self.max_leaf_emb_dim
+                ).fit_reduction(X_num, target, weight)
+            self.leaf_reduction_ = reduction
+        self.leaf_embedding_dim_ = encoder.output_dim
         return encoder
+
+    def _linear_leaf_fraction(self) -> float:
+        """Fraction of prediction-used leaves retaining nonzero linear weights."""
+        booster = self.booster_
+        n_values = len(booster.leaf_values_)
+        if booster.best_iteration_ is not None:
+            n_values = booster.best_iteration_ * getattr(booster, "n_classes", 1)
+        values = booster.leaf_values_[:n_values]
+        total = sum(len(value.bias) for value in values)
+        linear = sum(
+            int(np.any(value.weights != 0.0, axis=tuple(range(1, value.weights.ndim))).sum())
+            for value in values
+            if value.weights.shape[1] > 0
+        )
+        return linear / max(total, 1)
 
     def _pretrain_target(
         self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
@@ -847,6 +901,18 @@ class BaseRepLeafModel(BaseEstimator):
         model.metadata_ = parts["metadata"]
         model.n_features_in_ = parts["metadata"].n_features
         model.feature_names_in_ = np.asarray(parts["metadata"].feature_names, dtype=object)
+        if model.encoder_ is None:
+            model.leaf_embedding_input_dim_ = model.leaf_embedding_dim_ = 0
+            model.leaf_reduction_ = "none"
+        else:
+            model.leaf_embedding_dim_ = model.encoder_.output_dim
+            if isinstance(model.encoder_, (RandomProjectionEncoder, TargetCorrelationEncoder)):
+                model.leaf_embedding_input_dim_ = model.encoder_.base.output_dim
+                model.leaf_reduction_ = model.encoder_.name
+            else:
+                model.leaf_embedding_input_dim_ = model.encoder_.output_dim
+                model.leaf_reduction_ = "none"
+        model.linear_leaf_fraction_ = model._linear_leaf_fraction()
         model._restore_extra_config(parts["config"])
         return model
 
