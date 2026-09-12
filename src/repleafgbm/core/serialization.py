@@ -38,7 +38,7 @@ from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.encoders import encoder_from_config
 from repleafgbm.encoders.base import BaseEncoder
 
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 #: Older versions this build can still read. v1 lacks per-node
 #: ``missing_left`` (defaulted to True, the convention those trees used);
 #: v2 lacks categorical subset splits (``left_categories``), which v1/v2
@@ -54,8 +54,9 @@ FORMAT_VERSION = 7
 #: tree_ensemble.json) for the robust regression objectives (huber/quantile),
 #: written only when the transform is non-identity — so squared-error /
 #: multiclass / multi-output-squared models keep writing v3/v5/v6 and load
-#: bit-for-bit on older builds; older models load with the identity transform.
-READABLE_VERSIONS = (1, 2, 3, 4, 5, 6, 7)
+#: bit-for-bit on older builds; older models load with the identity transform;
+#: v8 identifies recursively composed routed/learned-reduction encoders.
+READABLE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8)
 
 
 def save_model_dir(
@@ -86,12 +87,14 @@ def save_model_dir(
         # Each schema addition bumps the written version only for models that
         # use it, so unaffected models stay readable by older builds:
         # multi-output -> 6, multiclass -> 5, frequency maps -> 4, else -> 3.
-        # Non-identity target standardization (robust regression objectives)
-        # bumps to v7 and serializes the per-output (loc, scale); see load.
+        # Non-identity target standardization bumps to v7. Recursive routed or
+        # learned-reduction encoder configs supersede that with v8; see load.
         target_loc = getattr(booster, "target_loc_", 0.0)
         target_scale = getattr(booster, "target_scale_", 1.0)
         has_transform = bool(np.any(target_loc != 0.0) or np.any(target_scale != 1.0))
-        if has_transform:
+        if encoder is not None and _encoder_uses_v8(encoder):
+            version = 8
+        elif has_transform:
             version = 7
         elif multioutput:
             version = 6
@@ -283,6 +286,14 @@ def _require_files(path: Path, names: tuple[str, ...]) -> None:
             f"Model directory {path} is missing {missing}; "
             "it is incomplete or corrupted"
         )
+
+
+def _encoder_uses_v8(encoder: BaseEncoder) -> bool:
+    """Whether an encoder tree uses the recursive config introduced in v8."""
+    if encoder.name in ("column_subset", "target_correlation"):
+        return True
+    base = getattr(encoder, "base", None)
+    return isinstance(base, BaseEncoder) and _encoder_uses_v8(base)
 
 
 def _require_keys(obj: dict, keys: tuple[str, ...], file_name: str) -> None:

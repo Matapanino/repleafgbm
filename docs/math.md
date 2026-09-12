@@ -296,5 +296,7 @@ Two design choices worth recording:
   basis — not the full embedding of Gorishniy et al. (2022). The *learned*
   `torch_plr` is that full embedding (a per-feature Linear+ReLU over the basis,
   pretrained then frozen).
-- Random projection to `max_leaf_emb_dim` preserves structure only in
-  expectation; informative dimensions may be diluted.
+- The compatibility random projection to `max_leaf_emb_dim` preserves
+  structure only in expectation; informative dimensions may be diluted.
+  `leaf_reduction="target_correlation"` or a routed encoder can preserve a
+  narrower supervised representation, while `"none"` accepts the full cost.

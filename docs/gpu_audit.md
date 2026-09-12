@@ -69,13 +69,15 @@
 ### Random Projection
 
 - Complexity: `O(n_rows * base_dim * out_dim)`, CPU BLAS.
-- Current design uses random projection only as a dimension cap when encoder output exceeds `max_leaf_emb_dim`.
+- `leaf_reduction` explicitly selects random projection, supervised
+  target-correlation reduction, or no cap when encoder output exceeds
+  `max_leaf_emb_dim`.
 - GPU benefit is workload-dependent and likely secondary because the projection already reduces downstream leaf-fit cost but may degrade accuracy. A fused/batched projection in an encoder transform pipeline is preferable to a standalone CUDA feature.
 
 ### Per-leaf Ridge / Linear Model Fitting
 
 - Constant leaves use a Python list comprehension and per-leaf sums.
-- Embedded leaves gather rows in leaf order, compute per-leaf stats, then solve batched normal equations. Rust `leaf_linear_stats` accelerates stats for `emb_dim <= 32`; wide embeddings use NumPy/BLAS per leaf; all solves are CPU.
+- Embedded leaves gather rows in leaf order, compute per-leaf stats, then solve batched normal equations. Rust `leaf_linear_stats` accelerates scalar float64 stats for `emb_dim <= 256`; wider embeddings use NumPy/BLAS per leaf; all solves are CPU.
 - Complexity is roughly `O(total_leaf_rows * emb_dim^2 + n_linear_leaves * emb_dim^3)`. For high `max_leaf_emb_dim`, this can dominate once CUDA accelerates histograms.
 - GPU ridge may help for large batches of leaves and medium/wide embeddings, but it requires careful batched Cholesky/solve and data-residency planning for `Z`, leaf indices, and grad/hess.
 

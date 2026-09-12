@@ -38,6 +38,10 @@ class RandomProjectionEncoder(BaseEncoder):
         sample_weight: np.ndarray | None = None,
     ) -> RandomProjectionEncoder:
         self.base.fit(X_num, y, sample_weight)
+        return self.fit_reduction(X_num)
+
+    def fit_reduction(self, X_num: np.ndarray) -> RandomProjectionEncoder:
+        """Fit only the projection, assuming ``base`` is already fitted."""
         base_dim = self.base.output_dim
         if self.out_dim >= base_dim:
             raise ValueError(

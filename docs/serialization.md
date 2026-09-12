@@ -9,7 +9,7 @@
 - Stay diff-able and inspectable where possible (JSON for structure, npz for
   numeric payloads).
 
-## Directory layout (format_version = 3 / 4 / 5 / 6)
+## Directory layout (format_version = 3 / 4 / 5 / 6 / 7 / 8)
 
 ```text
 model_dir/
@@ -56,6 +56,9 @@ What each file owns:
 - **encoder_config.json / encoder_state.npz** — split between constructor
   config (JSON) and fitted arrays (npz). A projection-wrapped encoder nests
   its base encoder's config and prefixes its state keys with `base__`.
+  Routed and target-correlation encoders use the same recursive convention;
+  models containing either write v8 so older readers fail clearly instead of
+  misinterpreting an unknown nested encoder.
 - **feature_metadata.json** — the train-time `FeatureMetadata`; applied to
   prediction inputs so categorical codes and column order always match.
   `frequency_maps` (Phase 15 frequency encoding) is written only when used —
@@ -85,7 +88,7 @@ inside prediction, with the offending file named in the error:
 
 - `format_version` increments on any breaking layout change.
 - Loaders reject unknown versions rather than guessing.
-- Supported read versions: **1 through 6**. v1 directories lack
+- Supported read versions: **1 through 8**. v1 directories lack
   `missing_left` (loaded with the all-True default those trees were trained
   under, covered by `test_format_v1_compat`); v1/v2 lack `left_categories`
   (categorical subset splits, v3; covered by `test_format_v2_compat`);
@@ -99,6 +102,9 @@ inside prediction, with the offending file named in the error:
   ensembles (`n_outputs` + vector `init_score`, 2-D bias / 3-D weights) and
   is only written for multi-output models (covered by
   `test_save_load_roundtrip` in tests/test_multioutput.py).
+  v7 adds optional robust-target location/scale arrays. v8 identifies models
+  containing the recursive `column_subset` or `target_correlation` encoder
+  config; models not using those encoders retain their older written version.
 - Custom (callable) eval metrics are stored by name only; a reloaded model
   must be handed the metric object again before refitting with eval sets.
 
