@@ -270,9 +270,14 @@ class TreeGrower:
         self.grow_policy = grow_policy
 
     def grow(
-        self, grad: np.ndarray, hess: np.ndarray
+        self,
+        grad: np.ndarray,
+        hess: np.ndarray,
+        rows: np.ndarray | None = None,
+        features: np.ndarray | None = None,
     ) -> tuple[Tree, list[np.ndarray]]:
-        """Grow a tree on the full training set; returns (tree, rows-per-leaf)."""
+        """Grow a tree on selected rows/features; return rows per fitted leaf."""
+        self.splitter.set_active_features(features)
         if self.grow_policy == "depthwise":
             # A device backend with the batched-scan gate on scans each level's
             # frontier in one kernel launch; the level-synchronous grower is
@@ -281,17 +286,17 @@ class TreeGrower:
             if grad.ndim == 1 and getattr(
                 self.splitter.backend, "supports_batched_scan", False
             ):
-                return self._grow_depthwise_batched(grad, hess)
-            return self._grow_depthwise(grad, hess)
+                return self._grow_depthwise_batched(grad, hess, rows)
+            return self._grow_depthwise(grad, hess, rows)
         if self.grow_policy == "symmetric":
-            return self._grow_symmetric(grad, hess)
-        return self._grow_leafwise(grad, hess)
+            return self._grow_symmetric(grad, hess, rows)
+        return self._grow_leafwise(grad, hess, rows)
 
     # ------------------------------------------------------------------ #
     # Growth policies
     # ------------------------------------------------------------------ #
     def _grow_leafwise(
-        self, grad: np.ndarray, hess: np.ndarray
+        self, grad: np.ndarray, hess: np.ndarray, rows: np.ndarray | None = None
     ) -> tuple[Tree, list[np.ndarray]]:
         """Best-gain-first growth (the historical default).
 
@@ -310,7 +315,7 @@ class TreeGrower:
         loop — the produced tree is **bitwise-identical** (asserted in
         tests/test_batched_scan.py).
         """
-        store = self._new_store()
+        store = self._new_store(rows)
         counter = itertools.count()  # deterministic heap tie-break
         heap: list[_GrowCandidate] = []
         root_rows = store.node_rows[0]
@@ -339,7 +344,7 @@ class TreeGrower:
         return self._finalize(store)
 
     def _grow_depthwise(
-        self, grad: np.ndarray, hess: np.ndarray
+        self, grad: np.ndarray, hess: np.ndarray, rows: np.ndarray | None = None
     ) -> tuple[Tree, list[np.ndarray]]:
         """Level-order growth to ``max_depth`` (XGBoost ``grow_policy=depthwise``).
 
@@ -347,7 +352,7 @@ class TreeGrower:
         level; ``_can_split`` stops it at ``max_depth``. ``num_leaves`` remains an
         optional secondary cap (raise it to allow a full depth-``d`` tree).
         """
-        store = self._new_store()
+        store = self._new_store(rows)
         counter = itertools.count()  # deterministic tie-break inside _GrowCandidate
         frontier: deque[_GrowCandidate] = deque()
         root_rows = store.node_rows[0]
@@ -368,7 +373,7 @@ class TreeGrower:
         return self._finalize(store)
 
     def _grow_depthwise_batched(
-        self, grad: np.ndarray, hess: np.ndarray
+        self, grad: np.ndarray, hess: np.ndarray, rows: np.ndarray | None = None
     ) -> tuple[Tree, list[np.ndarray]]:
         """Depthwise growth that scans each level's frontier in ONE backend call.
 
@@ -382,7 +387,7 @@ class TreeGrower:
         tests/test_batched_scan.py). Used only when the backend opts in
         (``supports_batched_scan``) for scalar targets.
         """
-        store = self._new_store()
+        store = self._new_store(rows)
         counter = itertools.count()  # same tie-break order as the FIFO path
         root_rows = store.node_rows[0]
         if not self._can_split(root_rows, depth=0):
@@ -436,7 +441,7 @@ class TreeGrower:
         return out
 
     def _grow_symmetric(
-        self, grad: np.ndarray, hess: np.ndarray
+        self, grad: np.ndarray, hess: np.ndarray, rows: np.ndarray | None = None
     ) -> tuple[Tree, list[np.ndarray]]:
         """CatBoost-style oblivious growth: one shared split per level.
 
@@ -453,7 +458,7 @@ class TreeGrower:
                 "grow_policy='symmetric' does not support multi-output / vector "
                 "targets in v0; use grow_policy='leafwise' or 'depthwise'."
             )
-        store = self._new_store()
+        store = self._new_store(rows)
         root_rows = store.node_rows[0]
         if not self._can_split(root_rows, depth=0):
             return self._finalize(store)  # root-only tree
@@ -487,10 +492,10 @@ class TreeGrower:
     # ------------------------------------------------------------------ #
     # Shared scaffolding
     # ------------------------------------------------------------------ #
-    def _new_store(self) -> _NodeStore:
-        """Fresh node store holding just the root (all rows)."""
-        n_rows = self.splitter.binned.shape[0]
-        all_rows = np.arange(n_rows, dtype=np.int64)
+    def _new_store(self, rows: np.ndarray | None = None) -> _NodeStore:
+        """Fresh node store holding the full or sampled root rows."""
+        if rows is None:
+            rows = np.arange(self.splitter.binned.shape[0], dtype=np.int64)
         return _NodeStore(
             feature=[-1],
             threshold=[np.nan],
@@ -498,7 +503,7 @@ class TreeGrower:
             right=[-1],
             gain=[0.0],
             left_cats=[None],
-            node_rows={0: all_rows},
+            node_rows={0: rows},
         )
 
     def _commit_split(

@@ -165,6 +165,26 @@ targets (docs/math.md). Overfitting guards, all implemented:
   "base_config": {"n_bins": 4}}` applies PLR only to those two raw numeric
   columns; categorical/full-matrix positions are deliberately not accepted.
 
+## Row and column sampling
+
+`subsample` follows LightGBM's enabling rule: `subsample_freq=0` disables row
+sampling, while a positive frequency reuses a without-replacement row subset
+for that many rounds. The subset is the tree root, so unsampled rows enter
+neither histograms nor leaf-model statistics and `min_samples_leaf` counts only
+sampled rows. Training scores are still updated for every row by routing the
+full training matrix through the fitted tree.
+
+`colsample_bytree` draws a fresh raw-feature subset for every tree (including
+each class tree in multiclass rounds). `Splitter` slices the already-built
+histogram before calling the existing backend scan and remaps the winning
+feature index. This host-side design keeps NumPy/Rust semantics aligned and
+works with older native wheels; it does not yet avoid histogram construction
+for excluded features. The frozen encoder and its inputs are unaffected.
+
+All draws use `check_random_state(random_state)`. Boosters retain compact
+`sampled_row_counts_`, `sampled_row_fingerprints_`, and `sampled_features_`
+diagnostics; full row-index sets are intentionally not retained.
+
 ## Multiclass training
 
 Targets with three or more classes use softmax boosting with one tree per

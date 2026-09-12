@@ -16,11 +16,20 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   inspectable attributes.
 - Composable `column_subset` encoder for applying PLR or another registered
   encoder to selected positions in the numerical-feature block.
+- LightGBM-style deterministic sampling controls on both estimators:
+  `subsample` plus `subsample_freq` for periodically refreshed row subsets,
+  and `colsample_bytree` for a fresh raw-feature subset per tree. Unsampled
+  rows are excluded from split histograms and leaf fits, `min_samples_leaf`
+  counts sampled rows, and fitted boosters expose compact row-count/fingerprint
+  and feature-index diagnostics.
 
 ### Serialization
 - Model format v8 is written only for routed or target-correlation encoder
   configs; the recursive config/state round-trips, versions 1–7 remain
   readable, and unaffected models retain their older written format.
+- Sampling hyperparameters round-trip in the existing model config. No format
+  bump is needed: the layout is unchanged and older saved configs load with
+  disabled-sampling defaults.
 
 ## [1.11.0] - 2026-07-07
 

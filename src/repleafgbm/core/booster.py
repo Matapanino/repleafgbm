@@ -25,6 +25,7 @@ from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import BaseObjective
 from repleafgbm.core.prediction import predict_raw
 from repleafgbm.core.profiling import PhaseProfiler, timed
+from repleafgbm.core.sampling import TreeSampler, row_fingerprint
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
 from repleafgbm.core.verbose import EvalLogger
@@ -69,6 +70,13 @@ class BoosterParams:
     cat_smooth: float = 10.0
     min_data_per_group: int = 100
     max_cat_threshold: int = 32
+    #: LightGBM-style row/column sampling. ``subsample_freq=0`` disables row
+    #: sampling; otherwise rows refresh at that round interval. Features are
+    #: sampled independently for every tree.
+    subsample: float = 1.0
+    subsample_freq: int = 0
+    colsample_bytree: float = 1.0
+    random_state: int | None = 42
     #: Split kernel implementation: "auto" (Rust extension when installed,
     #: NumPy otherwise), "numpy", or "rust".
     split_backend: str = "auto"
@@ -112,6 +120,11 @@ class Booster:
         #: scale. See docs/proposals/robust-target-standardization.md.
         self.target_loc_: float | np.ndarray = 0.0
         self.target_scale_: float | np.ndarray = 1.0
+        #: Compact fit diagnostics. Row sets are represented by counts and
+        #: fingerprints to avoid retaining O(n_rows * n_trees) indices.
+        self.sampled_row_counts_: list[int] = []
+        self.sampled_row_fingerprints_: list[str] = []
+        self.sampled_features_: list[np.ndarray] = []
 
     def __getstate__(self) -> dict:
         # ``split_backend_`` is a runtime-only handle that can wrap an
@@ -194,7 +207,12 @@ class Booster:
         X_raw = dataset.get_raw_features()
         tree_iter = iter(trees)
 
-        def next_tree(grad: np.ndarray, hess: np.ndarray) -> tuple[Tree, list[np.ndarray]]:
+        def next_tree(
+            grad: np.ndarray,
+            hess: np.ndarray,
+            rows: np.ndarray | None = None,
+            features: np.ndarray | None = None,
+        ) -> tuple[Tree, list[np.ndarray]]:
             tree = next(tree_iter)
             leaf_idx = tree.apply(X_raw)
             leaf_rows = [np.where(leaf_idx == i)[0] for i in range(tree.n_leaves)]
@@ -260,10 +278,26 @@ class Booster:
         best_score: float | None = None
         rounds_since_best = 0
         logger = EvalLogger(p.verbose)
+        sampler = TreeSampler(
+            y.shape[0],
+            dataset.n_features,
+            p.subsample,
+            p.subsample_freq,
+            p.colsample_bytree,
+            p.random_state,
+        )
+        X_raw = dataset.get_raw_features()
         for it in range(n_rounds):
             grad, hess = self.objective.grad_hess(y, F)
             grad, hess = weight_grad_hess(grad, hess, w)
-            tree, leaf_rows = next_tree(grad, hess)
+            sampled_rows = sampler.rows(it)
+            sampled_features = sampler.features()
+            self.sampled_row_counts_.append(sampled_rows.shape[0])
+            self.sampled_row_fingerprints_.append(row_fingerprint(sampled_rows))
+            self.sampled_features_.append(sampled_features.copy())
+            tree, leaf_rows = next_tree(
+                grad, hess, sampled_rows, sampled_features
+            )
             with timed(profiler, "leaf_fit"):
                 leaf_values = leaf_model.fit_leaves(leaf_rows, grad, hess, Z)
             self.trees_.append(tree)
@@ -272,11 +306,16 @@ class Booster:
             with timed(profiler, "eval"):
                 # Update the training-score cache with the new tree only; the
                 # row partition is already known, no re-routing needed.
-                for i, rows in enumerate(leaf_rows):
-                    leaf_idx[rows] = i
-                # clip=False is exact here: training rows are inside their own
-                # leaf's z-range by construction, so the guard is the identity.
-                F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
+                if sampled_rows.shape[0] == y.shape[0]:
+                    for i, rows in enumerate(leaf_rows):
+                        leaf_idx[rows] = i
+                    update = leaf_values.predict(leaf_idx, Z, clip=False)
+                else:
+                    leaf_idx[:] = tree.apply(X_raw)
+                    # Unsampled rows may lie outside the fitted leaf's z-range;
+                    # apply the same extrapolation guard prediction will use.
+                    update = leaf_values.predict(leaf_idx, Z)
+                F += p.learning_rate * update
 
             if evals and eval_metric is not None:
                 with timed(profiler, "eval"):

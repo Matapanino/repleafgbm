@@ -197,6 +197,12 @@ def load_model_dir(path: str | Path) -> dict:
         min_samples_leaf=config.get("min_samples_leaf", defaults.min_samples_leaf),
         l2_leaf=config.get("l2_leaf", defaults.l2_leaf),
         max_bins=config.get("max_bins", defaults.max_bins),
+        subsample=config.get("subsample", defaults.subsample),
+        subsample_freq=config.get("subsample_freq", defaults.subsample_freq),
+        colsample_bytree=config.get(
+            "colsample_bytree", defaults.colsample_bytree
+        ),
+        random_state=config.get("random_state", defaults.random_state),
     )
     if "n_outputs" in ensemble:  # multi-output ensemble (format v6)
         # The saved objective name selects the loss (squared_error / huber /

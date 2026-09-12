@@ -125,6 +125,16 @@ class BaseRepLeafModel(BaseEstimator):
             for a category to be eligible for the left subset, and the cap
             on left-subset size (scanned from both ends of the sorted
             order). See docs/categorical_features.md.
+        subsample: Fraction of training rows used by each sampled tree, in
+            ``(0, 1]``. Row sampling is active only when
+            ``subsample_freq > 0``.
+        subsample_freq: Row-sample refresh interval in boosting rounds. Zero
+            disables row sampling even when ``subsample < 1``; a positive
+            value reuses a sampled row set for this many rounds. Unsampled
+            rows are excluded from both split histograms and leaf fitting.
+        colsample_bytree: Fraction of raw routing features sampled independently
+            per tree, in ``(0, 1]``. The leaf encoder remains unchanged and
+            frozen; this controls raw-feature split candidates only.
         split_backend: Split kernel implementation: "auto" (compiled Rust
             kernels when the optional ``repleafgbm_native`` extension is
             installed, NumPy otherwise), "numpy", "rust", or "cuda"
@@ -250,6 +260,9 @@ class BaseRepLeafModel(BaseEstimator):
         cat_smooth: float = 10.0,
         min_data_per_group: int = 100,
         max_cat_threshold: int = 32,
+        subsample: float = 1.0,
+        subsample_freq: int = 0,
+        colsample_bytree: float = 1.0,
         split_backend: str = "auto",
         early_stopping_rounds: int | None = None,
         eval_metric: str | BaseMetric | Any | None = None,
@@ -280,6 +293,9 @@ class BaseRepLeafModel(BaseEstimator):
         self.cat_smooth = cat_smooth
         self.min_data_per_group = min_data_per_group
         self.max_cat_threshold = max_cat_threshold
+        self.subsample = subsample
+        self.subsample_freq = subsample_freq
+        self.colsample_bytree = colsample_bytree
         self.split_backend = split_backend
         self.early_stopping_rounds = early_stopping_rounds
         self.eval_metric = eval_metric
@@ -380,6 +396,10 @@ class BaseRepLeafModel(BaseEstimator):
             cat_smooth=self.cat_smooth,
             min_data_per_group=self.min_data_per_group,
             max_cat_threshold=self.max_cat_threshold,
+            subsample=self.subsample,
+            subsample_freq=self.subsample_freq,
+            colsample_bytree=self.colsample_bytree,
+            random_state=self.random_state,
             split_backend=split_backend,
             early_stopping_rounds=self.early_stopping_rounds,
             verbose=self.verbose,
