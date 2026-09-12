@@ -82,6 +82,23 @@ class Splitter:
                 self.thresholds[f] = np.empty(0, dtype=np.float64)
             # Shared histogram width: widest feature's bins + its missing bin.
             self.n_bins_max = int(self.n_bins_per_feature.max()) + 1
+        self.active_features = np.arange(n_features, dtype=np.int64)
+
+    def set_active_features(self, features: np.ndarray | None) -> None:
+        """Set the raw-feature indices eligible for the next tree's scans."""
+        self.active_features = (
+            np.arange(self.binned.shape[1], dtype=np.int64)
+            if features is None
+            else np.asarray(features, dtype=np.int64)
+        )
+
+    def _all_features_active(self) -> bool:
+        return self.active_features.shape[0] == self.binned.shape[1]
+
+    def _remap_split(self, split: SplitCandidate | None) -> SplitCandidate | None:
+        if split is not None and not self._all_features_active():
+            split.feature = int(self.active_features[split.feature])
+        return split
 
     def build_histograms(
         self, rows: np.ndarray, grad: np.ndarray, hess: np.ndarray
@@ -107,20 +124,27 @@ class Splitter:
 
     def find_best_split(self, hist: np.ndarray) -> SplitCandidate | None:
         with timed(self._profiler, "split_scan"):
+            features = self.active_features
+            selected = hist if self._all_features_active() else hist[features]
             if hist.ndim == 4:  # multi-output: shared-routing numerical scan
-                return self.backend.find_best_split_multioutput(
-                    hist, self.n_bins_per_feature, self.min_samples_leaf, self.l2
+                split = self.backend.find_best_split_multioutput(
+                    selected,
+                    self.n_bins_per_feature[features],
+                    self.min_samples_leaf,
+                    self.l2,
                 )
-            return self.backend.find_best_split(
-                hist,
-                self.n_bins_per_feature,
+                return self._remap_split(split)
+            split = self.backend.find_best_split(
+                selected,
+                self.n_bins_per_feature[features],
                 self.min_samples_leaf,
                 self.l2,
-                categorical_mask=self.is_categorical,
+                categorical_mask=self.is_categorical[features],
                 cat_smooth=self.cat_smooth,
                 min_data_per_group=self.min_data_per_group,
                 max_cat_threshold=self.max_cat_threshold,
             )
+            return self._remap_split(split)
 
     def find_best_split_batched(
         self, hists: list[np.ndarray]
@@ -134,16 +158,19 @@ class Splitter:
         only — the grower keeps the per-node path for multi-output.
         """
         with timed(self._profiler, "split_scan"):
-            return self.backend.find_best_split_batched(
-                hists,
-                self.n_bins_per_feature,
+            features = self.active_features
+            selected = hists if self._all_features_active() else [h[features] for h in hists]
+            splits = self.backend.find_best_split_batched(
+                selected,
+                self.n_bins_per_feature[features],
                 self.min_samples_leaf,
                 self.l2,
-                categorical_mask=self.is_categorical,
+                categorical_mask=self.is_categorical[features],
                 cat_smooth=self.cat_smooth,
                 min_data_per_group=self.min_data_per_group,
                 max_cat_threshold=self.max_cat_threshold,
             )
+            return [self._remap_split(split) for split in splits]
 
     def find_best_level_split(
         self, hists: list[np.ndarray]
@@ -158,12 +185,20 @@ class Splitter:
         per-backend kernel here.
         """
         with timed(self._profiler, "split_scan"):
-            return _nb.find_best_level_split(
-                [_as_host(h) for h in hists],
-                self.n_bins_per_feature,
+            features = self.active_features
+            selected = [
+                _as_host(h) if self._all_features_active() else _as_host(h)[features]
+                for h in hists
+            ]
+            choice = _nb.find_best_level_split(
+                selected,
+                self.n_bins_per_feature[features],
                 self.min_samples_leaf,
                 self.l2,
             )
+            if choice is None or self._all_features_active():
+                return choice
+            return int(features[choice[0]]), choice[1]
 
     def split_at(
         self, hist: np.ndarray, feature: int, bin_: int

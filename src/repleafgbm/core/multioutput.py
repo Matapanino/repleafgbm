@@ -29,6 +29,7 @@ from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import MultiOutputObjective
 from repleafgbm.core.prediction import predict_raw_multioutput
 from repleafgbm.core.profiling import PhaseProfiler, timed
+from repleafgbm.core.sampling import TreeSampler, row_fingerprint
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
 from repleafgbm.core.verbose import EvalLogger
@@ -230,6 +231,9 @@ class MultiOutputBooster:
         #: See docs/proposals/robust-target-standardization.md.
         self.target_loc_: float | np.ndarray = 0.0
         self.target_scale_: float | np.ndarray = 1.0
+        self.sampled_row_counts_: list[int] = []
+        self.sampled_row_fingerprints_: list[str] = []
+        self.sampled_features_: list[np.ndarray] = []
 
     def __getstate__(self) -> dict:
         # Drop the runtime split-backend handle so the model stays picklable;
@@ -319,10 +323,26 @@ class MultiOutputBooster:
             best_score: float | None = None
             rounds_since_best = 0
             logger = EvalLogger(p.verbose)
+            sampler = TreeSampler(
+                y.shape[0],
+                dataset.n_features,
+                p.subsample,
+                p.subsample_freq,
+                p.colsample_bytree,
+                p.random_state,
+            )
+            X_raw = dataset.get_raw_features()
             for it in range(p.n_estimators):
                 grad, hess = self.objective.grad_hess(y, F)
                 grad, hess = weight_grad_hess(grad, hess, w)
-                tree, leaf_rows = grower.grow(grad, hess)
+                sampled_rows = sampler.rows(it)
+                sampled_features = sampler.features()
+                self.sampled_row_counts_.append(sampled_rows.shape[0])
+                self.sampled_row_fingerprints_.append(row_fingerprint(sampled_rows))
+                self.sampled_features_.append(sampled_features.copy())
+                tree, leaf_rows = grower.grow(
+                    grad, hess, sampled_rows, sampled_features
+                )
                 with timed(profiler, "leaf_fit"):
                     leaf_values = fit_vector_leaves(
                         leaf_model, leaf_rows, grad, hess, Z, p.l2_leaf
@@ -331,10 +351,14 @@ class MultiOutputBooster:
                 self.leaf_values_.append(leaf_values)
 
                 with timed(profiler, "eval"):
-                    for i, rows in enumerate(leaf_rows):
-                        leaf_idx[rows] = i
-                    # clip=False is exact on training rows (see Booster).
-                    F += p.learning_rate * leaf_values.predict(leaf_idx, Z, clip=False)
+                    if sampled_rows.shape[0] == y.shape[0]:
+                        for i, rows in enumerate(leaf_rows):
+                            leaf_idx[rows] = i
+                        update = leaf_values.predict(leaf_idx, Z, clip=False)
+                    else:
+                        leaf_idx[:] = tree.apply(X_raw)
+                        update = leaf_values.predict(leaf_idx, Z)
+                    F += p.learning_rate * update
 
                 if evals and eval_metric is not None:
                     with timed(profiler, "eval"):

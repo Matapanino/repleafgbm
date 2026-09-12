@@ -7,6 +7,13 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-09-12
+
+Feature release: explicit learned-leaf dimensionality control, routed numeric
+encoders, and deterministic LightGBM-style row/column sampling. Defaults keep
+1.11 behavior. The optional `repleafgbm-native` extension is unchanged at
+0.3.0.
+
 ### Added
 - Explicit learned-leaf dimensionality controls on both estimators:
   `leaf_reduction={"random_projection", "target_correlation", "none"}` keeps
@@ -16,11 +23,25 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   inspectable attributes.
 - Composable `column_subset` encoder for applying PLR or another registered
   encoder to selected positions in the numerical-feature block.
+- LightGBM-style deterministic sampling controls on both estimators:
+  `subsample` plus `subsample_freq` for periodically refreshed row subsets,
+  and `colsample_bytree` for a fresh raw-feature subset per tree. Unsampled
+  rows are excluded from split histograms and leaf fits, `min_samples_leaf`
+  counts sampled rows, and fitted boosters expose compact row-count/fingerprint
+  and feature-index diagnostics.
 
 ### Serialization
 - Model format v8 is written only for routed or target-correlation encoder
   configs; the recursive config/state round-trips, versions 1–7 remain
   readable, and unaffected models retain their older written format.
+- Sampling hyperparameters round-trip in the existing model config. No format
+  bump is needed: the layout is unchanged and older saved configs load with
+  disabled-sampling defaults.
+
+### Documentation
+- Added S6E9-scale profiling at 130k rows × 151 columns. Across three 50-round
+  Rust runs, median wall time was 8.2972 seconds (0.16594 s/round); histogram
+  construction, split scan, and one-time binning were the top three phases.
 
 ## [1.11.0] - 2026-07-07
 

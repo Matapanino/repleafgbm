@@ -27,6 +27,7 @@ from repleafgbm.core.metrics import BaseMetric
 from repleafgbm.core.objectives import MulticlassSoftmax
 from repleafgbm.core.prediction import predict_raw_multiclass
 from repleafgbm.core.profiling import PhaseProfiler, timed
+from repleafgbm.core.sampling import TreeSampler, row_fingerprint
 from repleafgbm.core.splitter import Splitter
 from repleafgbm.core.tree import Tree, TreeGrower
 from repleafgbm.core.verbose import EvalLogger
@@ -56,6 +57,9 @@ class MulticlassBooster:
         #: Split backend from the last ``fit`` (runtime-only introspection
         #: handle, never serialized); see :class:`Booster.split_backend_`.
         self.split_backend_: BaseSplitBackend | None = None
+        self.sampled_row_counts_: list[int] = []
+        self.sampled_row_fingerprints_: list[str] = []
+        self.sampled_features_: list[np.ndarray] = []
 
     def __getstate__(self) -> dict:
         # Drop the runtime split-backend handle so the model stays picklable;
@@ -145,16 +149,36 @@ class MulticlassBooster:
             best_score: float | None = None
             rounds_since_best = 0
             logger = EvalLogger(p.verbose)
+            sampler = TreeSampler(
+                y.shape[0],
+                dataset.n_features,
+                p.subsample,
+                p.subsample_freq,
+                p.colsample_bytree,
+                p.random_state,
+            )
+            X_raw = dataset.get_raw_features()
             for it in range(p.n_estimators):
                 grad, hess = self.objective.grad_hess(y, F)
                 grad, hess = weight_grad_hess(grad, hess, w)
+                sampled_rows = sampler.rows(it)
+                self.sampled_row_counts_.append(sampled_rows.shape[0])
+                self.sampled_row_fingerprints_.append(row_fingerprint(sampled_rows))
                 round_trees: list[tuple[Tree, LeafValues]] = []
                 # Grow all K class trees first (their leaf row-sets differ), then fit
                 # every class's leaves in one pooled pass. A single class tree often
                 # puts >50% of its rows in one leaf, so per-class leaf-parallelism
                 # stalls near ~2x; pooling all classes dilutes any one giant leaf and
                 # keeps every core busy (Session 4; leaf_model decides how to pool).
-                grows = [grower.grow(grad[:, k], hess[:, k]) for k in range(n_classes)]
+                grows = []
+                for k in range(n_classes):
+                    sampled_features = sampler.features()
+                    self.sampled_features_.append(sampled_features.copy())
+                    grows.append(
+                        grower.grow(
+                            grad[:, k], hess[:, k], sampled_rows, sampled_features
+                        )
+                    )
                 with timed(profiler, "leaf_fit"):
                     leaf_values_list = leaf_model.fit_leaves_multiclass(
                         [leaf_rows for _, leaf_rows in grows], grad, hess, Z
@@ -167,12 +191,14 @@ class MulticlassBooster:
                     round_trees.append((tree, leaf_values))
 
                     with timed(profiler, "eval"):
-                        for i, rows in enumerate(leaf_rows):
-                            leaf_idx[rows] = i
-                        # clip=False is exact on training rows (see Booster).
-                        F[:, k] += p.learning_rate * leaf_values.predict(
-                            leaf_idx, Z, clip=False
-                        )
+                        if sampled_rows.shape[0] == y.shape[0]:
+                            for i, rows in enumerate(leaf_rows):
+                                leaf_idx[rows] = i
+                            update = leaf_values.predict(leaf_idx, Z, clip=False)
+                        else:
+                            leaf_idx[:] = tree.apply(X_raw)
+                            update = leaf_values.predict(leaf_idx, Z)
+                        F[:, k] += p.learning_rate * update
 
                 if evals and eval_metric is not None:
                     with timed(profiler, "eval"):
