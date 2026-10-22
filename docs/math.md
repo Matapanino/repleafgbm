@@ -318,8 +318,9 @@ Two design choices worth recording:
 The NumPy-only `target_encoding` encoder maps each selected numerical column at
 one or more resolutions: the exact value, `round(x, k)` for an integer `k`
 (including negative precisions), and empirical quantile bins (`"bin:n"`). For a
-key `v`, scalar initial Newton target `t_i`, non-negative sample weight `w_i`,
-and that table's weighted prior `mu`, its empirical-Bayes mean is
+key `v`, scalar initial negative-gradient (pretraining) target `t_i = -g_i`
+(not `-g_i / h_i`), non-negative sample weight `w_i`, and that table's
+weighted prior `mu`, its empirical-Bayes mean is
 
 ```text
 S_v = sum_{i: key(x_i)=v} w_i t_i
