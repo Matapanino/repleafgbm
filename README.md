@@ -125,6 +125,25 @@ model.fit(train_data, eval_set=[RepLeafDataset(df_valid, y_valid,
                                                metadata=train_data.metadata)])
 ```
 
+## MatGBM: leaf-only features, expert bundles, per-leaf selection
+
+[MatGBM](docs/matgbm/README.md) is an experimental composition for one fitted
+GBM: raw columns route the trees while selected numerical columns are available
+only inside leaves. `leaf_only_features` excludes those columns from routing,
+feature sampling, and importance calculations.
+
+Pass named frozen spaces through `leaf_experts`; each block specifies an
+`encoder`, optional `columns`, and optional `encoder_params`. With
+`leaf_model="select"`, every scalar-regression or binary-classification leaf
+uses weighted LOO to choose a constant or one expert block. Inspect the fitted
+`expert_selection_fraction_` to see that selection across the ensemble.
+
+`examples/matgbm_leaf_experts.py` runs a small regression and binary example
+using identity, fold-safe `target_encoding`, and `pca` experts, then compares
+constant, `embedded_linear`, and `select` on holdouts. These APIs and the
+experimental encoder bank may change before stabilization; see the
+[MatGBM guide](docs/matgbm/README.md) for scope and limitations.
+
 ## API overview
 
 The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
