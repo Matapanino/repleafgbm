@@ -1195,6 +1195,18 @@ class BaseRepLeafModel(BaseEstimator):
             if isinstance(model.encoder_, (RandomProjectionEncoder, TargetCorrelationEncoder)):
                 model.leaf_embedding_input_dim_ = model.encoder_.base.output_dim
                 model.leaf_reduction_ = model.encoder_.name
+            elif isinstance(model.encoder_, ExpertBundleEncoder):
+                # Per-expert reduction wraps a child the same way; report the
+                # pre-reduction widths like fit() does.
+                reduced = [
+                    isinstance(child, (RandomProjectionEncoder, TargetCorrelationEncoder))
+                    for child in model.encoder_.encoders
+                ]
+                model.leaf_embedding_input_dim_ = sum(
+                    child.base.output_dim if is_reduced else child.output_dim
+                    for child, is_reduced in zip(model.encoder_.encoders, reduced)
+                )
+                model.leaf_reduction_ = "per_expert" if any(reduced) else "none"
             else:
                 model.leaf_embedding_input_dim_ = model.encoder_.output_dim
                 model.leaf_reduction_ = "none"

@@ -769,3 +769,28 @@ def test_numpy_integer_column_specs_survive_save_model(tmp_path):
     assert config["leaf_experts"][0]["columns"] == [0]
     loaded = RepLeafRegressor.load_model(tmp_path / "m")
     np.testing.assert_array_equal(loaded.predict(X), model.predict(X))
+
+
+def test_loaded_bundle_restores_per_expert_reduction_diagnostics(tmp_path):
+    rng = np.random.RandomState(3)
+    X = rng.normal(size=(150, 3))
+    y = X[:, 0] - X[:, 1]
+    model = RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=4,
+        min_samples_leaf=8,
+        leaf_model="select",
+        leaf_experts=[
+            {"name": "a", "encoder": "plr", "columns": [0], "encoder_params": {"n_bins": 4}},
+            {"name": "b", "encoder": "identity", "columns": [1, 2]},
+        ],
+        max_leaf_emb_dim=2,
+        leaf_reduction="random_projection",
+        split_backend="numpy",
+        random_state=1,
+    ).fit(X, y)
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    assert loaded.leaf_embedding_input_dim_ == model.leaf_embedding_input_dim_ == 7
+    assert loaded.leaf_reduction_ == model.leaf_reduction_ == "per_expert"
+    assert loaded.leaf_embedding_dim_ == model.leaf_embedding_dim_ == 4
