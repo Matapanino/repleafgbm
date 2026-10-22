@@ -7,6 +7,8 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+- Add CPU-only NumPy space encoders `pca`, `quantile`, `spline`, `rff`, `row_stats`, and `prototype`, with deterministic seeded fitting and array-only save/load state; defaults are chosen and unbenchmarked.
+
 ## [1.12.0] - 2026-09-12
 
 Feature release: explicit learned-leaf dimensionality control, routed numeric
