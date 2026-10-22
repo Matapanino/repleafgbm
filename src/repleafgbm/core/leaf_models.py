@@ -706,6 +706,36 @@ class SelectLeafModel(AdaptiveLeafModel):
             blocks.append(slice(start, stop))
 
         n_leaves = len(leaf_rows)
+        sizes = np.array([r.shape[0] for r in leaf_rows], dtype=np.int64)
+        order = np.concatenate(leaf_rows) if leaf_rows else np.empty(0, np.int64)
+        offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+        native_max_dim = (
+            _NATIVE_STATS_MAX_DIM_SCALAR_F64
+            if self.leaf_fit_precision == "float64"
+            else _NATIVE_STATS_MAX_DIM
+        )
+        if (
+            _native is not None
+            and hasattr(_native, "leaf_select_stats")
+            and emb_dim <= native_max_dim
+        ):
+            starts = np.array([block.start for block in blocks], dtype=np.int64)
+            stops = np.array([block.stop for block in blocks], dtype=np.int64)
+            bias, weights, z_min, z_max, selected = _native.leaf_select_stats(
+                np.ascontiguousarray(Z, dtype=np.float64),
+                np.ascontiguousarray(grad, dtype=np.float64),
+                np.ascontiguousarray(hess, dtype=np.float64),
+                np.ascontiguousarray(order, dtype=np.int64),
+                np.ascontiguousarray(offsets, dtype=np.int64),
+                starts,
+                stops,
+                float(self.l2),
+                int(self.min_samples_linear),
+                float(self.leaf_gate_margin),
+            )
+            self.last_selections_ = [None if i < 0 else int(i) for i in selected]
+            return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+
         bias = np.empty(n_leaves, dtype=np.float64)
         weights = np.zeros((n_leaves, emb_dim), dtype=np.float64)
         z_min = np.full((n_leaves, emb_dim), -np.inf, dtype=np.float64)

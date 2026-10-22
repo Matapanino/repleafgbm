@@ -39,6 +39,9 @@ const PARALLEL_MIN_CELLS: usize = 1 << 17;
 /// overhead dominates (small trees / tiny datasets take the serial branch).
 const LEAF_PARALLEL_MIN_CELLS: usize = 1 << 16;
 
+/// Same finite denominator guard as Python's `_LOO_LEVERAGE_CAP`.
+const LOO_LEVERAGE_CAP: f64 = 1e-6;
+
 /// Accumulate one feature's `(n_bins_max, 3)` histogram block in row order.
 ///
 /// `hf` is the disjoint output slice for this feature (grad/hess/count
@@ -83,7 +86,9 @@ fn build_histograms<'py>(
         .expect("feature-major binned must be C-contiguous");
 
     let mut hist = Array3::<f64>::zeros((n_features, n_bins_max, 3));
-    let h = hist.as_slice_mut().expect("freshly allocated array is contiguous");
+    let h = hist
+        .as_slice_mut()
+        .expect("freshly allocated array is contiguous");
     let chunk = n_bins_max * 3; // one feature's (n_bins_max, 3) output block
 
     // Feature-parallel scatter-add: output chunk f is paired with feature f's
@@ -251,7 +256,14 @@ fn find_best_split(
                 - parent_score;
             if gain.is_finite() && gain > best_gain {
                 best_gain = gain;
-                best = Some((f as i64, c as i64, gain, left_n as i64, right_n as i64, None));
+                best = Some((
+                    f as i64,
+                    c as i64,
+                    gain,
+                    left_n as i64,
+                    right_n as i64,
+                    None,
+                ));
             }
         }
     }
@@ -550,8 +562,8 @@ fn leaf_linear_stats<'py>(
                 .zip(linear_s.iter())
                 .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
                     accumulate_leaf(
-                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, d, &offsets,
-                        &order, &grad, &hess, z_s,
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, d, &offsets, &order, &grad,
+                        &hess, z_s,
                     );
                 });
         } else {
@@ -563,8 +575,8 @@ fn leaf_linear_stats<'py>(
                 .zip(linear_s.par_iter())
                 .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
                     accumulate_leaf(
-                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, d, &offsets,
-                        &order, &grad, &hess, z_s,
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, d, &offsets, &order, &grad,
+                        &hess, z_s,
                     );
                 });
         }
@@ -595,6 +607,7 @@ fn leaf_linear_stats<'py>(
 /// are pooled (indexed by global leaf / global linear-leaf order); the Python
 /// caller splits them back per class.
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn leaf_linear_stats_mc<'py>(
     py: Python<'py>,
@@ -673,8 +686,8 @@ fn leaf_linear_stats_mc<'py>(
                 .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
                     let c = lc_s[li as usize] as usize;
                     accumulate_leaf_mc(
-                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, c, kcls, d,
-                        &offsets, &order, g_s, h_s, z_s,
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, c, kcls, d, &offsets, &order,
+                        g_s, h_s, z_s,
                     );
                 });
         } else {
@@ -687,8 +700,8 @@ fn leaf_linear_stats_mc<'py>(
                 .for_each(|(((((gram_j, s_hz_j), gz_j), zmin_j), zmax_j), &li)| {
                     let c = lc_s[li as usize] as usize;
                     accumulate_leaf_mc(
-                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, c, kcls, d,
-                        &offsets, &order, g_s, h_s, z_s,
+                        gram_j, s_hz_j, gz_j, zmin_j, zmax_j, li, c, kcls, d, &offsets, &order,
+                        g_s, h_s, z_s,
                     );
                 });
         }
@@ -701,6 +714,420 @@ fn leaf_linear_stats_mc<'py>(
         gz.into_pyarray(py),
         z_min.into_pyarray(py),
         z_max.into_pyarray(py),
+    )
+}
+
+/// Small dense LU factorization with partial pivoting.
+///
+/// Select experts are deliberately narrow (the Python gate caps total width),
+/// so keeping this solver local avoids a BLAS/LAPACK dependency and lets one
+/// factorization serve both the ridge RHS and the inverse needed by every LOO
+/// leverage. A failed/non-finite pivot has the same meaning as NumPy's
+/// `LinAlgError`: that block is ineligible and the existing constant fallback
+/// remains in force.
+struct DenseLu {
+    a: Vec<f64>,
+    swaps: Vec<usize>,
+    n: usize,
+}
+
+impl DenseLu {
+    fn factor(mut a: Vec<f64>, n: usize) -> Option<Self> {
+        let mut swaps = Vec::with_capacity(n);
+        for k in 0..n {
+            let mut pivot_row = k;
+            let mut pivot_abs = a[k * n + k].abs();
+            for i in (k + 1)..n {
+                let candidate = a[i * n + k].abs();
+                if candidate > pivot_abs {
+                    pivot_abs = candidate;
+                    pivot_row = i;
+                }
+            }
+            if pivot_abs == 0.0 || !pivot_abs.is_finite() {
+                return None;
+            }
+            swaps.push(pivot_row);
+            if pivot_row != k {
+                for j in 0..n {
+                    a.swap(k * n + j, pivot_row * n + j);
+                }
+            }
+            let pivot = a[k * n + k];
+            for i in (k + 1)..n {
+                let ik = i * n + k;
+                a[ik] /= pivot;
+                let multiplier = a[ik];
+                for j in (k + 1)..n {
+                    a[i * n + j] -= multiplier * a[k * n + j];
+                }
+            }
+        }
+        Some(Self { a, swaps, n })
+    }
+
+    fn solve(&self, rhs: &[f64]) -> Option<Vec<f64>> {
+        let mut x = rhs.to_vec();
+        for (k, &pivot_row) in self.swaps.iter().enumerate() {
+            if pivot_row != k {
+                x.swap(k, pivot_row);
+            }
+        }
+        for i in 0..self.n {
+            let mut value = x[i];
+            for (j, &xj) in x.iter().enumerate().take(i) {
+                value -= self.a[i * self.n + j] * xj;
+            }
+            x[i] = value;
+        }
+        for i in (0..self.n).rev() {
+            let mut value = x[i];
+            for (j, &xj) in x.iter().enumerate().skip(i + 1) {
+                value -= self.a[i * self.n + j] * xj;
+            }
+            value /= self.a[i * self.n + i];
+            if !value.is_finite() {
+                return None;
+            }
+            x[i] = value;
+        }
+        Some(x)
+    }
+
+    fn inverse(&self) -> Option<Vec<f64>> {
+        let mut inverse = vec![0.0; self.n * self.n];
+        let mut rhs = vec![0.0; self.n];
+        for column in 0..self.n {
+            rhs[column] = 1.0;
+            let solution = self.solve(&rhs)?;
+            rhs[column] = 0.0;
+            for row in 0..self.n {
+                inverse[row * self.n + column] = solution[row];
+            }
+        }
+        Some(inverse)
+    }
+}
+
+struct SelectBlockFit {
+    block_index: usize,
+    start: usize,
+    width: usize,
+    z_mean: Vec<f64>,
+    weights: Vec<f64>,
+    inverse: Vec<f64>,
+    error: f64,
+}
+
+struct SelectLeafResult {
+    bias: f64,
+    weights: Vec<f64>,
+    z_min: Vec<f64>,
+    z_max: Vec<f64>,
+    selection: i64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fit_select_leaf(
+    leaf: usize,
+    d: usize,
+    z_s: &[f64],
+    grad: &[f64],
+    hess: &[f64],
+    order: &[i64],
+    offsets: &[i64],
+    block_starts: &[i64],
+    block_stops: &[i64],
+    l2: f64,
+    min_samples_linear: usize,
+    margin: f64,
+) -> SelectLeafResult {
+    let lo = offsets[leaf] as usize;
+    let hi = offsets[leaf + 1] as usize;
+    let mut g_all = 0.0;
+    let mut h_all = 0.0;
+    let mut g_sum = 0.0;
+    let mut h_sum = 0.0;
+    let mut n_active = 0usize;
+    let mut s_hz = vec![0.0; d];
+    let mut gz = vec![0.0; d];
+    let mut gram = vec![0.0; d * d];
+    let mut all_z_min = vec![f64::INFINITY; d];
+    let mut all_z_max = vec![f64::NEG_INFINITY; d];
+
+    // The full-width Gram is built exactly once. Candidate blocks later slice
+    // their diagonal submatrices from it; there is no K-fold statistics scan.
+    for &row_index in &order[lo..hi] {
+        let row_index = row_index as usize;
+        let g = grad[row_index];
+        let h = hess[row_index];
+        g_all += g;
+        h_all += h;
+        let zr = &z_s[row_index * d..(row_index + 1) * d];
+        for a in 0..d {
+            let za = zr[a];
+            if za.is_nan() {
+                all_z_min[a] = f64::NAN;
+                all_z_max[a] = f64::NAN;
+            } else {
+                if za < all_z_min[a] {
+                    all_z_min[a] = za;
+                }
+                if za > all_z_max[a] {
+                    all_z_max[a] = za;
+                }
+            }
+        }
+        if h.is_nan() || h <= 0.0 {
+            continue;
+        }
+        n_active += 1;
+        g_sum += g;
+        h_sum += h;
+        for a in 0..d {
+            let za = zr[a];
+            s_hz[a] += h * za;
+            gz[a] += g * za;
+            let hza = h * za;
+            for b in a..d {
+                gram[a * d + b] += hza * zr[b];
+            }
+        }
+    }
+    for a in 1..d {
+        for b in 0..a {
+            gram[a * d + b] = gram[b * d + a];
+        }
+    }
+
+    let constant_bias = -g_all / (h_all + l2);
+    let mut result = SelectLeafResult {
+        bias: constant_bias,
+        weights: vec![0.0; d],
+        z_min: vec![f64::NEG_INFINITY; d],
+        z_max: vec![f64::INFINITY; d],
+        selection: -1,
+    };
+    let t_mean = -g_sum / h_sum;
+    let mut fits: Vec<SelectBlockFit> = Vec::with_capacity(block_starts.len());
+    for (block_index, (&start_i, &stop_i)) in
+        block_starts.iter().zip(block_stops.iter()).enumerate()
+    {
+        let start = start_i as usize;
+        let stop = stop_i as usize;
+        let width = stop - start;
+        if n_active < min_samples_linear.max(width + 2) {
+            continue;
+        }
+        let z_mean: Vec<f64> = (start..stop).map(|a| s_hz[a] / h_sum).collect();
+        let mut matrix = vec![0.0; width * width];
+        let mut rhs = vec![0.0; width];
+        for a in 0..width {
+            let ga = start + a;
+            rhs[a] = -gz[ga] - t_mean * s_hz[ga];
+            for b in 0..width {
+                let gb = start + b;
+                matrix[a * width + b] = gram[ga * d + gb] - z_mean[a] * s_hz[gb];
+            }
+            matrix[a * width + a] += l2;
+        }
+        let Some(lu) = DenseLu::factor(matrix, width) else {
+            continue;
+        };
+        let Some(weights) = lu.solve(&rhs) else {
+            continue;
+        };
+        let Some(inverse) = lu.inverse() else {
+            continue;
+        };
+        fits.push(SelectBlockFit {
+            block_index,
+            start,
+            width,
+            z_mean,
+            weights,
+            inverse,
+            error: 0.0,
+        });
+    }
+    if fits.is_empty() {
+        return result;
+    }
+
+    // One second row pass scores the constant and every solved block together.
+    // This replaces K independent NumPy gathers/LOO traversals.
+    let cap = 1.0 - LOO_LEVERAGE_CAP;
+    let mut constant_error = 0.0;
+    for &row_index in &order[lo..hi] {
+        let row_index = row_index as usize;
+        let h = hess[row_index];
+        if h.is_nan() || h <= 0.0 {
+            continue;
+        }
+        let target = -grad[row_index] / h;
+        let h0_raw = h / h_sum;
+        let h0 = if h0_raw.is_nan() {
+            f64::NAN
+        } else {
+            h0_raw.min(cap)
+        };
+        let constant_resid = t_mean - target;
+        constant_error += h * (constant_resid / (1.0 - h0)).powi(2);
+        let zr = &z_s[row_index * d..(row_index + 1) * d];
+        for fit in &mut fits {
+            let mut prediction = t_mean;
+            let mut quadratic = 0.0;
+            for a in 0..fit.width {
+                let za = zr[fit.start + a] - fit.z_mean[a];
+                prediction += za * fit.weights[a];
+                let mut inv_z = 0.0;
+                for b in 0..fit.width {
+                    inv_z += fit.inverse[a * fit.width + b] * (zr[fit.start + b] - fit.z_mean[b]);
+                }
+                quadratic += za * inv_z;
+            }
+            let leverage_raw = h * quadratic + h / h_sum;
+            let leverage = if leverage_raw.is_nan() {
+                f64::NAN
+            } else {
+                leverage_raw.min(cap)
+            };
+            let residual = prediction - target;
+            fit.error += h * (residual / (1.0 - leverage)).powi(2);
+        }
+    }
+
+    let mut best: Option<usize> = None;
+    let mut best_error = f64::INFINITY;
+    for (i, fit) in fits.iter().enumerate() {
+        if fit.error < best_error {
+            best_error = fit.error;
+            best = Some(i);
+        }
+    }
+    if let Some(best) = best {
+        let fit = &fits[best];
+        if best_error < (1.0 - margin) * constant_error {
+            result.bias = t_mean
+                - fit
+                    .weights
+                    .iter()
+                    .zip(&fit.z_mean)
+                    .map(|(w, z)| w * z)
+                    .sum::<f64>();
+            result.weights[fit.start..fit.start + fit.width].copy_from_slice(&fit.weights);
+            result.z_min = all_z_min;
+            result.z_max = all_z_max;
+            result.selection = fit.block_index as i64;
+        }
+    }
+    result
+}
+
+/// Fused per-leaf ridge + weighted-LOO expert selection for `leaf_model=select`.
+///
+/// Leaves are rayon-parallel and deterministic: each worker owns one leaf and
+/// visits that leaf's rows in caller order. Within a leaf the full embedding
+/// Gram is accumulated once, candidate matrices are sliced from it, and one
+/// shared row pass evaluates every LOO score. The returned arrays are already
+/// assembled with the exact Python fallback conventions (`selection == -1`
+/// means constant; non-selected columns are zero; constant bounds are infinite).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+fn leaf_select_stats<'py>(
+    py: Python<'py>,
+    z: PyReadonlyArray2<'py, f64>,
+    grad: PyReadonlyArray1<'py, f64>,
+    hess: PyReadonlyArray1<'py, f64>,
+    order: PyReadonlyArray1<'py, i64>,
+    offsets: PyReadonlyArray1<'py, i64>,
+    block_starts: PyReadonlyArray1<'py, i64>,
+    block_stops: PyReadonlyArray1<'py, i64>,
+    l2: f64,
+    min_samples_linear: usize,
+    margin: f64,
+) -> (
+    Bound<'py, numpy::PyArray1<f64>>,
+    Bound<'py, numpy::PyArray2<f64>>,
+    Bound<'py, numpy::PyArray2<f64>>,
+    Bound<'py, numpy::PyArray2<f64>>,
+    Bound<'py, numpy::PyArray1<i64>>,
+) {
+    let z = z.as_array();
+    let z_s = z.as_slice().expect("Z must be C-contiguous");
+    let d = z.shape()[1];
+    let grad = grad.as_array();
+    let grad_s = grad.as_slice().expect("grad must be C-contiguous");
+    let hess = hess.as_array();
+    let hess_s = hess.as_slice().expect("hess must be C-contiguous");
+    let order = order.as_array();
+    let order_s = order.as_slice().expect("order must be C-contiguous");
+    let offsets = offsets.as_array();
+    let offsets_s = offsets.as_slice().expect("offsets must be C-contiguous");
+    let block_starts = block_starts.as_array();
+    let starts_s = block_starts
+        .as_slice()
+        .expect("block_starts must be C-contiguous");
+    let block_stops = block_stops.as_array();
+    let stops_s = block_stops
+        .as_slice()
+        .expect("block_stops must be C-contiguous");
+    let n_leaves = offsets.len() - 1;
+
+    let fit_one = |leaf| {
+        fit_select_leaf(
+            leaf,
+            d,
+            z_s,
+            grad_s,
+            hess_s,
+            order_s,
+            offsets_s,
+            starts_s,
+            stops_s,
+            l2,
+            min_samples_linear,
+            margin,
+        )
+    };
+    let results: Vec<SelectLeafResult> =
+        if n_leaves < 2 || order.len() * d < LEAF_PARALLEL_MIN_CELLS {
+            (0..n_leaves).map(fit_one).collect()
+        } else {
+            (0..n_leaves).into_par_iter().map(fit_one).collect()
+        };
+
+    let mut bias = ndarray::Array1::<f64>::zeros(n_leaves);
+    let mut weights = ndarray::Array2::<f64>::zeros((n_leaves, d));
+    let mut z_min = ndarray::Array2::<f64>::zeros((n_leaves, d));
+    let mut z_max = ndarray::Array2::<f64>::zeros((n_leaves, d));
+    let mut selections = ndarray::Array1::<i64>::zeros(n_leaves);
+    for (leaf, result) in results.into_iter().enumerate() {
+        bias[leaf] = result.bias;
+        weights
+            .row_mut(leaf)
+            .as_slice_mut()
+            .unwrap()
+            .copy_from_slice(&result.weights);
+        z_min
+            .row_mut(leaf)
+            .as_slice_mut()
+            .unwrap()
+            .copy_from_slice(&result.z_min);
+        z_max
+            .row_mut(leaf)
+            .as_slice_mut()
+            .unwrap()
+            .copy_from_slice(&result.z_max);
+        selections[leaf] = result.selection;
+    }
+    (
+        bias.into_pyarray(py),
+        weights.into_pyarray(py),
+        z_min.into_pyarray(py),
+        z_max.into_pyarray(py),
+        selections.into_pyarray(py),
     )
 }
 
@@ -899,7 +1326,9 @@ fn apply_tree<'py>(
     let feature = feature.as_array();
     let feature = feature.as_slice().expect("feature must be C-contiguous");
     let threshold = threshold.as_array();
-    let threshold = threshold.as_slice().expect("threshold must be C-contiguous");
+    let threshold = threshold
+        .as_slice()
+        .expect("threshold must be C-contiguous");
     let left = left.as_array();
     let left = left.as_slice().expect("left must be C-contiguous");
     let right = right.as_array();
@@ -924,8 +1353,17 @@ fn apply_tree<'py>(
     if n < APPLY_PARALLEL_MIN {
         for (i, o) in out_s.iter_mut().enumerate() {
             *o = route_row(
-                i, n_features, x_s, feature, threshold, left, right, leaf_id,
-                missing_left, cat_offsets, cat_values,
+                i,
+                n_features,
+                x_s,
+                feature,
+                threshold,
+                left,
+                right,
+                leaf_id,
+                missing_left,
+                cat_offsets,
+                cat_values,
             );
         }
     } else {
@@ -936,8 +1374,17 @@ fn apply_tree<'py>(
                 let base = ci * PREDICT_CHUNK;
                 for (off, o) in oc.iter_mut().enumerate() {
                     *o = route_row(
-                        base + off, n_features, x_s, feature, threshold, left,
-                        right, leaf_id, missing_left, cat_offsets, cat_values,
+                        base + off,
+                        n_features,
+                        x_s,
+                        feature,
+                        threshold,
+                        left,
+                        right,
+                        leaf_id,
+                        missing_left,
+                        cat_offsets,
+                        cat_values,
                     );
                 }
             });
@@ -952,6 +1399,7 @@ fn repleafgbm_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_best_split, m)?)?;
     m.add_function(wrap_pyfunction!(leaf_linear_stats, m)?)?;
     m.add_function(wrap_pyfunction!(leaf_linear_stats_mc, m)?)?;
+    m.add_function(wrap_pyfunction!(leaf_select_stats, m)?)?;
     m.add_function(wrap_pyfunction!(predict_linear, m)?)?;
     m.add_function(wrap_pyfunction!(apply_tree, m)?)?;
     Ok(())
