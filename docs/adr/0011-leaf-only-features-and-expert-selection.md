@@ -25,7 +25,11 @@ block and every other coefficient is zero.
 - `leaf_experts` registers named `(columns, encoder)` pairs. An
   `ExpertBundleEncoder` fits each child once, applies dimensionality reduction
   per child, concatenates their outputs, and publishes stable block slices.
-  `encoder` and `leaf_experts` are mutually exclusive.
+  The public `encoder="identity"` default remains unchanged for API stability.
+  With `leaf_experts`, that exact string default and no top-level
+  `encoder_params` is allowed and the bundle takes precedence without a
+  warning. A non-default name, encoder instance, or top-level `encoder_params`
+  remains mutually exclusive with `leaf_experts`.
 - `BaseEncoder.fit_transform_train` defaults to the historical
   `fit`-then-`transform` behavior. A supervised encoder may override it with
   cross-fitted/ordered training rows while retaining full-data state for eval
@@ -35,6 +39,10 @@ block and every other coefficient is zero.
   or prediction. Any dimensionality reduction is fitted from and applied to
   the same training representation.
 - `leaf_model="select"` treats constant plus every expert block as candidates.
+  A directly supplied `encoder=ExpertBundleEncoder(...)` also exposes every
+  bundle block as a separate candidate. A single non-bundle encoder supplies
+  one block, so selection is equivalent to the adaptive constant-vs-linear
+  choice.
   Each eligible block gets its own Hessian-weighted ridge fit and LOO score.
   The lowest-error block is used only if it beats constant by the configured
   `leaf_gate_margin`; ties remain constant. Blocks and backend handles are

@@ -654,6 +654,8 @@ class SelectLeafModel(AdaptiveLeafModel):
     Rows with a zero Hessian (``sample_weight == 0``) have no Newton target and
     are excluded from the candidate fits and LOO scores; the Newton constant
     and the ``z_min``/``z_max`` bounds still cover every row of the leaf.
+    ``leaf_fit_precision`` is accepted for factory parity but inert: the
+    per-block solves are float64.
     """
 
     name = "select"
@@ -918,18 +920,23 @@ def _constant_loo_error(gl: np.ndarray, hl: np.ndarray) -> float:
     return _weighted_loo_error(hl, t_mean - t, H0, insample=False)
 
 
+#: Rows per leverage solve in :func:`_fit_block_loo`: bounds the transient
+#: ``d x rows`` right-hand side for very large leaves (a 64-dim block at this
+#: chunk size is ~32 MB per solve instead of ``d x n_leaf``).
+_LOO_CHUNK_ROWS = 65536
+
+
 def _fit_block_loo(
     Zb: np.ndarray, gl: np.ndarray, hl: np.ndarray, l2: float
 ) -> tuple[float, np.ndarray, float] | None:
     """Weighted ridge on one embedding block plus its weighted LOO error.
 
-    Same objective and centering as :func:`_fit_weighted_ridge`. The centered
-    system ``M`` is factored once: its solve carries the ridge right-hand side
-    and ``z_tilde^T`` together, so the weights and the hat diagonals
-    (:func:`_loo_leverages` formula) come from one factorization. Returns
-    ``(bias, weights, E_loo)``, or ``None`` when the solve is singular or
-    non-finite (the block is then ineligible, like the singular fallback of
-    the batched path).
+    Same objective and centering as :func:`_fit_weighted_ridge`; the centered
+    system ``M`` is reused for the hat diagonals (:func:`_loo_leverages`
+    formula), which are solved in bounded row chunks. Returns ``(bias,
+    weights, E_loo)``, or ``None`` when the solve is singular or non-finite
+    (the block is then ineligible, like the singular fallback of the batched
+    path).
     """
     h_sum = hl.sum()
     t = -gl / hl
@@ -938,15 +945,20 @@ def _fit_block_loo(
     z_tilde = Zb - z_mean
     hz = z_tilde * hl[:, None]
     M = hz.T @ z_tilde + l2 * np.eye(Zb.shape[1])
-    rhs = np.column_stack([hz.T @ (t - t_mean), z_tilde.T])  # (d, 1 + n)
+    rhs = hz.T @ (t - t_mean)
+    del hz
     try:
-        sol = np.linalg.solve(M, rhs)
+        w = np.linalg.solve(M, rhs)
     except np.linalg.LinAlgError:
         return None
-    w = sol[:, 0]
     if not np.all(np.isfinite(w)):
         return None
-    quad = np.einsum("ij,ji->i", z_tilde, sol[:, 1:])  # z_tilde_i^T M^-1 z_tilde_i
+    quad = np.empty(Zb.shape[0], dtype=np.float64)  # z_tilde_i^T M^-1 z_tilde_i
+    for start in range(0, Zb.shape[0], _LOO_CHUNK_ROWS):
+        chunk = z_tilde[start : start + _LOO_CHUNK_ROWS]
+        quad[start : start + _LOO_CHUNK_ROWS] = np.einsum(
+            "ij,ji->i", chunk, np.linalg.solve(M, chunk.T)
+        )
     H = np.minimum(hl * quad + hl / h_sum, 1.0 - _LOO_LEVERAGE_CAP)
     resid = z_tilde @ w + (t_mean - t)
     bias = t_mean - float(w @ z_mean)

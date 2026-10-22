@@ -166,9 +166,9 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `num_leaves` | `31` | Max leaves per tree (leaf-wise growth). |
 | `min_samples_leaf` | `20` | Minimum rows per leaf. |
 | `leaf_model` | `"embedded_linear"` | Leaf predictor (see below). |
-| `encoder` | `"identity"` | Representation `z_theta(x)` (see below). |
+| `encoder` | `"identity"` | Representation `z_theta(x)` (see below); this unchanged default is ignored when `leaf_experts` supplies the bundle. |
 | `leaf_only_features` | `None` | Numerical columns hidden from tree splits and exposed only to leaf encoders. |
-| `leaf_experts` | `None` | Named encoder/column blocks; mutually exclusive with an explicit `encoder`. |
+| `leaf_experts` | `None` | Named encoder/column blocks; mutually exclusive with a non-default `encoder` or top-level `encoder_params`. |
 | `max_leaf_emb_dim` | `64` | Resolved embedding width when reduction is enabled. |
 | `leaf_reduction` | `"random_projection"` | Wide-embedding policy: compatibility projection, learned `"target_correlation"`, or `"none"`. |
 | `subsample` / `subsample_freq` | `1.0` / `0` | Row fraction and refresh interval (`0` disables). |
@@ -185,7 +185,7 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"embedded_linear"` | Ridge linear model over `z_theta(x)` (default). |
 | `"raw_linear"` | Ridge linear model over the raw features. |
 | `"adaptive"` | Per-leaf weighted-LOO gate: keeps the `embedded_linear` leaf only where it beats a constant, else falls back. |
-| `"select"` | Per-leaf weighted-LOO choice among constant and named expert blocks (scalar regression/binary only). |
+| `"select"` | Per-leaf weighted-LOO choice among constant and named expert blocks; a directly supplied bundle contributes each block, while a single encoder contributes one adaptive-equivalent block (scalar regression/binary only). |
 
 **`encoder`**
 

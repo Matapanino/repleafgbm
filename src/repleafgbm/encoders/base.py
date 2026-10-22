@@ -56,7 +56,11 @@ class BaseEncoder(ABC):
         Supervised encoders may override this to return cross-fitted or ordered
         representations while retaining a full-data fitted state for later
         :meth:`transform` calls. The default preserves the historical
-        ``fit``-then-``transform`` lifecycle.
+        ``fit``-then-``transform`` lifecycle. Estimators call this hook only on
+        the expert bundle they fit (``leaf_experts``, or an
+        ``ExpertBundleEncoder`` given as ``encoder``), which forwards it to each
+        child; the single-encoder path and encoders nested inside wrappers keep
+        ``fit`` → ``transform``.
         """
         self.fit(X_num, y=y, sample_weight=sample_weight)
         return self.transform(X_num)

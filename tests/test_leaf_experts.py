@@ -124,7 +124,6 @@ def test_default_path_matches_origin_main_bitwise_fixture():
         num_leaves=4,
         min_samples_leaf=5,
         leaf_model="adaptive",
-        encoder="identity",
         split_backend="numpy",
         random_state=7,
     ).fit(X, y)
@@ -225,14 +224,29 @@ def test_bundle_training_cache_uses_fit_transform_train_but_eval_uses_transform(
     assert 17 in _DifferentTrainEncoder.transform_row_counts
 
 
-@pytest.mark.parametrize("encoder", ["identity", "plr"])
-def test_leaf_experts_and_encoder_are_rejected(encoder):
+def test_encoder_public_default_is_identity():
+    assert RepLeafRegressor().get_params()["encoder"] == "identity"
+    from repleafgbm.external import RouterExtractionRegressor
+
+    assert RouterExtractionRegressor().get_params()["encoder"] == "identity"
+
+
+def test_leaf_experts_accept_public_default_encoder():
+    X = np.arange(40, dtype=np.float64).reshape(20, 2)
+    model = RepLeafRegressor(
+        n_estimators=1,
+        leaf_experts=[{"name": "x", "encoder": "identity"}],
+    ).fit(X, X[:, 0])
+    assert model.encoder_.expert_names == ["x"]
+
+
+def test_leaf_experts_and_nondefault_encoder_are_rejected():
     X = np.arange(40, dtype=np.float64).reshape(20, 2)
     with pytest.raises(ValueError, match="leaf_experts.*encoder"):
         RepLeafRegressor(
             n_estimators=1,
             leaf_experts=[{"name": "x", "encoder": "identity"}],
-            encoder=encoder,
+            encoder="plr",
         ).fit(X, X[:, 0])
 
 
@@ -327,6 +341,32 @@ def test_select_estimator_exposes_named_selection_diagnostics():
         tree.n_leaves for tree in model.booster_.trees_
     )
     assert sum(model.expert_selection_fraction_.values()) == pytest.approx(1.0)
+
+
+def test_select_direct_bundle_uses_blocks_but_single_encoder_uses_one_block():
+    rng = np.random.RandomState(30)
+    X = rng.normal(size=(180, 3))
+    y = np.where(X[:, 0] < 0, 2.0 * X[:, 1], -3.0 * X[:, 2])
+    common = dict(
+        n_estimators=2,
+        num_leaves=3,
+        min_samples_leaf=12,
+        leaf_model="select",
+        leaf_gate_margin=0.0,
+        split_backend="numpy",
+        random_state=5,
+    )
+    bundle = ExpertBundleEncoder(
+        expert_names=["left", "right"],
+        encoders=[make_encoder("identity"), make_encoder("identity")],
+        column_subsets=[[1], [2]],
+    )
+
+    bundled = RepLeafRegressor(encoder=bundle, **common).fit(X, y)
+    single = RepLeafRegressor(encoder="identity", **common).fit(X, y)
+
+    assert set(bundled.expert_selection_counts_) == {"constant", "left", "right"}
+    assert set(single.expert_selection_counts_) == {"constant", "linear"}
 
 
 @pytest.mark.parametrize("backend", ["numpy", "rust"])
@@ -932,3 +972,151 @@ def test_router_rejects_base_fitted_on_other_named_columns():
             min_samples_leaf=10,
             random_state=4,
         ).fit(X, y)
+
+
+def test_router_rejects_base_fitted_on_unrelated_named_columns():
+    pytest.importorskip("lightgbm")
+    from repleafgbm.external import LightGBMExternalModel, RouterExtractionRegressor
+
+    rng = np.random.RandomState(9)
+    X = pd.DataFrame(
+        {"r0": rng.normal(size=160), "r1": rng.normal(size=160), "teacher": rng.normal(size=160)}
+    )
+    y = X["r0"].to_numpy() + 2.0 * X["teacher"].to_numpy()
+    other = X[["r0", "teacher"]].rename(columns={"teacher": "foreign"})
+    base = LightGBMExternalModel(
+        task="regression", random_state=4, n_estimators=3, num_leaves=3, min_child_samples=10
+    ).fit(other, y)
+    with pytest.raises(ValueError, match="routing"):
+        RouterExtractionRegressor(
+            base=base,
+            leaf_model="embedded_linear",
+            leaf_only_features=["teacher"],
+            min_samples_leaf=10,
+            random_state=4,
+        ).fit(X, y)
+
+
+def test_expert_columns_scalar_string_is_rejected():
+    X = pd.DataFrame({"a": [0.0, 1.0, 2.0, 3.0] * 5, "b": [1.0, 2.0, 3.0, 4.0] * 5})
+    with pytest.raises(ValueError, match="list of column names"):
+        RepLeafRegressor(
+            n_estimators=1,
+            min_samples_leaf=5,
+            leaf_experts=[{"name": "e", "encoder": "identity", "columns": "ab"}],
+        ).fit(X, X["a"])
+
+
+def test_registry_name_bundle_keeps_training_representation_private():
+    from repleafgbm.encoders import _ENCODER_REGISTRY
+
+    rng = np.random.RandomState(10)
+    X = rng.normal(size=(100, 2))
+    y = X[:, 0] - X[:, 1]
+    ds = RepLeafDataset(X, y)
+    _ENCODER_REGISTRY.setdefault(_OOFEncoder.name, _OOFEncoder)
+    try:
+        model = RepLeafRegressor(
+            n_estimators=2,
+            num_leaves=3,
+            min_samples_leaf=5,
+            leaf_model="embedded_linear",
+            encoder="expert_bundle",
+            encoder_params={
+                "expert_names": ["oof"],
+                "column_subsets": [[0]],
+                "children": [{"name": _OOFEncoder.name, "config": {}}],
+            },
+            split_backend="numpy",
+            random_state=2,
+        ).fit(ds)
+    finally:
+        _ENCODER_REGISTRY.pop(_OOFEncoder.name, None)
+    np.testing.assert_array_equal(model.predict(ds), model.predict(X))
+
+
+def test_expert_encoder_instance_config_survives_save_load(tmp_path):
+    from sklearn.base import clone
+
+    from repleafgbm.encoders import make_encoder
+
+    rng = np.random.RandomState(12)
+    X = rng.normal(size=(120, 2))
+    y = X[:, 0] - X[:, 1]
+    plr = make_encoder("plr", n_bins=9, add_linear=False)
+    model = RepLeafRegressor(
+        n_estimators=1,
+        min_samples_leaf=8,
+        leaf_experts=[LeafExpert("p", plr, columns=[0])],
+        split_backend="numpy",
+        random_state=1,
+    ).fit(X, y)
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    assert loaded.leaf_experts[0]["encoder_params"] == plr.get_config()
+    refit = clone(loaded).fit(X, y)
+    assert refit.encoder_.encoders[0].n_bins == 9
+    assert refit.encoder_.encoders[0].add_linear is False
+
+
+def test_direct_bundle_round_trips_and_refits(tmp_path):
+    from sklearn.base import clone
+
+    from repleafgbm.encoders import ExpertBundleEncoder, make_encoder
+
+    rng = np.random.RandomState(13)
+    X = rng.normal(size=(120, 2))
+    y = X[:, 0] - X[:, 1]
+    bundle = ExpertBundleEncoder(
+        expert_names=["p"],
+        encoders=[make_encoder("plr", n_bins=5)],
+        column_subsets=[[0]],
+        max_output_dim=3,
+        reduction="random_projection",
+        random_state=0,
+    )
+    model = RepLeafRegressor(
+        n_estimators=1, min_samples_leaf=8, encoder=bundle, split_backend="numpy", random_state=1
+    ).fit(X, y)
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    assert loaded.encoder == "expert_bundle"
+    assert loaded.encoder_params["children"][0]["name"] == "plr"
+    refit = clone(loaded).fit(X, y)
+    assert refit.encoder_.max_output_dim == 3
+    assert refit.encoder_.reduction == "random_projection"
+    assert refit.leaf_embedding_dim_ == 3
+
+
+def test_bundle_constructor_validates_names_and_subsets():
+    from repleafgbm.encoders import ExpertBundleEncoder, make_encoder
+
+    with pytest.raises(ValueError, match="reserved"):
+        ExpertBundleEncoder(
+            expert_names=["constant"], encoders=[make_encoder("identity")], column_subsets=[[0]]
+        )
+    with pytest.raises(ValueError, match="integer"):
+        ExpertBundleEncoder(
+            expert_names=["e"], encoders=[make_encoder("identity")], column_subsets=[[0.1, 0.9]]
+        )
+    with pytest.raises(ValueError, match="duplicates"):
+        ExpertBundleEncoder(
+            expert_names=["e"], encoders=[make_encoder("identity")], column_subsets=[[0, 0]]
+        )
+
+
+def test_training_view_shares_routing_matrix():
+    from repleafgbm.core.leaf_models import make_leaf_model
+
+    X = np.arange(60, dtype=np.float64).reshape(20, 3)
+    ds = RepLeafDataset(X, X[:, 0], leaf_only_features=[2])
+    model = RepLeafRegressor(
+        n_estimators=1,
+        min_samples_leaf=5,
+        leaf_experts=[{"name": "t", "encoder": "identity", "columns": ["f2"]}],
+        split_backend="numpy",
+    )
+    leaf_model = make_leaf_model("embedded_linear", l2=1.0, min_samples_linear=10)
+    train = model._fit_leaf_encoder(ds, leaf_model)
+    assert train is not ds
+    assert train.get_raw_features() is ds.get_raw_features()

@@ -90,7 +90,10 @@ class BaseRepLeafModel(BaseEstimator):
             noise — a robust per-leaf hedge, not a statistically separated
             accuracy gain (it is per-leaf model *selection*, not jointly-trained
             leaf embeddings). The default is kept for backwards compatibility and
-            may change only in a major release.
+            may change only in a major release. For "select", an
+            ExpertBundleEncoder passed directly through ``encoder`` exposes each
+            bundle block as a candidate; any single encoder supplies one block,
+            making the choice equivalent to adaptive's constant-vs-linear gate.
         leaf_gate_margin: For leaf_model="adaptive" and "select" (inert otherwise). A
             leaf keeps its linear fit only if its weighted leave-one-out error
             beats the constant leaf's by this relative margin: 0.0 keeps any
@@ -107,20 +110,23 @@ class BaseRepLeafModel(BaseEstimator):
             those reductions, ~15% faster wide-emb fit; also covers multi-output
             vector leaves) while the solve stays float64. The "float64" default
             itself stays on the fast native kernel up to 256 dims. Inert for
-            "constant" and for narrow embeddings (emb_dim <= 128). Trade-off:
+            "constant", for "select" (float64 per-block solves), and for narrow
+            embeddings (emb_dim <= 128). Trade-off:
             "float32_gram" is allclose-not-bitwise and not guaranteed
             reproducible across BLAS vendors/platforms; "float64" is the
             reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.
         encoder: Encoder name ("identity", "plr") or a BaseEncoder instance.
             Ignored for leaf_model="constant"; for "raw_linear" a standardizing
-            identity encoder is always used. None selects "identity" unless
-            ``leaf_experts`` is supplied.
+            identity encoder is always used. Defaults to "identity"; when
+            ``leaf_experts`` is supplied, that unchanged default is ignored in
+            favor of the bundle.
         encoder_params: Keyword arguments for the encoder constructor when
             ``encoder`` is a name (e.g. {"n_bins": 16} for "plr").
         leaf_experts: Named frozen encoder blocks. Each dict/LeafExpert provides
             ``name``, ``encoder``, optional ``columns`` in the ordered numerical
-            block, and optional ``encoder_params``. Mutually exclusive with an
-            explicit ``encoder``; constant is an implicit select candidate.
+            block, and optional ``encoder_params``. Mutually exclusive with a
+            non-default ``encoder`` or top-level ``encoder_params``; constant is
+            an implicit select candidate.
         leaf_only_features: Numerical names or input-column indices excluded
             from tree routing and appended, in declared order, to the encoder's
             ordered numerical block. Values must be finite, and at least one
@@ -271,7 +277,7 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_gate_margin: float = 0.01,
         leaf_gate: str = "loo",
         leaf_fit_precision: str = "float64",
-        encoder: str | BaseEncoder | None = None,
+        encoder: str | BaseEncoder | None = "identity",
         encoder_params: dict | None = None,
         freeze_encoder: bool = True,
         max_leaf_emb_dim: int = 64,
@@ -776,9 +782,13 @@ class BaseRepLeafModel(BaseEstimator):
         may differ from ``transform`` (for example, an OOF target encoding),
         so every embedding encoder is fitted on a shallow view. The caller's
         dataset therefore keeps the ordinary ``transform()`` lifecycle when
-        reused as an eval_set entry or as predict input.
+        reused as an eval_set entry or as predict input. The routing matrix is
+        materialized before copying so the view shares it.
         """
-        train = copy.copy(dataset) if leaf_model.uses_embeddings else dataset
+        train = dataset
+        if leaf_model.uses_embeddings:
+            dataset.get_raw_features()  # materialize once; the view shares it
+            train = copy.copy(dataset)
         with timed(profiler, "encoder"):
             self.encoder_ = (
                 self._build_and_fit_encoder(train) if leaf_model.uses_embeddings else None
@@ -810,10 +820,10 @@ class BaseRepLeafModel(BaseEstimator):
                 "leaf_experts requires leaf_model='embedded_linear', "
                 "'adaptive', or 'select'"
             )
-        if self.encoder is not None or self.encoder_params is not None:
+        if self.encoder not in (None, "identity") or self.encoder_params is not None:
             raise ValueError(
-                "leaf_experts and encoder/encoder_params cannot be specified "
-                "together; put every encoder in leaf_experts"
+                "leaf_experts and a non-default encoder/encoder_params cannot "
+                "be specified together; put every encoder in leaf_experts"
             )
 
     def _build_expert_bundle(
@@ -872,6 +882,11 @@ class BaseRepLeafModel(BaseEstimator):
             encoders.append(child)
             if spec.columns is None:
                 subset = list(range(len(numerical_names)))
+            elif isinstance(spec.columns, (str, bytes)):
+                raise ValueError(
+                    f"leaf expert {spec.name!r} columns must be a list of column "
+                    "names or indices, not a single string"
+                )
             else:
                 subset = []
                 for column in spec.columns:
@@ -1137,7 +1152,12 @@ class BaseRepLeafModel(BaseEstimator):
         # Encoder instances are not JSON; persist the fitted encoder separately
         # and record only its registry name here.
         if isinstance(config.get("encoder"), BaseEncoder):
-            config["encoder"] = config["encoder"].name
+            encoder = config["encoder"]
+            if isinstance(encoder, ExpertBundleEncoder) and config.get("encoder_params") is None:
+                # A bundle cannot be rebuilt from its name alone (it needs its
+                # children); keep its constructor configuration for refits.
+                config["encoder_params"] = encoder.get_config()
+            config["encoder"] = encoder.name
         elif config.get("encoder") is None and config.get("leaf_experts") is None:
             # Preserve the historical serialized default for pre-v9 readers.
             config["encoder"] = "identity"
@@ -1148,12 +1168,19 @@ class BaseRepLeafModel(BaseEstimator):
             for raw in config["leaf_experts"]:
                 spec = raw if isinstance(raw, LeafExpert) else LeafExpert(**raw)
                 encoder = spec.encoder
+                if isinstance(encoder, BaseEncoder):
+                    # Keep the instance's constructor configuration (get_config
+                    # is the registry's constructor contract) so a reloaded
+                    # estimator refits the same encoder, not registry defaults.
+                    name, params = encoder.name, encoder.get_config()
+                else:
+                    name, params = encoder, spec.encoder_params
                 serialized.append(
                     {
                         "name": spec.name,
-                        "encoder": encoder.name if isinstance(encoder, BaseEncoder) else encoder,
+                        "encoder": name,
                         "columns": _json_columns(spec.columns),
-                        "encoder_params": spec.encoder_params,
+                        "encoder_params": params,
                     }
                 )
             config["leaf_experts"] = serialized
