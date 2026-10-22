@@ -753,6 +753,27 @@ def test_select_ignores_zero_hessian_rows():
     np.testing.assert_allclose(values.bias, expected.bias, rtol=1e-12, atol=1e-12)
 
 
+def test_select_fallback_does_not_build_native_row_arrays(monkeypatch):
+    """The NumPy fallback avoids native-only order/offset allocations."""
+    import repleafgbm.core.leaf_models as lm
+
+    rng = np.random.default_rng(20261025)
+    Z = rng.normal(size=(40, 2))
+    target = 2.0 * Z[:, 0] + rng.normal(scale=0.1, size=40)
+    monkeypatch.setattr(lm, "_native", None)
+
+    def unexpected_concatenate(*args, **kwargs):
+        raise AssertionError("fallback built native-only row arrays")
+
+    monkeypatch.setattr(lm.np, "concatenate", unexpected_concatenate)
+    model = SelectLeafModel(l2=0.5, min_samples_linear=5, leaf_gate_margin=0.0)
+    model.blocks = [slice(0, 2)]
+    values = model.fit_leaves(
+        [np.arange(40, dtype=np.int64)], -target, np.ones(40), Z
+    )
+    assert values.weights.shape == (1, 2)
+
+
 def test_numpy_integer_column_specs_survive_save_model(tmp_path):
     X = np.arange(60, dtype=np.float64).reshape(20, 3)
     y = X[:, 0]
