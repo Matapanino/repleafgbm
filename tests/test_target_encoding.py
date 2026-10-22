@@ -87,6 +87,19 @@ def test_unknown_key_uses_prior_and_nan_is_a_learned_key():
     np.testing.assert_allclose(transformed[1], [9.0, np.log1p(2.0)])
 
 
+def test_sparse_weights_use_full_prior_when_a_fold_complement_has_no_mass():
+    X = np.arange(4, dtype=np.float64).reshape(-1, 1)
+    y = np.array([7.0, 20.0, 30.0, 40.0])
+    weight = np.array([1.0, 0.0, 0.0, 0.0])
+    encoder = TargetEncodingEncoder(
+        n_folds=2, random_state=42, alpha=0.0, add_count=False
+    )
+
+    transformed = encoder.fit_transform_train(X, y, weight)
+
+    np.testing.assert_array_equal(transformed, np.full((4, 1), 7.0))
+
+
 def test_exact_round_and_bin_scales_have_the_documented_width():
     X = np.arange(24, dtype=np.float64).reshape(8, 3)
     y = np.arange(8, dtype=np.float64)

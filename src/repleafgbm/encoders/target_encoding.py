@@ -33,11 +33,13 @@ class TargetEncodingEncoder(BaseEncoder):
     and optional count features are ``log1p(count)``.
 
     ``fit_transform_train`` returns seeded K-fold out-of-fold representations
-    and then retains full-data tables for ordinary ``transform`` calls. If
-    backoff is enabled, a mean whose weighted count is below ``min_count`` is
-    replaced by the first later (coarser) scale meeting that threshold, or by
-    the prior if none does. Its count feature remains the count at the
-    originally requested scale.
+    and then retains full-data tables for ordinary ``transform`` calls. If a
+    fold's training complement has zero weight mass, its validation rows use
+    the full-data prior (and zero count) instead of failing. If backoff is
+    enabled, a mean whose weighted count is below ``min_count`` is replaced by
+    the first later (coarser) scale meeting that threshold, or by the prior if
+    none does. Its count feature remains the count at the originally requested
+    scale.
 
     The defaults ``alpha=5``, ``n_folds=5``, and ``min_count=20`` are placed
     operating points rather than universal constants. ``alpha=5`` follows the
@@ -302,7 +304,11 @@ class TargetEncodingEncoder(BaseEncoder):
         y: np.ndarray | None = None,
         sample_weight: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Return seeded K-fold OOF values and retain full-data fitted tables."""
+        """Return seeded K-fold OOF values and retain full-data fitted tables.
+
+        A fold whose training complement has no positive weight mass falls
+        back to the full-data prior for every mean and zero for every count.
+        """
         X, target, weight = self._validate_data(X_num, y, sample_weight)
         if self.n_folds > X.shape[0]:
             raise ValueError(f"n_folds={self.n_folds} cannot exceed n_rows={X.shape[0]}")
@@ -311,9 +317,17 @@ class TargetEncodingEncoder(BaseEncoder):
         folds = np.empty(X.shape[0], dtype=np.int64)
         folds[permutation] = np.arange(X.shape[0]) % self.n_folds
         output = np.empty((X.shape[0], self._output_dim(columns)), dtype=np.float64)
+        full_prior = float(np.dot(weight, target) / weight.sum())
         for fold in range(self.n_folds):
             validation = folds == fold
             training = ~validation
+            if weight[training].sum() <= 0.0:
+                fallback = np.empty(self._output_dim(columns), dtype=np.float64)
+                fallback[:: 1 + int(self.add_count)] = full_prior
+                if self.add_count:
+                    fallback[1::2] = 0.0
+                output[validation] = fallback
+                continue
             prior, tables = self._build_tables(
                 X[training], target[training], weight[training], columns
             )
