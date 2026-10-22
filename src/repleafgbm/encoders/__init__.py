@@ -115,3 +115,24 @@ __all__ = [
     "make_encoder",
     "encoder_from_config",
 ]
+
+# Keep space-bank additions together to avoid moving the existing registry.
+from repleafgbm.encoders.pca import PCAEncoder  # noqa: E402
+from repleafgbm.encoders.prototype import PrototypeDistanceEncoder  # noqa: E402
+from repleafgbm.encoders.quantile import QuantileEncoder  # noqa: E402
+from repleafgbm.encoders.rff import RandomFourierEncoder  # noqa: E402
+from repleafgbm.encoders.row_stats import RowStatsEncoder  # noqa: E402
+from repleafgbm.encoders.spline import SplineEncoder  # noqa: E402
+
+_ENCODER_REGISTRY.update({
+    "pca": PCAEncoder,
+    "quantile": QuantileEncoder,
+    "spline": SplineEncoder,
+    "rff": RandomFourierEncoder,
+    "row_stats": RowStatsEncoder,
+    "prototype": PrototypeDistanceEncoder,
+})
+__all__ += [
+    "PCAEncoder", "QuantileEncoder", "SplineEncoder", "RandomFourierEncoder",
+    "RowStatsEncoder", "PrototypeDistanceEncoder",
+]
