@@ -52,6 +52,8 @@ class ExpertBundleEncoder(BaseEncoder):
         self.expert_names = list(expert_names)
         self.encoders = list(encoders)
         self.column_subsets = [tuple(int(i) for i in cols) for cols in column_subsets]
+        if any(not cols for cols in self.column_subsets):
+            raise ValueError("expert column subsets must not be empty")
         self.max_output_dim = max_output_dim
         self.reduction = reduction
         self.random_state = random_state
@@ -69,6 +71,10 @@ class ExpertBundleEncoder(BaseEncoder):
                 f"expert column index {invalid[0]} is invalid for an ordered "
                 f"numerical block with {X_num.shape[1]} columns"
             )
+        if columns == tuple(range(X_num.shape[1])):
+            return X_num  # every column: no copy
+        if columns == tuple(range(columns[0], columns[-1] + 1)):
+            return X_num[:, columns[0] : columns[-1] + 1]  # contiguous: a view
         return X_num[:, columns]
 
     def fit(
@@ -144,7 +150,7 @@ class ExpertBundleEncoder(BaseEncoder):
             blocks.append(train_block)
             self.reduction_names_.append(reduction_name)
         self.encoders = fitted
-        return np.concatenate(blocks, axis=1)
+        return blocks[0] if len(blocks) == 1 else np.concatenate(blocks, axis=1)
 
     def transform(self, X_num: np.ndarray) -> np.ndarray:
         self._check_fitted("n_features_in_")
@@ -152,13 +158,18 @@ class ExpertBundleEncoder(BaseEncoder):
         if X_num.ndim != 2 or X_num.shape[1] != self.n_features_in_:
             got = X_num.shape[1] if X_num.ndim == 2 else X_num.shape
             raise ValueError(f"Expected {self.n_features_in_} numerical features, got {got}")
-        return np.concatenate(
-            [
-                encoder.transform(self._select(X_num, columns))
-                for encoder, columns in zip(self.encoders, self.column_subsets)
-            ],
-            axis=1,
-        )
+        if len(self.encoders) == 1:
+            return np.asarray(
+                self.encoders[0].transform(self._select(X_num, self.column_subsets[0])),
+                dtype=np.float64,
+            )
+        # Fill the output in place so only one child block is live at a time.
+        out = np.empty((X_num.shape[0], self.output_dim), dtype=np.float64)
+        for encoder, columns, block in zip(
+            self.encoders, self.column_subsets, self.block_slices
+        ):
+            out[:, block] = encoder.transform(self._select(X_num, columns))
+        return out
 
     @property
     def block_slices(self) -> list[slice]:

@@ -893,3 +893,20 @@ def test_leaf_only_compat_path_reports_index_errors(spec):
     ds = RepLeafDataset(X, X[:, 0], leaf_only_features=[1])
     with pytest.raises(ValueError, match="out of bounds"):
         RepLeafRegressor(n_estimators=1, leaf_only_features=spec).fit(ds)
+
+
+def test_bundle_does_not_copy_full_or_contiguous_column_subsets():
+    from repleafgbm.encoders import ExpertBundleEncoder, make_encoder
+
+    X = np.arange(40, dtype=np.float64).reshape(10, 4)
+    bundle = ExpertBundleEncoder(
+        expert_names=["all", "mid", "gap"],
+        encoders=[make_encoder("identity") for _ in range(3)],
+        column_subsets=[[0, 1, 2, 3], [1, 2], [0, 3]],
+    )
+    assert np.shares_memory(bundle._select(X, (0, 1, 2, 3)), X)
+    assert np.shares_memory(bundle._select(X, (1, 2)), X)
+    np.testing.assert_array_equal(bundle._select(X, (0, 3)), X[:, [0, 3]])
+    Z = bundle.fit_transform_train(X)
+    np.testing.assert_array_equal(bundle.transform(X), Z)
+    assert Z.shape == (10, 8)
