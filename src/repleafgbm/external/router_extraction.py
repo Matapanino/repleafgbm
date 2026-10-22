@@ -227,8 +227,13 @@ class _RouterExtractionMixin:
             leaf_gate_margin=self.leaf_gate_margin,
             leaf_gate=self.leaf_gate,
         )
+        # Same private training view as BaseRepLeafModel.fit: a bundle's
+        # fold-safe training representation must not leak into eval/predict.
+        train = dataset
+        if leaf_model.uses_embeddings and self.leaf_experts is not None:
+            train = copy.copy(dataset)
         self.encoder_ = (
-            self._build_and_fit_encoder(dataset) if leaf_model.uses_embeddings else None
+            self._build_and_fit_encoder(train) if leaf_model.uses_embeddings else None
         )
         if self.leaf_model == "select":
             if isinstance(self.encoder_, ExpertBundleEncoder):
@@ -270,7 +275,7 @@ class _RouterExtractionMixin:
         )
         self.booster_ = Booster(params, get_objective(self._objective_name))
         self.booster_.fit_with_routes(
-            dataset,
+            train,
             self.encoder_,
             leaf_model,
             trees,

@@ -402,9 +402,16 @@ class BaseRepLeafModel(BaseEstimator):
                 "classification only; use leaf_model='adaptive' or "
                 "'embedded_linear' for multi-output or multiclass targets"
             )
+        # A bundle caches its fold-safe training representation on the dataset
+        # it is fitted on (RepLeafDataset.set_embeddings). Fit it on a shallow
+        # view so the caller's dataset keeps the ordinary transform() lifecycle
+        # when it is reused as an eval_set entry or as predict input.
+        train = dataset
+        if leaf_model.uses_embeddings and self.leaf_experts is not None:
+            train = copy.copy(dataset)
         with timed(profiler, "encoder"):
             self.encoder_ = (
-                self._build_and_fit_encoder(dataset)
+                self._build_and_fit_encoder(train)
                 if leaf_model.uses_embeddings
                 else None
             )
@@ -450,7 +457,7 @@ class BaseRepLeafModel(BaseEstimator):
         if target_transform is not None:
             self.booster_.target_loc_, self.booster_.target_scale_ = target_transform
         self.booster_.fit(
-            dataset,
+            train,
             self.encoder_,
             leaf_model,
             eval_sets=eval_sets or None,

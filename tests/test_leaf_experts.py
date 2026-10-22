@@ -593,3 +593,78 @@ def test_routing_matrix_is_not_copied_per_call():
     assert routing is ds_leaf.get_raw_features()
     assert routing.flags["C_CONTIGUOUS"]
     np.testing.assert_array_equal(routing, X[:, [0, 2, 3]])
+
+
+class _OOFEncoder(BaseEncoder):
+    name = "review_oof"
+
+    def __init__(self):
+        self.n_features_in_ = None
+
+    def fit(self, X_num, y=None, sample_weight=None):
+        self.n_features_in_ = X_num.shape[1]
+        return self
+
+    def fit_transform_train(self, X_num, y=None, sample_weight=None):
+        self.fit(X_num)
+        return np.asarray(X_num, dtype=np.float64) + 100.0
+
+    def transform(self, X_num):
+        return np.asarray(X_num, dtype=np.float64) - 100.0
+
+    @property
+    def output_dim(self):
+        return self.n_features_in_
+
+    def get_config(self):
+        return {}
+
+    def get_state(self):
+        return {"n": np.asarray(self.n_features_in_)}
+
+    def set_state(self, state):
+        self.n_features_in_ = int(state["n"])
+
+
+def test_training_representation_does_not_leak_into_predict():
+    rng = np.random.RandomState(1)
+    X = rng.normal(size=(120, 2))
+    y = X[:, 0] - X[:, 1]
+    ds = RepLeafDataset(X, y)
+    model = RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=3,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        leaf_experts=[LeafExpert("oof", _OOFEncoder(), columns=[0])],
+        split_backend="numpy",
+        random_state=2,
+    ).fit(ds)
+    np.testing.assert_array_equal(model.predict(ds), model.predict(X))
+
+
+class _CountingOOFEncoder(_OOFEncoder):
+    name = "review_oof_counting"
+    transform_rows: list[int] = []
+
+    def transform(self, X_num):
+        type(self).transform_rows.append(len(X_num))
+        return super().transform(X_num)
+
+
+def test_aliased_eval_set_uses_transform_not_training_representation():
+    _CountingOOFEncoder.transform_rows.clear()
+    rng = np.random.RandomState(3)
+    X = rng.normal(size=(130, 2))
+    y = X[:, 0] - X[:, 1]
+    ds = RepLeafDataset(X, y)
+    RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=3,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        leaf_experts=[LeafExpert("oof", _CountingOOFEncoder(), columns=[0])],
+        split_backend="numpy",
+        random_state=2,
+    ).fit(ds, eval_set=[ds])
+    assert 130 in _CountingOOFEncoder.transform_rows
