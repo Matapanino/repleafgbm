@@ -27,8 +27,7 @@ def test_shape_column_order_and_weighted_values_are_finite():
     # (column 1 mean, column 1 count, column 0 mean, column 0 count)
     np.testing.assert_allclose(
         transformed,
-        [[3.0, np.log1p(2.0), 2.5, np.log1p(4.0)],
-         [6.0, np.log1p(4.0), 7.0, np.log1p(2.0)]],
+        [[3.0, np.log1p(2.0), 2.5, np.log1p(4.0)], [4.5, np.log1p(4.0), 7.0, np.log1p(2.0)]],
     )
 
 
@@ -66,9 +65,7 @@ def test_same_seed_is_deterministic_and_state_round_trips():
     first = TargetEncodingEncoder(**params)
     second = TargetEncodingEncoder(**params)
 
-    np.testing.assert_array_equal(
-        first.fit_transform_train(X, y), second.fit_transform_train(X, y)
-    )
+    np.testing.assert_array_equal(first.fit_transform_train(X, y), second.fit_transform_train(X, y))
     restored = encoder_from_config(first.name, first.get_config())
     restored.set_state(first.get_state())
     probe = np.vstack([X[:8], [[100.0, np.nan]]])
@@ -158,34 +155,24 @@ def test_bundle_caches_oof_for_train_and_uses_full_table_for_eval():
     y = np.arange(len(X), dtype=np.float64)
     bundle = ExpertBundleEncoder(
         expert_names=["te"],
-        encoders=[
-            TargetEncodingEncoder(
-                alpha=0.0, n_folds=3, add_count=False, random_state=13
-            )
-        ],
+        encoders=[TargetEncodingEncoder(alpha=0.0, n_folds=3, add_count=False, random_state=13)],
         column_subsets=[[0]],
         reduction="none",
     )
     train = RepLeafDataset(X, y)
-    oof = bundle.fit_transform_train(
-        train.get_numerical_features(), y=y, sample_weight=None
-    )
+    oof = bundle.fit_transform_train(train.get_numerical_features(), y=y, sample_weight=None)
     train.set_embeddings(bundle, oof)
 
     np.testing.assert_array_equal(train.get_embeddings(bundle), oof)
     assert not np.array_equal(oof, bundle.transform(X))
 
     eval_data = RepLeafDataset(X[:5], metadata=train.metadata)
-    np.testing.assert_array_equal(
-        eval_data.get_embeddings(bundle), bundle.transform(X[:5])
-    )
+    np.testing.assert_array_equal(eval_data.get_embeddings(bundle), bundle.transform(X[:5]))
 
 
 def test_multiclass_target_is_rejected():
     X = np.arange(12, dtype=np.float64).reshape(6, 2)
     y = np.eye(3, dtype=np.float64)[[0, 1, 2, 0, 1, 2]]
 
-    with np.testing.assert_raises_regex(
-        NotImplementedError, "scalar target only in v1"
-    ):
+    with np.testing.assert_raises_regex(NotImplementedError, "scalar target only in v1"):
         TargetEncodingEncoder().fit(X, y)

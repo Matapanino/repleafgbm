@@ -27,6 +27,7 @@ from repleafgbm.encoders.periodic import PeriodicEncoder
 from repleafgbm.encoders.plr import SimplePLREncoder
 from repleafgbm.encoders.projection import RandomProjectionEncoder
 from repleafgbm.encoders.subset import ColumnSubsetEncoder
+from repleafgbm.encoders.target_encoding import TargetEncodingEncoder
 from repleafgbm.encoders.target_reduction import TargetCorrelationEncoder
 from repleafgbm.encoders.torch_encoders import (
     TorchMLPEncoder,
@@ -40,6 +41,7 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "plr": SimplePLREncoder,
     "periodic": PeriodicEncoder,
     "cross": CrossInteractionEncoder,
+    "target_encoding": TargetEncodingEncoder,
     "column_subset": ColumnSubsetEncoder,
     "expert_bundle": ExpertBundleEncoder,
     # Learned encoders: torch needed only at fit time (see torch_encoders).
@@ -118,6 +120,7 @@ __all__ = [
     "SimplePLREncoder",
     "PeriodicEncoder",
     "CrossInteractionEncoder",
+    "TargetEncodingEncoder",
     "TorchPeriodicEncoder",
     "TorchPLREncoder",
     "TorchPeriodicPLREncoder",
