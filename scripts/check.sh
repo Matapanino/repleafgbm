@@ -19,6 +19,7 @@ python3 examples/binary_classification_basic.py
 python3 examples/multiclass_classification_basic.py
 python3 examples/multioutput_regression_basic.py
 python3 examples/dataset_api_basic.py
+python3 examples/matgbm_leaf_experts.py
 python3 examples/stacking_lightgbm.py  # self-skips without lightgbm
 
 echo "All checks passed."
