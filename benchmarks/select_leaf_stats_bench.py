@@ -69,6 +69,15 @@ def main() -> None:
     parser.add_argument("--mode", choices=("numpy", "ab"), default="ab")
     parser.add_argument("--reps", type=int, default=5)
     args = parser.parse_args()
+    if args.mode == "ab" and (
+        leaf_models._native is None
+        or not hasattr(leaf_models._native, "leaf_select_stats")
+    ):
+        parser.exit(
+            status=0,
+            message="SKIP: native extension predates leaf_select_stats; "
+            "A/B benchmark not run.\n",
+        )
     result = {"rows": 200_000, "leaves": 31, "blocks": 3, "reps": args.reps}
     for block_dim in (8, 16):
         data = _data(block_dim)

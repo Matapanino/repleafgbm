@@ -28,6 +28,18 @@ _NATIVE_HAS_SELECT = (
 )
 
 
+class _SelectStatsCallCounter:
+    """Minimal native proxy that proves select parity tests use the fast path."""
+
+    def __init__(self, native):
+        self._native = native
+        self.calls = 0
+
+    def leaf_select_stats(self, *args, **kwargs):
+        self.calls += 1
+        return self._native.leaf_select_stats(*args, **kwargs)
+
+
 @pytest.fixture
 def node_data():
     rng = np.random.default_rng(0)
@@ -104,8 +116,9 @@ def test_leaf_select_stats_matches_numpy(monkeypatch, block_dim):
         return model.last_selections_, values
 
     expected_selection, expected = fit(None)
-    native = importlib.import_module("repleafgbm_native")
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
     actual_selection, actual = fit(native)
+    assert native.calls == 1
     assert actual_selection == expected_selection
     np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
@@ -135,7 +148,9 @@ def test_leaf_select_stats_large_offset_matches_numpy(monkeypatch):
         return model.last_selections_, values
 
     expected_selection, expected = fit(None)
-    actual_selection, actual = fit(importlib.import_module("repleafgbm_native"))
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    actual_selection, actual = fit(native)
+    assert native.calls == 1
     assert actual_selection == expected_selection
     np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
@@ -155,7 +170,7 @@ def test_leaf_select_stats_fallback_tie_and_determinism(monkeypatch):
     hess = np.full(n, 0.25)
     # Leaf zero is deliberately below max(min_samples_linear, d + 2).
     leaf_rows = [np.arange(3, dtype=np.int64), np.arange(3, n, dtype=np.int64)]
-    native = importlib.import_module("repleafgbm_native")
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
     monkeypatch.setattr(leaf_models, "_native", native)
 
     def fit():
@@ -166,6 +181,7 @@ def test_leaf_select_stats_fallback_tie_and_determinism(monkeypatch):
 
     selection_a, first = fit()
     selection_b, second = fit()
+    assert native.calls == 2
     assert selection_a == selection_b == [None, 0]
     np.testing.assert_array_equal(first.bias, second.bias)
     np.testing.assert_array_equal(first.weights, second.weights)
@@ -197,7 +213,9 @@ def test_leaf_select_stats_singular_block_falls_through(monkeypatch):
         return model.last_selections_, values
 
     expected_selection, expected = fit(None)
-    actual_selection, actual = fit(importlib.import_module("repleafgbm_native"))
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    actual_selection, actual = fit(native)
+    assert native.calls == 1
     assert actual_selection == expected_selection == [1]
     np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
