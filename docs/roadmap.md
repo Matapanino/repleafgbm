@@ -529,6 +529,9 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 
 ## MatGBM track (2026-10-22〜)
 
+Design authority, experiment protocol, and decision record: [docs/matgbm/README.md](matgbm/README.md).
+The implementation status below is subordinate to that MatGBM design record.
+
 Implemented:
 
 - ✅ Leaf-only numerical columns: excluded from raw routing, split-feature
