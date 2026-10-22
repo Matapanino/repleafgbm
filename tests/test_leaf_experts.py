@@ -993,3 +993,27 @@ def test_registry_name_bundle_keeps_training_representation_private():
     finally:
         _ENCODER_REGISTRY.pop(_OOFEncoder.name, None)
     np.testing.assert_array_equal(model.predict(ds), model.predict(X))
+
+
+def test_expert_encoder_instance_config_survives_save_load(tmp_path):
+    from sklearn.base import clone
+
+    from repleafgbm.encoders import make_encoder
+
+    rng = np.random.RandomState(12)
+    X = rng.normal(size=(120, 2))
+    y = X[:, 0] - X[:, 1]
+    plr = make_encoder("plr", n_bins=9, add_linear=False)
+    model = RepLeafRegressor(
+        n_estimators=1,
+        min_samples_leaf=8,
+        leaf_experts=[LeafExpert("p", plr, columns=[0])],
+        split_backend="numpy",
+        random_state=1,
+    ).fit(X, y)
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    assert loaded.leaf_experts[0]["encoder_params"] == plr.get_config()
+    refit = clone(loaded).fit(X, y)
+    assert refit.encoder_.encoders[0].n_bins == 9
+    assert refit.encoder_.encoders[0].add_linear is False

@@ -1168,12 +1168,19 @@ class BaseRepLeafModel(BaseEstimator):
             for raw in config["leaf_experts"]:
                 spec = raw if isinstance(raw, LeafExpert) else LeafExpert(**raw)
                 encoder = spec.encoder
+                if isinstance(encoder, BaseEncoder):
+                    # Keep the instance's constructor configuration (get_config
+                    # is the registry's constructor contract) so a reloaded
+                    # estimator refits the same encoder, not registry defaults.
+                    name, params = encoder.name, encoder.get_config()
+                else:
+                    name, params = encoder, spec.encoder_params
                 serialized.append(
                     {
                         "name": spec.name,
-                        "encoder": encoder.name if isinstance(encoder, BaseEncoder) else encoder,
+                        "encoder": name,
                         "columns": _json_columns(spec.columns),
-                        "encoder_params": spec.encoder_params,
+                        "encoder_params": params,
                     }
                 )
             config["leaf_experts"] = serialized
