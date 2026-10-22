@@ -7,6 +7,13 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+### Added
+
+- Added `leaf_only_features`, named frozen `leaf_experts`, the fold-safe
+  `BaseEncoder.fit_transform_train` hook, and `leaf_model="select"` with
+  per-leaf weighted-LOO expert diagnostics. Models using leaf-only metadata or
+  bundles write format v9; unaffected configurations retain older formats.
+
 ## [1.12.0] - 2026-09-12
 
 Feature release: explicit learned-leaf dimensionality control, routed numeric
