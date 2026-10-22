@@ -1157,7 +1157,12 @@ class BaseRepLeafModel(BaseEstimator):
         # Encoder instances are not JSON; persist the fitted encoder separately
         # and record only its registry name here.
         if isinstance(config.get("encoder"), BaseEncoder):
-            config["encoder"] = config["encoder"].name
+            encoder = config["encoder"]
+            if isinstance(encoder, ExpertBundleEncoder) and config.get("encoder_params") is None:
+                # A bundle cannot be rebuilt from its name alone (it needs its
+                # children); keep its constructor configuration for refits.
+                config["encoder_params"] = encoder.get_config()
+            config["encoder"] = encoder.name
         elif config.get("encoder") is None and config.get("leaf_experts") is None:
             # Preserve the historical serialized default for pre-v9 readers.
             config["encoder"] = "identity"

@@ -49,9 +49,20 @@ class ExpertBundleEncoder(BaseEncoder):
             raise ValueError("expert names must be non-empty strings")
         if len(set(expert_names)) != len(expert_names):
             raise ValueError("expert names must be unique")
+        if "constant" in expert_names:
+            raise ValueError(
+                "expert name 'constant' is reserved for the implicit constant candidate"
+            )
         self.expert_names = list(expert_names)
         self.encoders = list(encoders)
-        self.column_subsets = [tuple(int(i) for i in cols) for cols in column_subsets]
+        subsets: list[tuple[int, ...]] = []
+        for cols in column_subsets:
+            if any(not isinstance(i, (int, np.integer)) for i in cols):
+                raise ValueError("expert column subsets must contain integer indices")
+            if len(set(cols)) != len(cols):
+                raise ValueError("expert column subsets must not contain duplicates")
+            subsets.append(tuple(int(i) for i in cols))
+        self.column_subsets = subsets
         if any(not cols for cols in self.column_subsets):
             raise ValueError("expert column subsets must not be empty")
         self.max_output_dim = max_output_dim
@@ -190,6 +201,9 @@ class ExpertBundleEncoder(BaseEncoder):
         return {
             "expert_names": list(self.expert_names),
             "column_subsets": [list(cols) for cols in self.column_subsets],
+            "max_output_dim": self.max_output_dim,
+            "reduction": self.reduction,
+            "random_state": self.random_state,
             "children": [
                 {"name": encoder.name, "config": encoder.get_config()}
                 for encoder in self.encoders

@@ -1017,3 +1017,49 @@ def test_expert_encoder_instance_config_survives_save_load(tmp_path):
     refit = clone(loaded).fit(X, y)
     assert refit.encoder_.encoders[0].n_bins == 9
     assert refit.encoder_.encoders[0].add_linear is False
+
+
+def test_direct_bundle_round_trips_and_refits(tmp_path):
+    from sklearn.base import clone
+
+    from repleafgbm.encoders import ExpertBundleEncoder, make_encoder
+
+    rng = np.random.RandomState(13)
+    X = rng.normal(size=(120, 2))
+    y = X[:, 0] - X[:, 1]
+    bundle = ExpertBundleEncoder(
+        expert_names=["p"],
+        encoders=[make_encoder("plr", n_bins=5)],
+        column_subsets=[[0]],
+        max_output_dim=3,
+        reduction="random_projection",
+        random_state=0,
+    )
+    model = RepLeafRegressor(
+        n_estimators=1, min_samples_leaf=8, encoder=bundle, split_backend="numpy", random_state=1
+    ).fit(X, y)
+    model.save_model(tmp_path / "m")
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    assert loaded.encoder == "expert_bundle"
+    assert loaded.encoder_params["children"][0]["name"] == "plr"
+    refit = clone(loaded).fit(X, y)
+    assert refit.encoder_.max_output_dim == 3
+    assert refit.encoder_.reduction == "random_projection"
+    assert refit.leaf_embedding_dim_ == 3
+
+
+def test_bundle_constructor_validates_names_and_subsets():
+    from repleafgbm.encoders import ExpertBundleEncoder, make_encoder
+
+    with pytest.raises(ValueError, match="reserved"):
+        ExpertBundleEncoder(
+            expert_names=["constant"], encoders=[make_encoder("identity")], column_subsets=[[0]]
+        )
+    with pytest.raises(ValueError, match="integer"):
+        ExpertBundleEncoder(
+            expert_names=["e"], encoders=[make_encoder("identity")], column_subsets=[[0.1, 0.9]]
+        )
+    with pytest.raises(ValueError, match="duplicates"):
+        ExpertBundleEncoder(
+            expert_names=["e"], encoders=[make_encoder("identity")], column_subsets=[[0, 0]]
+        )
