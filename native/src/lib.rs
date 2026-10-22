@@ -813,7 +813,6 @@ struct SelectBlockFit {
     block_index: usize,
     start: usize,
     width: usize,
-    z_mean: Vec<f64>,
     weights: Vec<f64>,
     inverse: Vec<f64>,
     error: f64,
@@ -850,13 +849,12 @@ fn fit_select_leaf(
     let mut h_sum = 0.0;
     let mut n_active = 0usize;
     let mut s_hz = vec![0.0; d];
-    let mut gz = vec![0.0; d];
-    let mut gram = vec![0.0; d * d];
     let mut all_z_min = vec![f64::INFINITY; d];
     let mut all_z_max = vec![f64::NEG_INFINITY; d];
 
-    // The full-width Gram is built exactly once. Candidate blocks later slice
-    // their diagonal submatrices from it; there is no K-fold statistics scan.
+    // Pass 1 computes the weighted means before any covariance-like quantity.
+    // Forming uncentered moments and subtracting their large mean products loses
+    // all useful precision when an embedding has a large offset.
     for &row_index in &order[lo..hi] {
         let row_index = row_index as usize;
         let g = grad[row_index];
@@ -887,16 +885,6 @@ fn fit_select_leaf(
         for a in 0..d {
             let za = zr[a];
             s_hz[a] += h * za;
-            gz[a] += g * za;
-            let hza = h * za;
-            for b in a..d {
-                gram[a * d + b] += hza * zr[b];
-            }
-        }
-    }
-    for a in 1..d {
-        for b in 0..a {
-            gram[a * d + b] = gram[b * d + a];
         }
     }
 
@@ -908,7 +896,65 @@ fn fit_select_leaf(
         z_max: vec![f64::INFINITY; d],
         selection: -1,
     };
+    if block_starts
+        .iter()
+        .zip(block_stops)
+        .all(|(&start, &stop)| n_active < min_samples_linear.max((stop - start) as usize + 2))
+    {
+        return result;
+    }
+
     let t_mean = -g_sum / h_sum;
+    let z_mean: Vec<f64> = s_hz.iter().map(|value| value / h_sum).collect();
+    let mut gram = vec![0.0; d * d];
+    let mut rhs = vec![0.0; d];
+    let mut centered_z = Vec::with_capacity(n_active * d);
+    let mut active_hess = Vec::with_capacity(n_active);
+    let mut active_targets = Vec::with_capacity(n_active);
+    let cap = 1.0 - LOO_LEVERAGE_CAP;
+    let mut constant_error = 0.0;
+
+    // Pass 2 explicitly centers every active row, then uses those centered
+    // values for Gram/RHS and retains them for the post-solve LOO calculation.
+    // This matches the stable NumPy path without rereading the source rows.
+    for &row_index in &order[lo..hi] {
+        let row_index = row_index as usize;
+        let h = hess[row_index];
+        if h.is_nan() || h <= 0.0 {
+            continue;
+        }
+        let target = -grad[row_index] / h;
+        let tc = target - t_mean;
+        let h0_raw = h / h_sum;
+        let h0 = if h0_raw.is_nan() {
+            f64::NAN
+        } else {
+            h0_raw.min(cap)
+        };
+        constant_error += h * ((t_mean - target) / (1.0 - h0)).powi(2);
+        active_hess.push(h);
+        active_targets.push(target);
+
+        let zr = &z_s[row_index * d..(row_index + 1) * d];
+        let centered_start = centered_z.len();
+        for a in 0..d {
+            centered_z.push(zr[a] - z_mean[a]);
+        }
+        let zc = &centered_z[centered_start..centered_start + d];
+        for a in 0..d {
+            let hza = h * zc[a];
+            rhs[a] += hza * tc;
+            for b in a..d {
+                gram[a * d + b] += hza * zc[b];
+            }
+        }
+    }
+    for a in 1..d {
+        for b in 0..a {
+            gram[a * d + b] = gram[b * d + a];
+        }
+    }
+
     let mut fits: Vec<SelectBlockFit> = Vec::with_capacity(block_starts.len());
     for (block_index, (&start_i, &stop_i)) in
         block_starts.iter().zip(block_stops.iter()).enumerate()
@@ -919,22 +965,21 @@ fn fit_select_leaf(
         if n_active < min_samples_linear.max(width + 2) {
             continue;
         }
-        let z_mean: Vec<f64> = (start..stop).map(|a| s_hz[a] / h_sum).collect();
         let mut matrix = vec![0.0; width * width];
-        let mut rhs = vec![0.0; width];
+        let mut block_rhs = vec![0.0; width];
         for a in 0..width {
             let ga = start + a;
-            rhs[a] = -gz[ga] - t_mean * s_hz[ga];
+            block_rhs[a] = rhs[ga];
             for b in 0..width {
                 let gb = start + b;
-                matrix[a * width + b] = gram[ga * d + gb] - z_mean[a] * s_hz[gb];
+                matrix[a * width + b] = gram[ga * d + gb];
             }
             matrix[a * width + a] += l2;
         }
         let Some(lu) = DenseLu::factor(matrix, width) else {
             continue;
         };
-        let Some(weights) = lu.solve(&rhs) else {
+        let Some(weights) = lu.solve(&block_rhs) else {
             continue;
         };
         let Some(inverse) = lu.inverse() else {
@@ -944,7 +989,6 @@ fn fit_select_leaf(
             block_index,
             start,
             width,
-            z_mean,
             weights,
             inverse,
             error: 0.0,
@@ -954,35 +998,18 @@ fn fit_select_leaf(
         return result;
     }
 
-    // One second row pass scores the constant and every solved block together.
-    // This replaces K independent NumPy gathers/LOO traversals.
-    let cap = 1.0 - LOO_LEVERAGE_CAP;
-    let mut constant_error = 0.0;
-    for &row_index in &order[lo..hi] {
-        let row_index = row_index as usize;
-        let h = hess[row_index];
-        if h.is_nan() || h <= 0.0 {
-            continue;
-        }
-        let target = -grad[row_index] / h;
-        let h0_raw = h / h_sum;
-        let h0 = if h0_raw.is_nan() {
-            f64::NAN
-        } else {
-            h0_raw.min(cap)
-        };
-        let constant_resid = t_mean - target;
-        constant_error += h * (constant_resid / (1.0 - h0)).powi(2);
-        let zr = &z_s[row_index * d..(row_index + 1) * d];
+    // Score every solved block from the centered rows produced by pass 2.
+    for (row, (&h, &target)) in active_hess.iter().zip(&active_targets).enumerate() {
+        let zc = &centered_z[row * d..(row + 1) * d];
         for fit in &mut fits {
             let mut prediction = t_mean;
             let mut quadratic = 0.0;
             for a in 0..fit.width {
-                let za = zr[fit.start + a] - fit.z_mean[a];
+                let za = zc[fit.start + a];
                 prediction += za * fit.weights[a];
                 let mut inv_z = 0.0;
                 for b in 0..fit.width {
-                    inv_z += fit.inverse[a * fit.width + b] * (zr[fit.start + b] - fit.z_mean[b]);
+                    inv_z += fit.inverse[a * fit.width + b] * zc[fit.start + b];
                 }
                 quadratic += za * inv_z;
             }
@@ -1012,7 +1039,7 @@ fn fit_select_leaf(
                 - fit
                     .weights
                     .iter()
-                    .zip(&fit.z_mean)
+                    .zip(&z_mean[fit.start..fit.start + fit.width])
                     .map(|(w, z)| w * z)
                     .sum::<f64>();
             result.weights[fit.start..fit.start + fit.width].copy_from_slice(&fit.weights);

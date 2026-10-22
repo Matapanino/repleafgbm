@@ -116,6 +116,34 @@ def test_leaf_select_stats_matches_numpy(monkeypatch, block_dim):
 @pytest.mark.skipif(
     not _NATIVE_HAS_SELECT, reason="native extension predates leaf_select_stats"
 )
+def test_leaf_select_stats_large_offset_matches_numpy(monkeypatch):
+    """Centered native ridge statistics stay stable for large feature offsets."""
+    rng = np.random.default_rng(20261024)
+    n = 2000
+    centered = rng.normal(size=(n, 2))
+    Z = np.ascontiguousarray(1e8 + centered)
+    target = 2.0 * centered[:, 0] - centered[:, 1] + rng.normal(scale=0.05, size=n)
+    grad = np.ascontiguousarray(-target)
+    hess = np.ones(n, dtype=np.float64)
+    leaf_rows = [np.arange(n, dtype=np.int64)]
+
+    def fit(native):
+        monkeypatch.setattr(leaf_models, "_native", native)
+        model = SelectLeafModel(l2=0.5, min_samples_linear=10, leaf_gate_margin=0.01)
+        model.blocks = [slice(0, 2)]
+        values = model.fit_leaves(leaf_rows, grad, hess, Z)
+        return model.last_selections_, values
+
+    expected_selection, expected = fit(None)
+    actual_selection, actual = fit(importlib.import_module("repleafgbm_native"))
+    assert actual_selection == expected_selection
+    np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
+
+
+@pytest.mark.skipif(
+    not _NATIVE_HAS_SELECT, reason="native extension predates leaf_select_stats"
+)
 def test_leaf_select_stats_fallback_tie_and_determinism(monkeypatch):
     """Small leaves stay constant, exact block ties choose first, repeats are exact."""
     rng = np.random.default_rng(44)
