@@ -24,7 +24,7 @@ CASES = [
     ("pca", {}, 5),
     ("pca", {"n_components": 3, "whiten": True}, 3),
     ("quantile", {}, 5),
-    ("quantile", {"n_quantiles": 17, "output": "normal", "add_tail": True}, 15),
+    ("quantile", {"n_quantiles": 17, "output": "normal"}, 5),
     ("spline", {}, 25),
     ("spline", {"n_knots": 2}, 15),
     ("rff", {}, 32),
@@ -170,14 +170,12 @@ def test_pca_orthogonality_whitening_and_clipping():
     np.testing.assert_allclose(plain.singular_values_, singular_values[:3])
 
 
-def test_quantile_rank_ties_tail_and_normal_values():
+def test_quantile_rank_ties_and_normal_values():
     X = np.arange(5.0)[:, None]
-    enc = QuantileEncoder(n_quantiles=5, add_tail=True).fit(X)
+    enc = QuantileEncoder(n_quantiles=5).fit(X)
     probe = np.array([[-2.0], [0.0], [1.0], [2.0], [4.0], [7.0], [np.nan]])
     Z = enc.transform(probe)
     np.testing.assert_allclose(Z[:, 0], [0, 0, 0.25, 0.5, 1, 1, 0])
-    np.testing.assert_allclose(Z[:, 1:], [[2, 0], [0, 0], [0, 0], [0, 0],
-                                       [0, 0], [0, 3], [0, 0]])
     assert ((Z[:, 0] >= 0) & (Z[:, 0] <= 1)).all()
     tied = QuantileEncoder(n_quantiles=5).fit(np.array([[0], [1], [1], [1], [2]]))
     assert tied.transform(np.array([[1]]))[0, 0] == 0.5
@@ -186,6 +184,12 @@ def test_quantile_rank_ties_tail_and_normal_values():
     np.testing.assert_allclose(normal[1:4, 0], expected, atol=1e-8)
     assert np.isfinite(normal).all()
     assert np.all(np.diff(normal[:, 0]) > 0)
+
+
+def test_quantile_tail_option_is_not_public():
+    assert "add_tail" not in inspect.signature(QuantileEncoder).parameters
+    with pytest.raises(TypeError, match="add_tail"):
+        QuantileEncoder(add_tail=True)
 
 
 def test_quantile_normal_tail_accuracy():

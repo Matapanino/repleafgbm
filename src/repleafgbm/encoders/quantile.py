@@ -1,4 +1,4 @@
-"""Interpolated empirical-rank spaces with optional normal scores and tails."""
+"""Interpolated empirical-rank spaces with optional normal scores."""
 
 from __future__ import annotations
 
@@ -34,29 +34,24 @@ def _normal_ppf(p: np.ndarray) -> np.ndarray:
 class QuantileEncoder(BaseEncoder):
     """Map columns to interpolated ECDF ranks using a fitted quantile table.
 
-    ``n_quantiles=100``, ``output='uniform'``, and ``add_tail=False`` are
-    unmeasured, chosen defaults. Quantiles span [0, 1]; ties get the midpoint
-    of their rank interval. Normal scores use an inverse-CDF approximation
-    and a chosen, unmeasured endpoint clip of 1e-7 (about +/-5.2 normal units).
-    With ``add_tail``, each column produces ``[rank, lower_distance,
-    upper_distance]``; distances beyond the fitted min/max are in raw units.
-    NaNs produce an all-zero feature block. All-missing columns use a zero
-    quantile table. Fit needs at least one row and column; targets/weights
-    are ignored. Only the quantile table is fitted state.
+    ``n_quantiles=100`` and ``output='uniform'`` are unmeasured, chosen
+    defaults. Quantiles span [0, 1]; ties get the midpoint of their rank
+    interval. Normal scores use an inverse-CDF approximation and a chosen,
+    unmeasured endpoint clip of 1e-7 (about +/-5.2 normal units). NaNs produce
+    zero. All-missing columns use a zero quantile table. Fit needs at least one
+    row and column; targets/weights are ignored. Only the quantile table is
+    fitted state.
     """
 
     name = "quantile"
 
-    def __init__(
-        self, n_quantiles: int = 100, output: str = "uniform", add_tail: bool = False,
-    ) -> None:
+    def __init__(self, n_quantiles: int = 100, output: str = "uniform") -> None:
         if not isinstance(n_quantiles, (int, np.integer)) or n_quantiles < 2:
             raise ValueError("n_quantiles must be an integer >= 2")
         if output not in ("uniform", "normal"):
             raise ValueError("output must be 'uniform' or 'normal'")
         self.n_quantiles = int(n_quantiles)
         self.output = output
-        self.add_tail = bool(add_tail)
         self.quantiles_: np.ndarray | None = None
 
     @staticmethod
@@ -92,7 +87,6 @@ class QuantileEncoder(BaseEncoder):
             raise ValueError(
                 f"Expected {self.quantiles_.shape[0]} numerical features, got {X_num.shape[1]}"
             )
-        width = 3 if self.add_tail else 1
         Z = np.zeros((len(X_num), self.output_dim), dtype=np.float64)
         qs = np.linspace(0.0, 1.0, self.n_quantiles)
         for j, table in enumerate(self.quantiles_):
@@ -101,20 +95,17 @@ class QuantileEncoder(BaseEncoder):
                           - np.interp(-col, -table[::-1], -qs[::-1]))
             if self.output == "normal":
                 rank = _normal_ppf(np.clip(rank, 1e-7, 1.0 - 1e-7))
-            Z[:, j * width] = rank
-            if self.add_tail:
-                Z[:, j * width + 1] = np.maximum(table[0] - col, 0.0)
-                Z[:, j * width + 2] = np.maximum(col - table[-1], 0.0)
-            Z[np.isnan(col), j * width : (j + 1) * width] = 0.0
+            Z[:, j] = rank
+            Z[np.isnan(col), j] = 0.0
         return Z
 
     @property
     def output_dim(self) -> int:
         self._check_fitted("quantiles_")
-        return int(self.quantiles_.shape[0] * (3 if self.add_tail else 1))
+        return int(self.quantiles_.shape[0])
 
     def get_config(self) -> dict:
-        return {"n_quantiles": self.n_quantiles, "output": self.output, "add_tail": self.add_tail}
+        return {"n_quantiles": self.n_quantiles, "output": self.output}
 
     def get_state(self) -> dict[str, np.ndarray]:
         self._check_fitted("quantiles_")
