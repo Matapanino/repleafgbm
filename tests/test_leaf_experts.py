@@ -7,6 +7,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.base import clone
 
 from repleafgbm import LeafExpert, RepLeafClassifier, RepLeafDataset, RepLeafRegressor
 from repleafgbm.core.leaf_models import AdaptiveLeafModel, SelectLeafModel
@@ -142,6 +143,15 @@ def test_default_path_matches_origin_main_bitwise_fixture():
         ]
     )
     assert np.array_equal(model.predict(X[:10]), expected)
+    implicit_identity = RepLeafRegressor(
+        n_estimators=4,
+        num_leaves=4,
+        min_samples_leaf=5,
+        leaf_model="adaptive",
+        split_backend="numpy",
+        random_state=7,
+    ).fit(X, y)
+    assert np.array_equal(implicit_identity.predict(X[:10]), expected)
 
 
 def test_expert_bundle_concatenates_named_column_subsets_in_order():
@@ -159,6 +169,37 @@ def test_expert_bundle_concatenates_named_column_subsets_in_order():
     assert bundle.block_slices == [slice(0, 2), slice(2, 3)]
     np.testing.assert_array_equal(Z, np.column_stack([X[:, 2:4], X[:, 0]]))
     np.testing.assert_array_equal(bundle.transform(X), Z)
+
+
+def test_max_leaf_embedding_dimension_is_applied_per_expert():
+    rng = np.random.RandomState(3)
+    X = rng.normal(size=(100, 2))
+    y = X[:, 0] - X[:, 1]
+    with pytest.warns(UserWarning, match="Expert"):
+        model = RepLeafRegressor(
+            n_estimators=1,
+            min_samples_leaf=5,
+            leaf_model="embedded_linear",
+            leaf_experts=[
+                {
+                    "name": "first",
+                    "encoder": "plr",
+                    "columns": [0],
+                    "encoder_params": {"n_bins": 4},
+                },
+                {
+                    "name": "second",
+                    "encoder": "plr",
+                    "columns": [1],
+                    "encoder_params": {"n_bins": 4},
+                },
+            ],
+            max_leaf_emb_dim=2,
+            random_state=1,
+        ).fit(X, y)
+    assert model.encoder_.block_slices == [slice(0, 2), slice(2, 4)]
+    assert model.leaf_embedding_input_dim_ == 10
+    assert model.leaf_embedding_dim_ == 4
 
 
 def test_bundle_training_cache_uses_fit_transform_train_but_eval_uses_transform():
@@ -192,6 +233,26 @@ def test_leaf_experts_and_encoder_are_rejected(encoder):
             n_estimators=1,
             leaf_experts=[{"name": "x", "encoder": "identity"}],
             encoder=encoder,
+        ).fit(X, X[:, 0])
+
+
+def test_leaf_expert_estimator_clone_preserves_omitted_encoder():
+    estimator = RepLeafRegressor(
+        n_estimators=1,
+        leaf_experts=[{"name": "x", "encoder": "identity"}],
+    )
+    cloned = clone(estimator)
+    X = np.arange(40, dtype=np.float64).reshape(20, 2)
+    cloned.fit(X, X[:, 0])
+    assert cloned.encoder_.expert_names == ["x"]
+
+
+def test_constant_is_a_reserved_expert_name():
+    X = np.arange(40, dtype=np.float64).reshape(20, 2)
+    with pytest.raises(ValueError, match="reserved"):
+        RepLeafRegressor(
+            n_estimators=1,
+            leaf_experts=[{"name": "constant", "encoder": "identity"}],
         ).fit(X, X[:, 0])
 
 
@@ -404,6 +465,54 @@ def test_select_rejects_multiclass_and_multioutput():
         RepLeafRegressor(n_estimators=1, leaf_model="select").fit(
             X, np.column_stack([X[:, 0], X[:, 1]])
         )
+
+
+def test_select_supports_binary_classification():
+    rng = np.random.RandomState(60)
+    X = rng.normal(size=(180, 3))
+    y = (2.0 * X[:, 1] - X[:, 2] > 0).astype(int)
+    model = RepLeafClassifier(
+        n_estimators=3,
+        num_leaves=4,
+        min_samples_leaf=10,
+        leaf_model="select",
+        leaf_experts=[{"name": "signal", "encoder": "identity", "columns": [1, 2]}],
+        split_backend="numpy",
+        random_state=6,
+    ).fit(X, y)
+    assert model.predict_proba(X).shape == (180, 2)
+    assert sum(model.expert_selection_counts_.values()) == sum(
+        tree.n_leaves for tree in model.booster_.trees_
+    )
+
+
+def test_router_extraction_accepts_leaf_only_bundle_select():
+    pytest.importorskip("lightgbm")
+    from repleafgbm.external import LightGBMExternalModel, RouterExtractionRegressor
+
+    rng = np.random.RandomState(62)
+    route = rng.uniform(-1, 1, size=180)
+    teacher = rng.normal(size=180)
+    X = pd.DataFrame({"route": route, "teacher": teacher})
+    y = np.where(route < 0, -2.0, 2.0) + 3.0 * teacher
+    model = RouterExtractionRegressor(
+        base=LightGBMExternalModel(
+            task="regression",
+            random_state=4,
+            n_estimators=3,
+            num_leaves=3,
+            min_child_samples=10,
+        ),
+        leaf_model="select",
+        leaf_experts=[
+            {"name": "teacher", "encoder": "identity", "columns": ["teacher"]}
+        ],
+        leaf_only_features=["teacher"],
+        min_samples_leaf=10,
+        random_state=4,
+    ).fit(X, y)
+    assert model.routing_feature_names_.tolist() == ["route"]
+    assert set(model.expert_selection_counts_) == {"constant", "teacher"}
 
 
 def test_leaf_only_bundle_select_roundtrip_writes_v9(tmp_path, monkeypatch):

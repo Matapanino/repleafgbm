@@ -69,7 +69,8 @@ class BaseRepLeafModel(BaseEstimator):
             features route as ordered thresholds, not subset splits, and
             multi-output targets are unsupported).
         min_samples_leaf: Minimum rows per leaf for a split to be valid.
-        leaf_model: "constant", "embedded_linear", "raw_linear", or "adaptive".
+        leaf_model: "constant", "embedded_linear", "raw_linear", "adaptive",
+            or "select".
             Defaults to "embedded_linear"; on unknown real-world tabular data the
             OpenML benchmark (docs/roadmap.md, Phase 25) found "constant" the
             honest practical choice — embedded leaves help mainly on
@@ -103,9 +104,17 @@ class BaseRepLeafModel(BaseEstimator):
             reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.
         encoder: Encoder name ("identity", "plr") or a BaseEncoder instance.
             Ignored for leaf_model="constant"; for "raw_linear" a standardizing
-            identity encoder is always used.
+            identity encoder is always used. None selects "identity" unless
+            ``leaf_experts`` is supplied.
         encoder_params: Keyword arguments for the encoder constructor when
             ``encoder`` is a name (e.g. {"n_bins": 16} for "plr").
+        leaf_experts: Named frozen encoder blocks. Each dict/LeafExpert provides
+            ``name``, ``encoder``, optional ``columns`` in the ordered numerical
+            block, and optional ``encoder_params``. Mutually exclusive with an
+            explicit ``encoder``; constant is an implicit select candidate.
+        leaf_only_features: Numerical names or input-column indices excluded
+            from tree routing and appended, in declared order, to the encoder's
+            ordered numerical block. Values must be finite.
         freeze_encoder: Must be True in v0. Encoder parameters are fitted once
             before boosting and never updated during boosting.
         max_leaf_emb_dim: Upper bound on the embedding dimension used by leaf
@@ -254,8 +263,6 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_fit_precision: str = "float64",
         encoder: str | BaseEncoder | None = None,
         encoder_params: dict | None = None,
-        leaf_experts: list[dict | LeafExpert] | None = None,
-        leaf_only_features: list[str | int] | None = None,
         freeze_encoder: bool = True,
         max_leaf_emb_dim: int = 64,
         leaf_reduction: str = "random_projection",
@@ -276,6 +283,8 @@ class BaseRepLeafModel(BaseEstimator):
         class_weight: dict | str | None = None,
         random_state: int | None = 42,
         device: str = "cpu",
+        leaf_experts: list[dict | LeafExpert] | None = None,
+        leaf_only_features: list[str | int] | None = None,
     ) -> None:
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -459,9 +468,10 @@ class BaseRepLeafModel(BaseEstimator):
         return self
 
     def get_feature_importance(self, importance_type: str = "gain") -> np.ndarray:
-        """Raw per-feature importance ("gain" or "split"), aligned with
-        ``feature_names_in_``. Aggregated over the trees prediction uses
-        (i.e. up to ``best_iteration_`` under early stopping)."""
+        """Raw routing-feature importance ("gain" or "split"), aligned with
+        ``routing_feature_names_``. Leaf-only columns are absent. Aggregated
+        over the trees prediction uses (up to ``best_iteration_`` under early
+        stopping)."""
         self._check_is_fitted()
         return self.booster_.feature_importance(
             len(self.routing_feature_names_), importance_type=importance_type
@@ -801,6 +811,11 @@ class BaseRepLeafModel(BaseEstimator):
                 raise ValueError("leaf_experts entries must be dict or LeafExpert")
             if not isinstance(spec.name, str) or not spec.name:
                 raise ValueError("leaf expert name must be a non-empty string")
+            if spec.name == "constant":
+                raise ValueError(
+                    "leaf expert name 'constant' is reserved for the implicit "
+                    "constant candidate"
+                )
             if spec.name in names:
                 raise ValueError(f"leaf expert name {spec.name!r} is duplicated")
             names.append(spec.name)
@@ -811,7 +826,7 @@ class BaseRepLeafModel(BaseEstimator):
                         "an encoder instance"
                     )
                 child = copy.deepcopy(spec.encoder)
-            else:
+            elif isinstance(spec.encoder, str):
                 params = dict(spec.encoder_params or {})
                 device = getattr(self, "device", "cpu")
                 if device == "cuda" and spec.encoder.startswith("torch_"):
@@ -820,6 +835,11 @@ class BaseRepLeafModel(BaseEstimator):
                     spec.encoder,
                     _default_random_state=self.random_state,
                     **params,
+                )
+            else:
+                raise ValueError(
+                    f"leaf expert {spec.name!r} encoder must be a registry name "
+                    "or BaseEncoder instance"
                 )
             encoders.append(child)
             if spec.columns is None:
@@ -1057,6 +1077,11 @@ class BaseRepLeafModel(BaseEstimator):
         )
         if md.frequency_maps:
             feats += f", {len(md.frequency_maps)} frequency-encoded"
+        if md.leaf_only_features:
+            feats += (
+                f", {len(md.leaf_only_features)} leaf-only, "
+                f"{len(md.routing_feature_names)} routable"
+            )
         lines.append(feats + ")")
         shown = [
             f"{k}={params[k]}"
@@ -1071,7 +1096,9 @@ class BaseRepLeafModel(BaseEstimator):
         order = np.argsort(importance)[::-1]
         top = [i for i in order[:top_features] if importance[i] > 0]
         if top:
-            lines.append(f"top features by gain (of {md.n_features}):")
+            lines.append(
+                f"top features by gain (of {len(md.routing_feature_names)} routable):"
+            )
             lines += [
                 f"  {self.routing_feature_names_[i]}: {importance[i]:.1%}" for i in top
             ]
@@ -1083,6 +1110,9 @@ class BaseRepLeafModel(BaseEstimator):
         # and record only its registry name here.
         if isinstance(config.get("encoder"), BaseEncoder):
             config["encoder"] = config["encoder"].name
+        elif config.get("encoder") is None and config.get("leaf_experts") is None:
+            # Preserve the historical serialized default for pre-v9 readers.
+            config["encoder"] = "identity"
         if config.get("leaf_experts") is not None:
             serialized = []
             for raw in config["leaf_experts"]:

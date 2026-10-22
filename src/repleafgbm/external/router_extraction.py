@@ -171,18 +171,18 @@ class _RouterExtractionMixin:
         self,
         base: LightGBMExternalModel | None = None,
         leaf_model: str = "embedded_linear",
-        leaf_gate_margin: float = 0.01,
-        leaf_gate: str = "loo",
         encoder: str | None = None,
         encoder_params: dict | None = None,
-        leaf_experts: list[dict | LeafExpert] | None = None,
-        leaf_only_features: list[str | int] | None = None,
         max_leaf_emb_dim: int = 64,
         l2_leaf: float = 1.0,
         min_samples_leaf: int = 20,
         early_stopping_rounds: int | None = None,
         eval_metric: str | None = None,
         random_state: int | None = 42,
+        leaf_gate_margin: float = 0.01,
+        leaf_gate: str = "loo",
+        leaf_experts: list[dict | LeafExpert] | None = None,
+        leaf_only_features: list[str | int] | None = None,
     ) -> None:
         self.base = base
         self.leaf_model = leaf_model
