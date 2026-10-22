@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import log_loss, root_mean_squared_error
+from sklearn.metrics import log_loss, mean_squared_error
 
 import repleafgbm.sklearn as sklearn_module
 from repleafgbm import RepLeafClassifier, RepLeafRegressor
@@ -460,7 +460,7 @@ def _estimator(objective: str, **kwargs: Any):
 
 def _score(model: Any, test: pd.DataFrame, y_test: np.ndarray, objective: str) -> float:
     if objective == "reg":
-        return float(root_mean_squared_error(y_test, model.predict(test)))
+        return float(math.sqrt(mean_squared_error(y_test, model.predict(test))))
     probability = model.predict_proba(test)[:, 1]
     return float(log_loss(y_test, probability, labels=[0, 1]))
 
@@ -797,20 +797,23 @@ def aggregate_size_curve(size_records: pd.DataFrame, candidate: str) -> pd.DataF
     """Aggregate a K × observed-leaf-size null curve with seed variation."""
 
     selected = size_records[size_records.candidate == candidate]
-    per_seed = (
-        selected.groupby(["objective", "n_false", "size_bin", "seed"], as_index=False)
-        .apply(
-            lambda frame: pd.Series(
-                {
-                    "null_rate": np.average(frame.null_rate, weights=frame.n_leaves),
-                    "mean_n_leaf": np.average(frame.mean_n_leaf, weights=frame.n_leaves),
-                    "n_leaves": frame.n_leaves.sum(),
-                }
-            ),
-            include_groups=False,
+    per_seed_rows = []
+    for key, frame in selected.groupby(
+        ["objective", "n_false", "size_bin", "seed"], sort=False
+    ):
+        objective, n_false, bin_name, seed = key
+        per_seed_rows.append(
+            {
+                "objective": objective,
+                "n_false": n_false,
+                "size_bin": bin_name,
+                "seed": seed,
+                "null_rate": np.average(frame.null_rate, weights=frame.n_leaves),
+                "mean_n_leaf": np.average(frame.mean_n_leaf, weights=frame.n_leaves),
+                "n_leaves": frame.n_leaves.sum(),
+            }
         )
-        .reset_index(drop=True)
-    )
+    per_seed = pd.DataFrame(per_seed_rows)
     rows = []
     for (objective, n_false, bin_name), frame in per_seed.groupby(
         ["objective", "n_false", "size_bin"], sort=False
@@ -851,14 +854,15 @@ def build_report(
     judgments = judge_candidates(calibration)
     passing = judgments[judgments.passes]
     recommendation = _recommendation(passing)
+    exploratory = _exploratory_candidate(judgments)
     curve_candidate = (
-        recommendation
-        if recommendation in set(size_records.candidate)
+        exploratory
+        if exploratory in set(size_records.candidate)
         else "fixed m=0.01"
     )
     curve = aggregate_size_curve(size_records, curve_candidate)
     k_effect = _k_effect(fixed)
-    accuracy_cost = _accuracy_cost(tradeoff, recommendation)
+    accuracy_cost = _accuracy_cost(tradeoff, exploratory)
     mode = "quick" if settings.quick else "full"
     command = (
         "`OMP_NUM_THREADS=1 PYTHONPATH=src python3 "
@@ -874,13 +878,13 @@ def build_report(
         "",
         f"1. 実行モードは **{mode}**、学習行数は {list(settings.n_rows)}、"
         f"seed は {list(settings.seeds)}。",
-        f"2. 固定 margin=0.01 の K=1→7 による null 選択率変化は {k_effect}。",
+        f"2. 固定 margin=0.01 の K=1→7 による pooled null 選択率変化は {k_effect}。",
         "3. null 選択率は実葉サイズ別に集計し、小葉の一部は "
         "`min_samples_linear` により自動的に constant となる。",
-        f"4. 凍結判定を全セルで満たす最小候補は **{recommendation}**。",
+        f"4. 凍結判定を全セルで満たす既定値候補は **{recommendation}**。",
         "5. 判定は null≤5%、A/B 真ブロック回収≥80%、"
         "各セルの holdout が連結 ridge 以下、の同時条件。",
-        f"6. 推奨候補の平均 holdout 差（select−embedded）は {accuracy_cost}（負が select 優位）。",
+        f"6. null-only の追試候補は **{exploratory}**、平均 holdout 差は {accuracy_cost}。",
         "7. per-tree null q95 は各木の各葉における偽ブロック最大 LOO 改善の95分位を使う。",
         "8. `sqrt` 規則の K は偽ブロック数で、"
         "`c*sqrt(log(K+1)/n_leaf)` を実葉サイズごとに適用した。",
@@ -944,6 +948,10 @@ def build_report(
         "K>0 セルの最大 null 率、全セルの最小回収率、全セルの最大 holdout 差を使った。"
         " pooled mean だけで悪いセルを隠さない保守的判定である。",
         "",
+        f"正式な既定値変更は提案しない。null≤5% だけを満たす候補のうち回収率が最も高い "
+        f"**{exploratory}** を full-grid 追試候補とするが、回収率と worst-cell holdout 条件を"
+        "満たさないためライブラリ既定にはできない。",
+        "",
         "## 前提の誤り・限界",
         "",
         "- Goal は d の関数を求めるが、凍結要因では d=4 しか指定されていない。"
@@ -980,9 +988,19 @@ def build_report(
 
 def _recommendation(passing: pd.DataFrame) -> str:
     if passing.empty:
-        return "該当なし"
+        return "該当なし（既定変更なし）"
     order = {"fixed": 0, "sqrt": 1, "perm95": 2}
     ranked = passing.assign(_order=passing.family.map(order)).sort_values(["_order", "value"])
+    return str(ranked.iloc[0].candidate)
+
+
+def _exploratory_candidate(judgments: pd.DataFrame) -> str:
+    controlled = judgments[judgments.max_null <= 0.05]
+    if controlled.empty:
+        return "該当なし"
+    ranked = controlled.sort_values(
+        ["min_recovery", "max_delta"], ascending=[False, True]
+    )
     return str(ranked.iloc[0].candidate)
 
 
