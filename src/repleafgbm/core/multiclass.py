@@ -112,7 +112,7 @@ class MulticlassBooster:
             min_samples_leaf=p.min_samples_leaf,
             l2=p.l2_leaf,
             backend=make_split_backend(p.split_backend),
-            categorical_indices=dataset.metadata.categorical_indices,
+            categorical_indices=dataset.metadata.routing_categorical_indices,
             cat_smooth=p.cat_smooth,
             min_data_per_group=p.min_data_per_group,
             max_cat_threshold=p.max_cat_threshold,
@@ -151,7 +151,7 @@ class MulticlassBooster:
             logger = EvalLogger(p.verbose)
             sampler = TreeSampler(
                 y.shape[0],
-                dataset.n_features,
+                dataset.get_raw_features().shape[1],
                 p.subsample,
                 p.subsample_freq,
                 p.colsample_bytree,

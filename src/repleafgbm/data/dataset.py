@@ -58,6 +58,7 @@ class RepLeafDataset:
         categorical_features: list[str] | None = None,
         numerical_features: list[str] | None = None,
         frequency_encoded_features: list[str] | None = None,
+        leaf_only_features: list[str | int] | None = None,
         metadata: FeatureMetadata | None = None,
     ) -> None:
         if metadata is None:
@@ -66,9 +67,21 @@ class RepLeafDataset:
                 categorical_features=categorical_features,
                 numerical_features=numerical_features,
                 frequency_encoded_features=frequency_encoded_features,
+                leaf_only_features=leaf_only_features,
+            )
+        elif leaf_only_features is not None:
+            raise ValueError(
+                "leaf_only_features must be stored in metadata when metadata is provided"
             )
         self.metadata = metadata
         self._X_raw = encode_features(X, metadata)
+        for name in metadata.leaf_only_features:
+            values = self._X_raw[:, metadata.feature_names.index(name)]
+            if not np.isfinite(values).all():
+                raise ValueError(
+                    f"leaf-only feature {name!r} must contain only finite float values; "
+                    "NaN and inf are not allowed"
+                )
         self.y = None if y is None else as_target_array(y, n_rows=self._X_raw.shape[0])
         #: Optional per-row weights (n_rows,) or None for uniform. The booster
         #: scales gradients/Hessians by these (see core/booster.weight_grad_hess).
@@ -102,8 +115,8 @@ class RepLeafDataset:
     # Views used by the booster and encoders
     # ------------------------------------------------------------------ #
     def get_raw_features(self) -> np.ndarray:
-        """Full raw feature matrix used for tree routing (splits)."""
-        return self._X_raw
+        """Raw routing matrix, excluding leaf-only columns."""
+        return self._X_raw[:, self.metadata.routing_indices]
 
     def get_numerical_features(self) -> np.ndarray:
         """Numerical columns only, used as encoder input in v0."""

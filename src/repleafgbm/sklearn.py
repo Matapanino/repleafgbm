@@ -252,6 +252,7 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_fit_precision: str = "float64",
         encoder: str | BaseEncoder = "identity",
         encoder_params: dict | None = None,
+        leaf_only_features: list[str | int] | None = None,
         freeze_encoder: bool = True,
         max_leaf_emb_dim: int = 64,
         leaf_reduction: str = "random_projection",
@@ -285,6 +286,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.leaf_fit_precision = leaf_fit_precision
         self.encoder = encoder
         self.encoder_params = encoder_params
+        self.leaf_only_features = leaf_only_features
         self.freeze_encoder = freeze_encoder
         self.max_leaf_emb_dim = max_leaf_emb_dim
         self.leaf_reduction = leaf_reduction
@@ -358,6 +360,9 @@ class BaseRepLeafModel(BaseEstimator):
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
+        self.routing_feature_names_ = np.asarray(
+            dataset.metadata.routing_feature_names, dtype=object
+        )
 
         leaf_model = make_leaf_model(
             self.leaf_model,
@@ -429,7 +434,7 @@ class BaseRepLeafModel(BaseEstimator):
         (i.e. up to ``best_iteration_`` under early stopping)."""
         self._check_is_fitted()
         return self.booster_.feature_importance(
-            self.n_features_in_, importance_type=importance_type
+            len(self.routing_feature_names_), importance_type=importance_type
         )
 
     @property
@@ -560,6 +565,18 @@ class BaseRepLeafModel(BaseEstimator):
         if isinstance(X, RepLeafDataset):
             if y is not None:
                 raise ValueError("Pass y inside the RepLeafDataset, not separately")
+            leaf_only_features = getattr(self, "leaf_only_features", None)
+            if leaf_only_features is not None:
+                expected = [
+                    X.metadata.feature_names[int(c)]
+                    if isinstance(c, (int, np.integer))
+                    else str(c)
+                    for c in leaf_only_features
+                ]
+                if X.metadata.leaf_only_features != expected:
+                    raise ValueError(
+                        "leaf_only_features differs from the RepLeafDataset metadata"
+                    )
             return X
         if not self._is_dataframe(X):
             if y is None:
@@ -568,7 +585,9 @@ class BaseRepLeafModel(BaseEstimator):
                     "passed, but the target y is None."
                 )
             X, y = self._validate_array_Xy(X, y)
-        return RepLeafDataset(X, y)
+        return RepLeafDataset(
+            X, y, leaf_only_features=getattr(self, "leaf_only_features", None)
+        )
 
     def _prepare_eval_sets(self, eval_set: Any) -> list[tuple[str, RepLeafDataset]]:
         """Normalize eval_set entries (datasets or (X, y) tuples) for the booster."""
@@ -877,7 +896,7 @@ class BaseRepLeafModel(BaseEstimator):
         if top:
             lines.append(f"top features by gain (of {md.n_features}):")
             lines += [
-                f"  {self.feature_names_in_[i]}: {importance[i]:.1%}" for i in top
+                f"  {self.routing_feature_names_[i]}: {importance[i]:.1%}" for i in top
             ]
         return "\n".join(lines)
 
@@ -921,6 +940,9 @@ class BaseRepLeafModel(BaseEstimator):
         model.metadata_ = parts["metadata"]
         model.n_features_in_ = parts["metadata"].n_features
         model.feature_names_in_ = np.asarray(parts["metadata"].feature_names, dtype=object)
+        model.routing_feature_names_ = np.asarray(
+            parts["metadata"].routing_feature_names, dtype=object
+        )
         if model.encoder_ is None:
             model.leaf_embedding_input_dim_ = model.leaf_embedding_dim_ = 0
             model.leaf_reduction_ = "none"

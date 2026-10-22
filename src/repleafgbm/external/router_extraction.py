@@ -171,6 +171,7 @@ class _RouterExtractionMixin:
         leaf_model: str = "embedded_linear",
         encoder: str = "identity",
         encoder_params: dict | None = None,
+        leaf_only_features: list[str | int] | None = None,
         max_leaf_emb_dim: int = 64,
         l2_leaf: float = 1.0,
         min_samples_leaf: int = 20,
@@ -182,6 +183,7 @@ class _RouterExtractionMixin:
         self.leaf_model = leaf_model
         self.encoder = encoder
         self.encoder_params = encoder_params
+        self.leaf_only_features = leaf_only_features
         self.max_leaf_emb_dim = max_leaf_emb_dim
         self.l2_leaf = l2_leaf
         self.min_samples_leaf = min_samples_leaf
@@ -200,6 +202,9 @@ class _RouterExtractionMixin:
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
+        self.routing_feature_names_ = np.asarray(
+            dataset.metadata.routing_feature_names, dtype=object
+        )
 
         eval_sets = self._prepare_eval_sets(eval_set)
         if self.early_stopping_rounds is not None and not eval_sets:
