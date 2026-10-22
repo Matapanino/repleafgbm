@@ -691,3 +691,21 @@ def test_router_extraction_rejects_base_fitted_with_leaf_only_columns():
             min_samples_leaf=10,
             random_state=4,
         ).fit(X, y)
+
+
+@pytest.mark.parametrize("leaf_model", ["constant", "raw_linear"])
+def test_router_extraction_rejects_experts_for_unsupported_leaf_models(leaf_model):
+    pytest.importorskip("lightgbm")
+    from repleafgbm.external import LightGBMExternalModel, RouterExtractionRegressor
+
+    X = np.arange(120, dtype=np.float64).reshape(60, 2)
+    y = X[:, 0]
+    with pytest.raises(ValueError, match="leaf_experts requires leaf_model"):
+        RouterExtractionRegressor(
+            base=LightGBMExternalModel(
+                task="regression", random_state=4, n_estimators=2, num_leaves=3, min_child_samples=5
+            ),
+            leaf_model=leaf_model,
+            leaf_experts=[{"name": "a", "encoder": "identity", "columns": [0]}],
+            min_samples_leaf=5,
+        ).fit(X, y)

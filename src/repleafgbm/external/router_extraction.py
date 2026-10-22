@@ -205,6 +205,7 @@ class _RouterExtractionMixin:
     ):
         # Replay cannot honor weights; warn and ignore rather than raising.
         self._enforce_weight_capability(sample_weight)
+        self._validate_leaf_expert_options()
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
         self.metadata_ = dataset.metadata

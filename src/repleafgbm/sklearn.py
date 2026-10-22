@@ -385,15 +385,7 @@ class BaseRepLeafModel(BaseEstimator):
             leaf_gate=self.leaf_gate,
             leaf_fit_precision=self.leaf_fit_precision,
         )
-        if self.leaf_experts is not None and self.leaf_model not in (
-            "embedded_linear",
-            "adaptive",
-            "select",
-        ):
-            raise ValueError(
-                "leaf_experts requires leaf_model='embedded_linear', "
-                "'adaptive', or 'select'"
-            )
+        self._validate_leaf_expert_options()
         if self.leaf_model == "select" and (
             dataset.y.ndim != 1 or getattr(self, "n_classes_", 2) > 2
         ):
@@ -696,11 +688,6 @@ class BaseRepLeafModel(BaseEstimator):
                 f"max_leaf_emb_dim must be >= 1, got {self.max_leaf_emb_dim}"
             )
         if self.leaf_experts is not None:
-            if self.encoder is not None or self.encoder_params is not None:
-                raise ValueError(
-                    "leaf_experts and encoder/encoder_params cannot be specified "
-                    "together; put every encoder in leaf_experts"
-                )
             encoder = self._build_expert_bundle(dataset, reduction)
         elif self.leaf_model == "raw_linear":
             encoder: BaseEncoder = make_encoder("identity", standardize=True)
@@ -794,6 +781,26 @@ class BaseRepLeafModel(BaseEstimator):
             self.leaf_reduction_ = reduction
         self.leaf_embedding_dim_ = encoder.output_dim
         return encoder
+
+    def _validate_leaf_expert_options(self) -> None:
+        """Reject ``leaf_experts`` combinations the public contract excludes.
+
+        Shared by :meth:`fit` and the router-extraction fit path so neither can
+        silently ignore experts (``constant``) or replace the ``raw_linear``
+        standardized encoder with a bundle.
+        """
+        if self.leaf_experts is None:
+            return
+        if self.leaf_model not in ("embedded_linear", "adaptive", "select"):
+            raise ValueError(
+                "leaf_experts requires leaf_model='embedded_linear', "
+                "'adaptive', or 'select'"
+            )
+        if self.encoder is not None or self.encoder_params is not None:
+            raise ValueError(
+                "leaf_experts and encoder/encoder_params cannot be specified "
+                "together; put every encoder in leaf_experts"
+            )
 
     def _build_expert_bundle(
         self, dataset: RepLeafDataset, reduction: str
