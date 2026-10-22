@@ -265,6 +265,18 @@ class _RouterExtractionMixin:
                 self.base_.fit(dataset)
 
         trees, _ = extract_routes(self.base_)
+        # Extracted split indices address the routing matrix; a base fitted on
+        # a different column set (e.g. the full input including leaf-only
+        # columns) would route on the wrong feature or index out of bounds.
+        n_routing = train.get_raw_features().shape[1]
+        n_base = int(_unwrap_booster(self.base_)[0].num_feature())
+        if n_base != n_routing:
+            raise ValueError(
+                f"The base model was fitted on {n_base} features, but the routing "
+                f"matrix has {n_routing} columns (leaf_only_features are excluded "
+                "from routing). Fit the base on dataset.get_raw_features(), or "
+                "pass an unfitted base so it is trained on the routing columns."
+            )
         replay_rate = float(self.base_.model_.get_params().get("learning_rate", 0.1))
         params = BoosterParams(
             n_estimators=len(trees),

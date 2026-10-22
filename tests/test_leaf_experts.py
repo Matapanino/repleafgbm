@@ -668,3 +668,26 @@ def test_aliased_eval_set_uses_transform_not_training_representation():
         random_state=2,
     ).fit(ds, eval_set=[ds])
     assert 130 in _CountingOOFEncoder.transform_rows
+
+
+def test_router_extraction_rejects_base_fitted_with_leaf_only_columns():
+    pytest.importorskip("lightgbm")
+    from repleafgbm.external import LightGBMExternalModel, RouterExtractionRegressor
+
+    rng = np.random.RandomState(62)
+    route = rng.uniform(-1, 1, size=180)
+    teacher = rng.normal(size=180)
+    X = pd.DataFrame({"teacher": teacher, "route": route})
+    y = np.where(route < 0, -2.0, 2.0) + 3.0 * teacher
+    base = LightGBMExternalModel(
+        task="regression", random_state=4, n_estimators=3, num_leaves=3, min_child_samples=10
+    ).fit(X.to_numpy(), y)
+    with pytest.raises(ValueError, match="routing"):
+        RouterExtractionRegressor(
+            base=base,
+            leaf_model="select",
+            leaf_experts=[{"name": "teacher", "encoder": "identity", "columns": ["teacher"]}],
+            leaf_only_features=["teacher"],
+            min_samples_leaf=10,
+            random_state=4,
+        ).fit(X, y)
