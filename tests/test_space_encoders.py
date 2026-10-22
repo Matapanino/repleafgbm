@@ -89,12 +89,12 @@ def test_space_input_validation(name, space_data):
     enc.fit(space_data)
     with pytest.raises(ValueError, match="2-D|features|columns"):
         enc.transform(np.ones(5))
-    if name != "row_stats":  # Stateless row aggregates accept any nonempty width.
+    if name != "row_stats":  # Row aggregates can be applied to any nonempty width.
         with pytest.raises(ValueError, match="features"):
             enc.transform(np.ones((3, 6)))
 
 
-@pytest.mark.parametrize("name", [n for n in NAMES if n != "row_stats"])
+@pytest.mark.parametrize("name", NAMES)
 def test_fitted_guard(name):
     enc = make_encoder(name)
     with pytest.raises(RuntimeError, match="fitted"):
@@ -227,16 +227,45 @@ def test_row_stats_hand_calculation_and_selected_order():
     enc = RowStatsEncoder()
     X = np.array([[1, 3, 5, 7], [0, np.nan, 4, 6], [np.nan] * 4])
     Z = enc.fit(X).transform(X)
-    np.testing.assert_allclose(Z[0], [4, np.sqrt(5), 1, 7, 0, 0, 2, -4])
+    raw = np.array([
+        [4, np.sqrt(5), 1, 7, 0, 0, 2, -4],
+        [10 / 3, np.std([0, 4, 6]), 0, 6, 1, 1, 2, -5],
+        [0, 0, 0, 0, 0, 4, 0, 0],
+    ])
+    expected_scale = raw.std(axis=0)
+    expected_scale[expected_scale == 0] = 1.0
+    np.testing.assert_allclose(enc.mean_, raw.mean(axis=0))
+    np.testing.assert_allclose(enc.scale_, expected_scale)
+    np.testing.assert_allclose(Z, (raw - raw.mean(axis=0)) / expected_scale)
     # Missing values are excluded; slope uses observed original positions (0, 2, 3).
-    np.testing.assert_allclose(Z[1], [10 / 3, np.std([0, 4, 6]), 0, 6, 1, 1, 2, -5])
-    np.testing.assert_array_equal(Z[2], [0, 0, 0, 0, 0, 4, 0, 0])
-    selected = RowStatsEncoder(columns=[3, 1]).fit(X).transform(X[:1])
-    np.testing.assert_allclose(selected[0], [5, 2, 3, 7, 0, 0, -4, 4])
-    assert enc.get_state() == {}
-    assert RowStatsEncoder().transform(np.array([[7.0]]))[0, 6] == 0
+    selected_encoder = RowStatsEncoder(columns=[3, 1]).fit(X)
+    selected_raw = np.array([
+        [5, 2, 3, 7, 0, 0, -4, 4],
+        [6, 0, 6, 6, 0, 1, 0, 6],
+        [0, 0, 0, 0, 0, 2, 0, 0],
+    ])
+    selected_scale = selected_raw.std(axis=0)
+    selected_scale[selected_scale == 0] = 1.0
+    np.testing.assert_allclose(
+        selected_encoder.transform(X[:1]),
+        ((selected_raw - selected_raw.mean(axis=0)) / selected_scale)[:1],
+    )
+    assert set(enc.get_state()) == {"mean", "scale"}
     with pytest.raises(ValueError, match="columns|index"):
         RowStatsEncoder(columns=[4]).fit(X)
+
+
+def test_row_stats_regressor_is_invariant_to_feature_position_shift():
+    rng = np.random.default_rng(87)
+    X = rng.normal(size=(240, 5))
+    y = 1.3 * X[:, 0] - 0.8 * X[:, 2] + np.sin(X[:, 4])
+    params = dict(
+        encoder="row_stats", leaf_model="embedded_linear", n_estimators=8,
+        num_leaves=7, min_samples_leaf=12, leaf_reduction="none", random_state=31,
+    )
+    pred = RepLeafRegressor(**params).fit(X, y).predict(X)
+    shifted = RepLeafRegressor(**params).fit(X + 1e7, y).predict(X + 1e7)
+    np.testing.assert_allclose(pred, shifted, rtol=1e-9, atol=1e-9)
 
 
 def test_rff_kernel_normalization_and_median_bandwidth():

@@ -1,4 +1,4 @@
-"""Stateless row aggregates over ordered numerical columns."""
+"""Standardized row aggregates over ordered numerical columns."""
 
 from __future__ import annotations
 
@@ -14,17 +14,16 @@ class RowStatsEncoder(BaseEncoder):
 
     ``columns=None`` selects the full numerical block; explicit indices select
     and order the block (not the raw matrix, which may include categoricals).
-    No standardization is applied: statistics describe each row's own units,
-    and the leaf ridge fit absorbs their scales. NaNs are excluded from
-    aggregates and counted separately; an empty aggregate is zero. Standard
-    deviation uses ddof=0. Slope fits observed values against their positions
-    in the selected block, preserving gaps due to missing values; fewer than
-    two observations give slope zero. The half gap is first-half mean minus
-    second-half mean, split at ``n_columns // 2``; a single column gives zero.
-    These conventions are chosen, unmeasured defaults. All-missing rows give
-    seven zeros plus the missing count. Fit only validates nonempty input;
-    there is no fitted state or fixed input width, and targets/weights are
-    ignored. Transform can also be used directly.
+    Fit stores the training mean and population standard deviation of each of
+    the eight statistics; zero scales fall back to one. Transform standardizes
+    against those arrays. NaNs are excluded from aggregates and counted
+    separately; an empty aggregate is zero. Standard deviation uses ddof=0.
+    Slope fits observed values against their positions in the selected block,
+    preserving gaps due to missing values; fewer than two observations give
+    slope zero. The half gap is first-half mean minus second-half mean, split
+    at ``n_columns // 2``; a single column gives zero. These conventions are
+    chosen, unmeasured defaults. All-missing rows give seven raw zeros plus the
+    missing count before standardization. Targets and weights are ignored.
     """
 
     name = "row_stats"
@@ -42,33 +41,8 @@ class RowStatsEncoder(BaseEncoder):
             raise ValueError("columns must contain distinct, nonnegative integer indices")
         self.columns = tuple(int(i) for i in values)
 
-    def _select(self, X_num: np.ndarray) -> np.ndarray:
-        X_num = np.asarray(X_num, dtype=np.float64)
-        if X_num.ndim != 2:
-            raise ValueError("X_num must be 2-D")
-        if X_num.shape[1] == 0:
-            raise ValueError("X_num must contain at least one numerical column")
-        if self.columns is not None:
-            if max(self.columns) >= X_num.shape[1]:
-                raise ValueError(
-                    f"columns index {max(self.columns)} exceeds the {X_num.shape[1]} "
-                    "columns in the numerical-feature block"
-                )
-            X_num = X_num[:, self.columns]
-        if np.isinf(X_num).any():
-            raise ValueError("Selected X_num columns must contain finite values or NaN")
-        return X_num
-
-    def fit(
-        self, X_num: np.ndarray, y: np.ndarray | None = None,
-        sample_weight: np.ndarray | None = None,
-    ) -> RowStatsEncoder:
-        X_num = self._select(X_num)
-        if X_num.shape[0] == 0:
-            raise ValueError("RowStatsEncoder requires at least one training row")
-        return self
-
-    def transform(self, X_num: np.ndarray) -> np.ndarray:
+    def _statistics(self, X_num: np.ndarray) -> np.ndarray:
+        """Calculate the eight unstandardized row statistics."""
         X_num = self._select(X_num)
         valid = ~np.isnan(X_num)
         count = valid.sum(axis=1)
@@ -91,19 +65,56 @@ class RowStatsEncoder(BaseEncoder):
             left = values[:, :split].sum(axis=1) / np.maximum(valid[:, :split].sum(axis=1), 1)
             right = values[:, split:].sum(axis=1) / np.maximum(valid[:, split:].sum(axis=1), 1)
             gap = left - right
-        return np.column_stack([mean, std, minimum, maximum, (valid & (values == 0)).sum(axis=1),
-                                (~valid).sum(axis=1), slope, gap])
+        return np.column_stack([
+            mean, std, minimum, maximum, (valid & (values == 0)).sum(axis=1),
+            (~valid).sum(axis=1), slope, gap,
+        ])
+
+    def _select(self, X_num: np.ndarray) -> np.ndarray:
+        X_num = np.asarray(X_num, dtype=np.float64)
+        if X_num.ndim != 2:
+            raise ValueError("X_num must be 2-D")
+        if X_num.shape[1] == 0:
+            raise ValueError("X_num must contain at least one numerical column")
+        if self.columns is not None:
+            if max(self.columns) >= X_num.shape[1]:
+                raise ValueError(
+                    f"columns index {max(self.columns)} exceeds the {X_num.shape[1]} "
+                    "columns in the numerical-feature block"
+                )
+            X_num = X_num[:, self.columns]
+        if np.isinf(X_num).any():
+            raise ValueError("Selected X_num columns must contain finite values or NaN")
+        return X_num
+
+    def fit(
+        self, X_num: np.ndarray, y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> RowStatsEncoder:
+        statistics = self._statistics(X_num)
+        if statistics.shape[0] == 0:
+            raise ValueError("RowStatsEncoder requires at least one training row")
+        self.mean_ = statistics.mean(axis=0)
+        scale = statistics.std(axis=0)
+        self.scale_ = np.where(scale > 0, scale, 1.0)
+        return self
+
+    def transform(self, X_num: np.ndarray) -> np.ndarray:
+        self._check_fitted("mean_")
+        return (self._statistics(X_num) - self.mean_) / self.scale_
 
     @property
     def output_dim(self) -> int:
+        self._check_fitted("mean_")
         return 8
 
     def get_config(self) -> dict:
         return {"columns": None if self.columns is None else list(self.columns)}
 
     def get_state(self) -> dict[str, np.ndarray]:
-        return {}
+        self._check_fitted("mean_")
+        return {"mean": self.mean_, "scale": self.scale_}
 
     def set_state(self, state: dict[str, np.ndarray]) -> None:
-        if state:
-            raise ValueError("RowStatsEncoder has no fitted state; pass an empty state")
+        self.mean_ = np.asarray(state["mean"], dtype=np.float64)
+        self.scale_ = np.asarray(state["scale"], dtype=np.float64)

@@ -99,7 +99,7 @@ Encoders (all NumPy, frozen; see `encoders/`):
 - `quantile` — interpolated ECDF ranks with uniform/normal output and optional two tail distances per column; NaNs give zero blocks; the chosen 100-quantile default is unbenchmarked.
 - `spline` — standardized quantile hinges plus a linear extrapolation term per column; NaNs give zero blocks; the chosen 4-knot default is unbenchmarked.
 - `rff` — seeded joint Gaussian projections with cosine/sine pairs and median-distance or fixed gamma; NaNs are mean-imputed; the chosen defaults of 16 pairs and a 2,048-row distance sample are unbenchmarked.
-- `row_stats` — mean/std/min/max/zero count/missing count/slope/half-mean difference over selected numerical columns; missing values are excluded and counted; no learned statistics or standardization (leaf ridge absorbs the scales).
+- `row_stats` — mean/std/min/max/zero count/missing count/slope/half-mean difference over selected numerical columns; missing values are excluded and counted, then each statistic is standardized using its fitted training mean and scale.
 - `prototype` — seeded NumPy Lloyd centers with Euclidean distances or RBF affinities (median center-distance bandwidth); NaNs are mean-imputed; the chosen defaults of 8 centers and 20 iterations are unbenchmarked.
 - `plr` — simplified quantile piecewise-linear basis (Gorishniy et al. 2022),
   `n_bins` components per feature plus, by default, an appended standardized
