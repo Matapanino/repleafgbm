@@ -265,20 +265,21 @@ class _RouterExtractionMixin:
                 "from routing). Fit the base on dataset.get_raw_features(), or "
                 "pass an unfitted base so it is trained on the routing columns."
             )
-        # When the base was fitted on a DataFrame its feature names are known;
-        # a same-width but different or reordered column set is then rejected
-        # too. Default LightGBM names (Column_<i>) carry no identity and skip
-        # this check.
+        # When the base was fitted on named columns (a DataFrame), require the
+        # exact routing names in order; LightGBM's generated names
+        # (Column_<i>, from array input) carry no identity and skip this check.
+        # LightGBM stores names with each space replaced by "_".
         base_names = [str(name) for name in lgb_booster.feature_name()]
-        routing_names = list(train.metadata.routing_feature_names)
-        if base_names != routing_names and all(
-            name in train.feature_names for name in base_names
-        ):
+        default_names = [f"Column_{i}" for i in range(n_base)]
+        routing_names = [
+            name.replace(" ", "_") for name in train.metadata.routing_feature_names
+        ]
+        if base_names != default_names and base_names != routing_names:
             raise ValueError(
                 f"The base model was fitted on columns {base_names}, but the "
-                f"routing columns are {routing_names} (same order required). Fit "
-                "the base on dataset.get_raw_features() or on exactly the "
-                "routing columns."
+                f"routing columns are {list(train.metadata.routing_feature_names)} "
+                "(same names and order required). Fit the base on "
+                "dataset.get_raw_features() or on exactly the routing columns."
             )
         replay_rate = float(self.base_.model_.get_params().get("learning_rate", 0.1))
         params = BoosterParams(

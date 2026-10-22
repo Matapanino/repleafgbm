@@ -932,3 +932,26 @@ def test_router_rejects_base_fitted_on_other_named_columns():
             min_samples_leaf=10,
             random_state=4,
         ).fit(X, y)
+
+
+def test_router_rejects_base_fitted_on_unrelated_named_columns():
+    pytest.importorskip("lightgbm")
+    from repleafgbm.external import LightGBMExternalModel, RouterExtractionRegressor
+
+    rng = np.random.RandomState(9)
+    X = pd.DataFrame(
+        {"r0": rng.normal(size=160), "r1": rng.normal(size=160), "teacher": rng.normal(size=160)}
+    )
+    y = X["r0"].to_numpy() + 2.0 * X["teacher"].to_numpy()
+    other = X[["r0", "teacher"]].rename(columns={"teacher": "foreign"})
+    base = LightGBMExternalModel(
+        task="regression", random_state=4, n_estimators=3, num_leaves=3, min_child_samples=10
+    ).fit(other, y)
+    with pytest.raises(ValueError, match="routing"):
+        RouterExtractionRegressor(
+            base=base,
+            leaf_model="embedded_linear",
+            leaf_only_features=["teacher"],
+            min_samples_leaf=10,
+            random_state=4,
+        ).fit(X, y)
