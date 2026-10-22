@@ -147,7 +147,7 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `num_leaves` | `31` | Max leaves per tree (leaf-wise growth). |
 | `min_samples_leaf` | `20` | Minimum rows per leaf. |
 | `leaf_model` | `"embedded_linear"` | Leaf predictor (see below). |
-| `encoder` | `"identity"` | Representation `z_theta(x)` (see below). |
+| `encoder` | `None` (identity) | Representation `z_theta(x)` (see below); `None` means `"identity"` unless `leaf_experts` is given. |
 | `leaf_only_features` | `None` | Numerical columns hidden from tree splits and exposed only to leaf encoders. |
 | `leaf_experts` | `None` | Named encoder/column blocks; mutually exclusive with an explicit `encoder`. |
 | `max_leaf_emb_dim` | `64` | Resolved embedding width when reduction is enabled. |

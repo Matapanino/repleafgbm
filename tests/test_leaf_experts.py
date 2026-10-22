@@ -1063,3 +1063,20 @@ def test_bundle_constructor_validates_names_and_subsets():
         ExpertBundleEncoder(
             expert_names=["e"], encoders=[make_encoder("identity")], column_subsets=[[0, 0]]
         )
+
+
+def test_training_view_shares_routing_matrix():
+    from repleafgbm.core.leaf_models import make_leaf_model
+
+    X = np.arange(60, dtype=np.float64).reshape(20, 3)
+    ds = RepLeafDataset(X, X[:, 0], leaf_only_features=[2])
+    model = RepLeafRegressor(
+        n_estimators=1,
+        min_samples_leaf=5,
+        leaf_experts=[{"name": "t", "encoder": "identity", "columns": ["f2"]}],
+        split_backend="numpy",
+    )
+    leaf_model = make_leaf_model("embedded_linear", l2=1.0, min_samples_linear=10)
+    train = model._fit_leaf_encoder(ds, leaf_model)
+    assert train is not ds
+    assert train.get_raw_features() is ds.get_raw_features()

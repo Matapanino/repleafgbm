@@ -793,6 +793,7 @@ class BaseRepLeafModel(BaseEstimator):
             or isinstance(self.encoder, ExpertBundleEncoder)
             or self.encoder == ExpertBundleEncoder.name
         ):
+            dataset.get_raw_features()  # materialize once; the view shares it
             train = copy.copy(dataset)
         with timed(profiler, "encoder"):
             self.encoder_ = (
