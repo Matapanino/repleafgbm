@@ -751,3 +751,21 @@ def test_select_ignores_zero_hessian_rows():
     assert select.last_selections_ == [0]
     np.testing.assert_allclose(values.weights, expected.weights, rtol=1e-12, atol=1e-12)
     np.testing.assert_allclose(values.bias, expected.bias, rtol=1e-12, atol=1e-12)
+
+
+def test_numpy_integer_column_specs_survive_save_model(tmp_path):
+    X = np.arange(60, dtype=np.float64).reshape(20, 3)
+    y = X[:, 0]
+    model = RepLeafRegressor(
+        n_estimators=1,
+        min_samples_leaf=5,
+        leaf_only_features=[np.int64(1)],
+        leaf_experts=[{"name": "a", "encoder": "identity", "columns": [np.int64(0)]}],
+        split_backend="numpy",
+    ).fit(X, y)
+    model.save_model(tmp_path / "m")
+    config = json.loads((tmp_path / "m" / "model_config.json").read_text())["config"]
+    assert config["leaf_only_features"] == [1]
+    assert config["leaf_experts"][0]["columns"] == [0]
+    loaded = RepLeafRegressor.load_model(tmp_path / "m")
+    np.testing.assert_array_equal(loaded.predict(X), model.predict(X))

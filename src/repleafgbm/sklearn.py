@@ -51,6 +51,13 @@ def _allow_nan_kwargs() -> dict:
     return {_FINITE_KW: "allow-nan"}
 
 
+def _json_columns(columns: Any) -> list[int | str] | None:
+    """Column specs as JSON-native ints/strings (numpy integers are accepted on input)."""
+    if columns is None:
+        return None
+    return [int(c) if isinstance(c, (int, np.integer)) else str(c) for c in columns]
+
+
 class BaseRepLeafModel(BaseEstimator):
     """Shared implementation for RepLeafRegressor / RepLeafClassifier.
 
@@ -1127,6 +1134,8 @@ class BaseRepLeafModel(BaseEstimator):
         elif config.get("encoder") is None and config.get("leaf_experts") is None:
             # Preserve the historical serialized default for pre-v9 readers.
             config["encoder"] = "identity"
+        if config.get("leaf_only_features") is not None:
+            config["leaf_only_features"] = _json_columns(config["leaf_only_features"])
         if config.get("leaf_experts") is not None:
             serialized = []
             for raw in config["leaf_experts"]:
@@ -1136,7 +1145,7 @@ class BaseRepLeafModel(BaseEstimator):
                     {
                         "name": spec.name,
                         "encoder": encoder.name if isinstance(encoder, BaseEncoder) else encoder,
-                        "columns": spec.columns,
+                        "columns": _json_columns(spec.columns),
                         "encoder_params": spec.encoder_params,
                     }
                 )
