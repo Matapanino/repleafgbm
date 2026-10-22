@@ -910,3 +910,25 @@ def test_bundle_does_not_copy_full_or_contiguous_column_subsets():
     Z = bundle.fit_transform_train(X)
     np.testing.assert_array_equal(bundle.transform(X), Z)
     assert Z.shape == (10, 8)
+
+
+def test_router_rejects_base_fitted_on_other_named_columns():
+    pytest.importorskip("lightgbm")
+    from repleafgbm.external import LightGBMExternalModel, RouterExtractionRegressor
+
+    rng = np.random.RandomState(8)
+    X = pd.DataFrame(
+        {"r0": rng.normal(size=160), "r1": rng.normal(size=160), "teacher": rng.normal(size=160)}
+    )
+    y = X["r0"].to_numpy() + 2.0 * X["teacher"].to_numpy()
+    base = LightGBMExternalModel(
+        task="regression", random_state=4, n_estimators=3, num_leaves=3, min_child_samples=10
+    ).fit(X[["r0", "teacher"]], y)
+    with pytest.raises(ValueError, match="routing"):
+        RouterExtractionRegressor(
+            base=base,
+            leaf_model="embedded_linear",
+            leaf_only_features=["teacher"],
+            min_samples_leaf=10,
+            random_state=4,
+        ).fit(X, y)
