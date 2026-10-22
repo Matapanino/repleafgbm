@@ -6,7 +6,46 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from repleafgbm import RepLeafDataset, RepLeafRegressor
+from repleafgbm import LeafExpert, RepLeafDataset, RepLeafRegressor
+from repleafgbm.encoders import ExpertBundleEncoder, make_encoder
+from repleafgbm.encoders.base import BaseEncoder
+
+
+class _DifferentTrainEncoder(BaseEncoder):
+    """Test encoder whose OOF-like train representation differs from inference."""
+
+    name = "different_train_test"
+    transform_row_counts: list[int] = []
+
+    def __init__(self):
+        self.n_features_in_: int | None = None
+
+    def fit(self, X_num, y=None, sample_weight=None):
+        self.n_features_in_ = X_num.shape[1]
+        return self
+
+    def fit_transform_train(self, X_num, y=None, sample_weight=None):
+        self.fit(X_num, y, sample_weight)
+        return np.asarray(X_num, dtype=np.float64) + 100.0
+
+    def transform(self, X_num):
+        self._check_fitted("n_features_in_")
+        type(self).transform_row_counts.append(len(X_num))
+        return np.asarray(X_num, dtype=np.float64) - 100.0
+
+    @property
+    def output_dim(self):
+        self._check_fitted("n_features_in_")
+        return self.n_features_in_
+
+    def get_config(self):
+        return {}
+
+    def get_state(self):
+        return {"n_features_in": np.asarray(self.n_features_in_, dtype=np.int64)}
+
+    def set_state(self, state):
+        self.n_features_in_ = int(np.asarray(state["n_features_in"]).item())
 
 
 def test_leaf_only_feature_is_encoder_visible_but_not_routable():
@@ -100,3 +139,53 @@ def test_default_path_matches_origin_main_bitwise_fixture():
         ]
     )
     assert np.array_equal(model.predict(X[:10]), expected)
+
+
+def test_expert_bundle_concatenates_named_column_subsets_in_order():
+    X = np.arange(40, dtype=np.float64).reshape(10, 4)
+    bundle = ExpertBundleEncoder(
+        expert_names=["right", "left"],
+        encoders=[
+            make_encoder("identity", standardize=False),
+            make_encoder("identity", standardize=False),
+        ],
+        column_subsets=[[2, 3], [0]],
+    )
+    Z = bundle.fit_transform_train(X)
+    assert bundle.expert_names == ["right", "left"]
+    assert bundle.block_slices == [slice(0, 2), slice(2, 3)]
+    np.testing.assert_array_equal(Z, np.column_stack([X[:, 2:4], X[:, 0]]))
+    np.testing.assert_array_equal(bundle.transform(X), Z)
+
+
+def test_bundle_training_cache_uses_fit_transform_train_but_eval_uses_transform():
+    _DifferentTrainEncoder.transform_row_counts.clear()
+    rng = np.random.RandomState(5)
+    X = rng.normal(size=(91, 2))
+    y = X[:, 0] - X[:, 1]
+    X_eval = rng.normal(size=(17, 2))
+    y_eval = X_eval[:, 0] - X_eval[:, 1]
+
+    model = RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=3,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        leaf_experts=[LeafExpert("oof", _DifferentTrainEncoder(), columns=[0])],
+        split_backend="numpy",
+        random_state=2,
+    ).fit(X, y, eval_set=[(X_eval, y_eval)])
+
+    assert model.encoder_.expert_names == ["oof"]
+    assert 91 not in _DifferentTrainEncoder.transform_row_counts
+    assert 17 in _DifferentTrainEncoder.transform_row_counts
+
+
+def test_leaf_experts_and_nondefault_encoder_are_rejected():
+    X = np.arange(40, dtype=np.float64).reshape(20, 2)
+    with pytest.raises(ValueError, match="leaf_experts.*encoder"):
+        RepLeafRegressor(
+            n_estimators=1,
+            leaf_experts=[{"name": "x", "encoder": "identity"}],
+            encoder="plr",
+        ).fit(X, X[:, 0])

@@ -40,13 +40,17 @@ class TargetCorrelationEncoder(BaseEncoder):
         X_num: np.ndarray,
         y: np.ndarray | None,
         sample_weight: np.ndarray | None = None,
+        base_embeddings: np.ndarray | None = None,
     ) -> TargetCorrelationEncoder:
         """Fit only the reduction, assuming ``base`` is already fitted."""
         if y is None:
             raise ValueError(
                 "target_correlation reduction requires a supervised pretrain target"
             )
-        Z = np.asarray(self.base.transform(X_num), dtype=np.float64)
+        Z = np.asarray(
+            self.base.transform(X_num) if base_embeddings is None else base_embeddings,
+            dtype=np.float64,
+        )
         if self.out_dim >= Z.shape[1]:
             raise ValueError(
                 f"out_dim ({self.out_dim}) must be smaller than the base "

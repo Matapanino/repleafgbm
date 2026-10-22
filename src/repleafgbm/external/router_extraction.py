@@ -20,6 +20,7 @@ from repleafgbm.core.leaf_models import make_leaf_model
 from repleafgbm.core.metrics import get_metric
 from repleafgbm.core.objectives import get_objective
 from repleafgbm.core.tree import Tree
+from repleafgbm.encoders.bundle import LeafExpert
 from repleafgbm.external.lightgbm_model import LightGBMExternalModel
 from repleafgbm.regressor import RepLeafRegressor
 
@@ -171,6 +172,7 @@ class _RouterExtractionMixin:
         leaf_model: str = "embedded_linear",
         encoder: str = "identity",
         encoder_params: dict | None = None,
+        leaf_experts: list[dict | LeafExpert] | None = None,
         leaf_only_features: list[str | int] | None = None,
         max_leaf_emb_dim: int = 64,
         l2_leaf: float = 1.0,
@@ -183,6 +185,7 @@ class _RouterExtractionMixin:
         self.leaf_model = leaf_model
         self.encoder = encoder
         self.encoder_params = encoder_params
+        self.leaf_experts = leaf_experts
         self.leaf_only_features = leaf_only_features
         self.max_leaf_emb_dim = max_leaf_emb_dim
         self.l2_leaf = l2_leaf

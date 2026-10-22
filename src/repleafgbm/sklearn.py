@@ -27,6 +27,8 @@ from repleafgbm.core.profiling import profiler_from_env, timed
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders import (
+    ExpertBundleEncoder,
+    LeafExpert,
     RandomProjectionEncoder,
     TargetCorrelationEncoder,
     make_encoder,
@@ -252,6 +254,7 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_fit_precision: str = "float64",
         encoder: str | BaseEncoder = "identity",
         encoder_params: dict | None = None,
+        leaf_experts: list[dict | LeafExpert] | None = None,
         leaf_only_features: list[str | int] | None = None,
         freeze_encoder: bool = True,
         max_leaf_emb_dim: int = 64,
@@ -286,6 +289,7 @@ class BaseRepLeafModel(BaseEstimator):
         self.leaf_fit_precision = leaf_fit_precision
         self.encoder = encoder
         self.encoder_params = encoder_params
+        self.leaf_experts = leaf_experts
         self.leaf_only_features = leaf_only_features
         self.freeze_encoder = freeze_encoder
         self.max_leaf_emb_dim = max_leaf_emb_dim
@@ -372,6 +376,15 @@ class BaseRepLeafModel(BaseEstimator):
             leaf_gate=self.leaf_gate,
             leaf_fit_precision=self.leaf_fit_precision,
         )
+        if self.leaf_experts is not None and self.leaf_model not in (
+            "embedded_linear",
+            "adaptive",
+            "select",
+        ):
+            raise ValueError(
+                "leaf_experts requires leaf_model='embedded_linear', "
+                "'adaptive', or 'select'"
+            )
         with timed(profiler, "encoder"):
             self.encoder_ = (
                 self._build_and_fit_encoder(dataset)
@@ -648,7 +661,14 @@ class BaseRepLeafModel(BaseEstimator):
             raise ValueError(
                 f"max_leaf_emb_dim must be >= 1, got {self.max_leaf_emb_dim}"
             )
-        if self.leaf_model == "raw_linear":
+        if self.leaf_experts is not None:
+            if self.encoder != "identity" or self.encoder_params is not None:
+                raise ValueError(
+                    "leaf_experts and encoder/encoder_params cannot be specified "
+                    "together; put every encoder in leaf_experts"
+                )
+            encoder = self._build_expert_bundle(dataset, reduction)
+        elif self.leaf_model == "raw_linear":
             encoder: BaseEncoder = make_encoder("identity", standardize=True)
         elif isinstance(self.encoder, BaseEncoder):
             encoder = copy.deepcopy(self.encoder)
@@ -680,14 +700,41 @@ class BaseRepLeafModel(BaseEstimator):
         # fixed encoders ignore it.
         weight = dataset.sample_weight
         target = self._pretrain_target(dataset, sample_weight=weight)
-        encoder.fit(
-            X_num,
-            y=target,
-            sample_weight=weight,
-        )
+        if isinstance(encoder, ExpertBundleEncoder):
+            train_embeddings = encoder.fit_transform_train(
+                X_num, y=target, sample_weight=weight
+            )
+            dataset.set_embeddings(encoder, train_embeddings)
+        else:
+            encoder.fit(
+                X_num,
+                y=target,
+                sample_weight=weight,
+            )
         self.leaf_embedding_input_dim_ = encoder.output_dim
         self.leaf_reduction_ = "none"
-        if encoder.output_dim > self.max_leaf_emb_dim and reduction != "none":
+        if isinstance(encoder, ExpertBundleEncoder):
+            self.leaf_embedding_input_dim_ = sum(encoder.input_dims_)
+            self.leaf_reduction_ = (
+                "per_expert"
+                if any(name != "none" for name in encoder.reduction_names_)
+                else "none"
+            )
+            for name, input_dim, reduction_name in zip(
+                encoder.expert_names,
+                encoder.input_dims_,
+                encoder.reduction_names_,
+            ):
+                if reduction_name != "none":
+                    warnings.warn(
+                        f"Expert {name!r} output dimension {input_dim} exceeds "
+                        f"max_leaf_emb_dim {self.max_leaf_emb_dim}; "
+                        f"leaf_reduction={reduction_name!r} reduces that expert "
+                        f"to {self.max_leaf_emb_dim} dimensions.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+        elif encoder.output_dim > self.max_leaf_emb_dim and reduction != "none":
             input_dim = encoder.output_dim
             warnings.warn(
                 f"Encoder output dimension {input_dim} exceeds max_leaf_emb_dim "
@@ -712,6 +759,90 @@ class BaseRepLeafModel(BaseEstimator):
             self.leaf_reduction_ = reduction
         self.leaf_embedding_dim_ = encoder.output_dim
         return encoder
+
+    def _build_expert_bundle(
+        self, dataset: RepLeafDataset, reduction: str
+    ) -> ExpertBundleEncoder:
+        """Resolve public expert specs against the ordered numerical block."""
+        names: list[str] = []
+        encoders: list[BaseEncoder] = []
+        subsets: list[list[int]] = []
+        numerical_names = dataset.metadata.ordered_numerical_features
+        for raw in self.leaf_experts or []:
+            if isinstance(raw, LeafExpert):
+                spec = raw
+            elif isinstance(raw, dict):
+                unknown = set(raw) - {"name", "encoder", "columns", "encoder_params"}
+                if unknown:
+                    raise ValueError(f"Unknown leaf expert keys: {sorted(unknown)}")
+                try:
+                    spec = LeafExpert(**raw)
+                except TypeError as exc:
+                    raise ValueError(f"Invalid leaf expert specification: {exc}") from exc
+            else:
+                raise ValueError("leaf_experts entries must be dict or LeafExpert")
+            if not isinstance(spec.name, str) or not spec.name:
+                raise ValueError("leaf expert name must be a non-empty string")
+            if spec.name in names:
+                raise ValueError(f"leaf expert name {spec.name!r} is duplicated")
+            names.append(spec.name)
+            if isinstance(spec.encoder, BaseEncoder):
+                if spec.encoder_params:
+                    raise ValueError(
+                        f"leaf expert {spec.name!r} supplies encoder_params with "
+                        "an encoder instance"
+                    )
+                child = copy.deepcopy(spec.encoder)
+            else:
+                params = dict(spec.encoder_params or {})
+                device = getattr(self, "device", "cpu")
+                if device == "cuda" and spec.encoder.startswith("torch_"):
+                    params.setdefault("device", "cuda")
+                child = make_encoder(
+                    spec.encoder,
+                    _default_random_state=self.random_state,
+                    **params,
+                )
+            encoders.append(child)
+            if spec.columns is None:
+                subset = list(range(len(numerical_names)))
+            else:
+                subset = []
+                for column in spec.columns:
+                    if isinstance(column, (int, np.integer)):
+                        index = int(column)
+                        if index < 0 or index >= len(numerical_names):
+                            raise ValueError(
+                                f"leaf expert {spec.name!r} column index {index} "
+                                f"is invalid for the {len(numerical_names)}-column "
+                                "ordered numerical block"
+                            )
+                    else:
+                        name = str(column)
+                        if name not in numerical_names:
+                            raise ValueError(
+                                f"leaf expert {spec.name!r} column {name!r} is not "
+                                "in the ordered numerical block"
+                            )
+                        index = numerical_names.index(name)
+                    if index in subset:
+                        raise ValueError(
+                            f"leaf expert {spec.name!r} columns contain duplicates"
+                        )
+                    subset.append(index)
+                if not subset:
+                    raise ValueError(f"leaf expert {spec.name!r} columns must not be empty")
+            subsets.append(subset)
+        if not names:
+            raise ValueError("leaf_experts must contain at least one expert")
+        return ExpertBundleEncoder(
+            expert_names=names,
+            encoders=encoders,
+            column_subsets=subsets,
+            max_output_dim=self.max_leaf_emb_dim,
+            reduction=reduction,
+            random_state=self.random_state,
+        )
 
     def _linear_leaf_fraction(self) -> float:
         """Fraction of prediction-used leaves retaining nonzero linear weights."""
@@ -906,6 +1037,20 @@ class BaseRepLeafModel(BaseEstimator):
         # and record only its registry name here.
         if isinstance(config.get("encoder"), BaseEncoder):
             config["encoder"] = config["encoder"].name
+        if config.get("leaf_experts") is not None:
+            serialized = []
+            for raw in config["leaf_experts"]:
+                spec = raw if isinstance(raw, LeafExpert) else LeafExpert(**raw)
+                encoder = spec.encoder
+                serialized.append(
+                    {
+                        "name": spec.name,
+                        "encoder": encoder.name if isinstance(encoder, BaseEncoder) else encoder,
+                        "columns": spec.columns,
+                        "encoder_params": spec.encoder_params,
+                    }
+                )
+            config["leaf_experts"] = serialized
         # Metric objects/callables are saved by name only; registered names
         # resolve on refit, custom metrics must be passed in again.
         metric = config.get("eval_metric")

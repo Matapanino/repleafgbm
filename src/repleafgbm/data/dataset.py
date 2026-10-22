@@ -135,6 +135,16 @@ class RepLeafDataset:
             self._cached_encoder = encoder
         return self._cached_embeddings
 
+    def set_embeddings(self, encoder: Any, embeddings: np.ndarray) -> None:
+        """Cache a precomputed training representation for ``encoder``."""
+        values = np.asarray(embeddings, dtype=np.float64)
+        if values.ndim != 2 or values.shape[0] != self.n_rows:
+            raise ValueError(
+                "embeddings must be a 2-D matrix with one row per dataset row"
+            )
+        self._cached_encoder = encoder
+        self._cached_embeddings = values
+
     def clear_embedding_cache(self) -> None:
         self._cached_encoder = None
         self._cached_embeddings = None
