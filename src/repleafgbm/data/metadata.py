@@ -9,6 +9,45 @@ data at prediction time so that train/predict preprocessing always matches.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+
+
+def resolve_leaf_only_features(feature_names: list[str], specs: Any) -> list[str]:
+    """Normalize leaf-only column specs (names or input-column indices) to names.
+
+    ``None`` means no leaf-only columns. A scalar string is rejected (iterating
+    one would silently select single-character column names), as are negative
+    or out-of-range indices, unknown names, and duplicates.
+    """
+    if specs is None:
+        return []
+    if isinstance(specs, (str, bytes)):
+        raise ValueError(
+            "leaf_only_features must be a list of column names or indices, "
+            "not a single string"
+        )
+    resolved: list[str] = []
+    for column in specs:
+        if isinstance(column, (int, np.integer)):
+            index = int(column)
+            if index < 0 or index >= len(feature_names):
+                raise ValueError(
+                    f"leaf_only_features index {index} is out of bounds for "
+                    f"{len(feature_names)} input columns"
+                )
+            name = feature_names[index]
+        else:
+            name = str(column)
+            if name not in feature_names:
+                raise ValueError(
+                    f"leaf_only_features column {name!r} not found in input columns"
+                )
+        if name in resolved:
+            raise ValueError("leaf_only_features must not contain duplicates")
+        resolved.append(name)
+    return resolved
 
 
 @dataclass
@@ -38,7 +77,9 @@ class FeatureMetadata:
     categorical_features: list[str]
     category_maps: dict[str, list[str]] = field(default_factory=dict)
     frequency_maps: dict[str, dict[str, float]] = field(default_factory=dict)
-    leaf_only_features: list[str] = field(default_factory=list)
+    #: Leaf-only column specs (names or input-column indices, or None);
+    #: normalized to names in ``__post_init__``.
+    leaf_only_features: list[str | int] | None = field(default_factory=list)
 
     def __post_init__(self) -> None:
         known = set(self.numerical_features) | set(self.categorical_features)
@@ -59,14 +100,9 @@ class FeatureMetadata:
                 "numerical (they are routed with threshold splits), not "
                 "categorical."
             )
-        missing_leaf_only = [f for f in self.leaf_only_features if f not in self.feature_names]
-        if missing_leaf_only:
-            raise ValueError(f"leaf-only features {missing_leaf_only} are not input columns")
-        duplicate_leaf_only = len(set(self.leaf_only_features)) != len(
-            self.leaf_only_features
+        self.leaf_only_features = resolve_leaf_only_features(
+            self.feature_names, self.leaf_only_features
         )
-        if duplicate_leaf_only:
-            raise ValueError("leaf-only features must not contain duplicates")
         categorical_leaf_only = [
             f for f in self.leaf_only_features if f in set(self.categorical_features)
         ]

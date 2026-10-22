@@ -871,3 +871,25 @@ def test_wrapped_bundle_encoder_writes_v9(tmp_path):
     np.testing.assert_array_equal(
         RepLeafRegressor.load_model(tmp_path / "m").predict(X), model.predict(X)
     )
+
+
+def test_leaf_only_scalar_string_is_rejected():
+    X = pd.DataFrame({"x": [0.0, 1.0, 2.0], "y": [1.0, 2.0, 3.0], "z": [2.0, 3.0, 4.0]})
+    with pytest.raises(ValueError, match="list of column names"):
+        RepLeafDataset(X, [0.0, 1.0, 2.0], leaf_only_features="xy")
+
+
+def test_feature_metadata_resolves_leaf_only_indices_and_none():
+    from repleafgbm.data.metadata import FeatureMetadata
+
+    kwargs = dict(feature_names=["a", "b"], numerical_features=["a", "b"], categorical_features=[])
+    assert FeatureMetadata(leaf_only_features=[1], **kwargs).leaf_only_features == ["b"]
+    assert FeatureMetadata(leaf_only_features=None, **kwargs).leaf_only_features == []
+
+
+@pytest.mark.parametrize("spec", [[-1], [99]])
+def test_leaf_only_compat_path_reports_index_errors(spec):
+    X = np.arange(40, dtype=np.float64).reshape(20, 2)
+    ds = RepLeafDataset(X, X[:, 0], leaf_only_features=[1])
+    with pytest.raises(ValueError, match="out of bounds"):
+        RepLeafRegressor(n_estimators=1, leaf_only_features=spec).fit(ds)

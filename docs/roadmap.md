@@ -550,6 +550,8 @@ Not implemented:
   separate harness lane; the present synthetic tests establish correctness,
   not an AUC claim.
 - ❌ Multiclass/multi-output select leaves and a native selector kernel.
+- ❌ Root-only routing with every column leaf-only (needs zero-feature
+  splitter/sampler support; such configurations are rejected).
 
 ## v2 — native high-performance backend (Phase 10: core shipped ✅)
 

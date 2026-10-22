@@ -26,6 +26,7 @@ from repleafgbm.core.objectives import BaseObjective, get_objective
 from repleafgbm.core.profiling import PhaseProfiler, profiler_from_env, timed
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
+from repleafgbm.data.metadata import resolve_leaf_only_features
 from repleafgbm.encoders import (
     ExpertBundleEncoder,
     LeafExpert,
@@ -585,12 +586,9 @@ class BaseRepLeafModel(BaseEstimator):
                 raise ValueError("Pass y inside the RepLeafDataset, not separately")
             leaf_only_features = getattr(self, "leaf_only_features", None)
             if leaf_only_features is not None:
-                expected = [
-                    X.metadata.feature_names[int(c)]
-                    if isinstance(c, (int, np.integer))
-                    else str(c)
-                    for c in leaf_only_features
-                ]
+                expected = resolve_leaf_only_features(
+                    X.metadata.feature_names, leaf_only_features
+                )
                 if X.metadata.leaf_only_features != expected:
                     raise ValueError(
                         "leaf_only_features differs from the RepLeafDataset metadata"

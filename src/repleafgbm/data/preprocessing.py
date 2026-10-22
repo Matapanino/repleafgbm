@@ -101,26 +101,6 @@ def infer_metadata(
         if numerical_features is None:
             numerical_features = [f for f in feature_names if f not in set(categorical_features)]
 
-    resolved_leaf_only: list[str] = []
-    for column in leaf_only_features or []:
-        if isinstance(column, (int, np.integer)):
-            index = int(column)
-            if index < 0 or index >= len(feature_names):
-                raise ValueError(
-                    f"leaf_only_features index {index} is out of bounds for "
-                    f"{len(feature_names)} input columns"
-                )
-            name = feature_names[index]
-        else:
-            name = str(column)
-            if name not in feature_names:
-                raise ValueError(
-                    f"leaf_only_features column {name!r} not found in input columns"
-                )
-        if name in resolved_leaf_only:
-            raise ValueError("leaf_only_features must not contain duplicates")
-        resolved_leaf_only.append(name)
-
     missing = [c for c in frequency_encoded_features if c not in feature_names]
     if missing:
         raise ValueError(f"frequency_encoded_features {missing} not found in columns")
@@ -175,7 +155,7 @@ def infer_metadata(
         categorical_features=categorical_features,
         category_maps=category_maps,
         frequency_maps=frequency_maps,
-        leaf_only_features=resolved_leaf_only,
+        leaf_only_features=leaf_only_features,
     )
 
 

@@ -61,4 +61,7 @@ multiclass pooled leaves and multi-output vector leaves raise
 `NotImplementedError` and direct users to `adaptive` or `embedded_linear`.
 No OOF target encoder, ICL leaf, automatic expert generation, selection-bias
 correction, or native selector kernel is implemented. The selector's leaf loop
-is NumPy; NumPy/Rust split backends remain untouched.
+is NumPy; NumPy/Rust split backends remain untouched. At least one input
+column must stay routable: a root-only router whose columns are all leaf-only
+would need zero-feature support in the splitter and sampler, which this change
+leaves untouched.
