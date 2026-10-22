@@ -13,6 +13,9 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   `BaseEncoder.fit_transform_train` hook, and `leaf_model="select"` with
   per-leaf weighted-LOO expert diagnostics. Models using leaf-only metadata or
   bundles write format v9; unaffected configurations retain older formats.
+  The public `encoder="identity"` default is preserved; `leaf_experts` takes
+  precedence over that exact default, while non-default encoder settings remain
+  mutually exclusive.
 
 ## [1.12.0] - 2026-09-12
 

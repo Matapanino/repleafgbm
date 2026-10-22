@@ -170,7 +170,7 @@ class _RouterExtractionMixin:
         self,
         base: LightGBMExternalModel | None = None,
         leaf_model: str = "embedded_linear",
-        encoder: str | None = None,
+        encoder: str | None = "identity",
         encoder_params: dict | None = None,
         max_leaf_emb_dim: int = 64,
         l2_leaf: float = 1.0,

@@ -124,7 +124,6 @@ def test_default_path_matches_origin_main_bitwise_fixture():
         num_leaves=4,
         min_samples_leaf=5,
         leaf_model="adaptive",
-        encoder="identity",
         split_backend="numpy",
         random_state=7,
     ).fit(X, y)
@@ -225,14 +224,29 @@ def test_bundle_training_cache_uses_fit_transform_train_but_eval_uses_transform(
     assert 17 in _DifferentTrainEncoder.transform_row_counts
 
 
-@pytest.mark.parametrize("encoder", ["identity", "plr"])
-def test_leaf_experts_and_encoder_are_rejected(encoder):
+def test_encoder_public_default_is_identity():
+    assert RepLeafRegressor().get_params()["encoder"] == "identity"
+    from repleafgbm.external import RouterExtractionRegressor
+
+    assert RouterExtractionRegressor().get_params()["encoder"] == "identity"
+
+
+def test_leaf_experts_accept_public_default_encoder():
+    X = np.arange(40, dtype=np.float64).reshape(20, 2)
+    model = RepLeafRegressor(
+        n_estimators=1,
+        leaf_experts=[{"name": "x", "encoder": "identity"}],
+    ).fit(X, X[:, 0])
+    assert model.encoder_.expert_names == ["x"]
+
+
+def test_leaf_experts_and_nondefault_encoder_are_rejected():
     X = np.arange(40, dtype=np.float64).reshape(20, 2)
     with pytest.raises(ValueError, match="leaf_experts.*encoder"):
         RepLeafRegressor(
             n_estimators=1,
             leaf_experts=[{"name": "x", "encoder": "identity"}],
-            encoder=encoder,
+            encoder="plr",
         ).fit(X, X[:, 0])
 
 

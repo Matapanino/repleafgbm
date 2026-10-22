@@ -114,14 +114,16 @@ class BaseRepLeafModel(BaseEstimator):
             reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.
         encoder: Encoder name ("identity", "plr") or a BaseEncoder instance.
             Ignored for leaf_model="constant"; for "raw_linear" a standardizing
-            identity encoder is always used. None selects "identity" unless
-            ``leaf_experts`` is supplied.
+            identity encoder is always used. Defaults to "identity"; when
+            ``leaf_experts`` is supplied, that unchanged default is ignored in
+            favor of the bundle.
         encoder_params: Keyword arguments for the encoder constructor when
             ``encoder`` is a name (e.g. {"n_bins": 16} for "plr").
         leaf_experts: Named frozen encoder blocks. Each dict/LeafExpert provides
             ``name``, ``encoder``, optional ``columns`` in the ordered numerical
-            block, and optional ``encoder_params``. Mutually exclusive with an
-            explicit ``encoder``; constant is an implicit select candidate.
+            block, and optional ``encoder_params``. Mutually exclusive with a
+            non-default ``encoder`` or top-level ``encoder_params``; constant is
+            an implicit select candidate.
         leaf_only_features: Numerical names or input-column indices excluded
             from tree routing and appended, in declared order, to the encoder's
             ordered numerical block. Values must be finite, and at least one
@@ -272,7 +274,7 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_gate_margin: float = 0.01,
         leaf_gate: str = "loo",
         leaf_fit_precision: str = "float64",
-        encoder: str | BaseEncoder | None = None,
+        encoder: str | BaseEncoder | None = "identity",
         encoder_params: dict | None = None,
         freeze_encoder: bool = True,
         max_leaf_emb_dim: int = 64,
@@ -826,10 +828,10 @@ class BaseRepLeafModel(BaseEstimator):
                 "leaf_experts requires leaf_model='embedded_linear', "
                 "'adaptive', or 'select'"
             )
-        if self.encoder is not None or self.encoder_params is not None:
+        if self.encoder not in (None, "identity") or self.encoder_params is not None:
             raise ValueError(
-                "leaf_experts and encoder/encoder_params cannot be specified "
-                "together; put every encoder in leaf_experts"
+                "leaf_experts and a non-default encoder/encoder_params cannot "
+                "be specified together; put every encoder in leaf_experts"
             )
 
     def _build_expert_bundle(
