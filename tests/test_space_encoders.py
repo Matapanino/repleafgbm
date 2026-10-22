@@ -318,3 +318,22 @@ def test_space_regressor_fit_predict_save_load(name, params, dim, space_data, tm
     model.save_model(tmp_path / "model")
     restored = RepLeafRegressor.load_model(tmp_path / "model")
     assert np.array_equal(pred, restored.predict(X[:40]))
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_small_leaf_constant_fallback(name):
+    x = np.linspace(-2.0, 2.0, 40)
+    X = np.column_stack([x, x**2, np.sin(x), np.cos(2 * x), x**3])
+    y = 3.0 * (x >= 0) + 0.4 * x + 0.2 * np.sin(3 * x)
+    model = RepLeafRegressor(
+        encoder=name, leaf_model="embedded_linear", n_estimators=1,
+        num_leaves=16, max_depth=1, min_samples_leaf=5,
+        leaf_reduction="none", random_state=41,
+    ).fit(X, y)
+
+    assert np.isfinite(model.predict(X)).all()
+    if name in ("spline", "rff"):
+        assert model.leaf_embedding_dim_ + 2 > 20
+        assert model.linear_leaf_fraction_ == 0.0
+    else:
+        assert model.linear_leaf_fraction_ > 0
