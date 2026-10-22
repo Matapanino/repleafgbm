@@ -59,9 +59,14 @@ known generality debt, not evidence that LOO is unbiased after selection.
 Version 1 is scalar-only: regression and binary classification are supported;
 multiclass pooled leaves and multi-output vector leaves raise
 `NotImplementedError` and direct users to `adaptive` or `embedded_linear`.
-No OOF target encoder, ICL leaf, automatic expert generation, selection-bias
-correction, or native selector kernel is implemented. The selector's leaf loop
-is NumPy; NumPy/Rust split backends remain untouched. At least one input
-column must stay routable: a root-only router whose columns are all leaf-only
-would need zero-feature support in the splitter and sampler, which this change
-leaves untouched.
+The follow-up `target_encoding` expert uses this cache seam to give training
+rows seeded K-fold OOF statistics while retaining full-training tables for eval
+and prediction. It supports scalar pretraining targets, exact/rounded/quantile-bin
+keys, empirical-Bayes smoothing, and ordered rare-key backoff. Its multiclass
+and multi-output behavior remains deliberately unimplemented in version 1.
+
+No ICL leaf, automatic expert generation, selection-bias correction, or native
+selector kernel is implemented. The selector's leaf loop is NumPy; NumPy/Rust
+split backends remain untouched. At least one input column must stay routable:
+a root-only router whose columns are all leaf-only would need zero-feature
+support in the splitter and sampler, which this change leaves untouched.

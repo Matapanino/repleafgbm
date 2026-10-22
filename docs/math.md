@@ -313,6 +313,50 @@ Two design choices worth recording:
   teaches the encoder a representation from which class membership is linearly
   recoverable — exactly the signal the per-class leaves consume.
 
+## Target-encoding representation (OOF)
+
+The NumPy-only `target_encoding` encoder maps each selected numerical column at
+one or more resolutions: the exact value, `round(x, k)` for an integer `k`
+(including negative precisions), and empirical quantile bins (`"bin:n"`). For a
+key `v`, scalar initial Newton target `t_i`, non-negative sample weight `w_i`,
+and that table's weighted prior `mu`, its empirical-Bayes mean is
+
+```text
+S_v = sum_{i: key(x_i)=v} w_i t_i
+C_v = sum_{i: key(x_i)=v} w_i
+TE(v) = (S_v + alpha mu) / (C_v + alpha).
+```
+
+An unknown key has `S_v = C_v = 0` and receives `mu` (also by convention when
+`alpha=0`); a missing value is instead one learned NaN key. With
+`add_count=True`, each mean is immediately followed by `log(1 + C_v)`. Output
+order is column, then scale, then mean/count.
+
+Training rows use shuffled, seeded K-fold cross-fitting. If `I_f` is fold `f`,
+the representation of every `i in I_f` is computed from the table and prior
+fit only on rows outside `I_f`:
+
+```text
+Z_i = TE_{-f}(key(x_i)),  i in I_f.
+```
+
+After producing all OOF rows, the encoder fits a separate full-training table
+used by eval and prediction. Quantile boundaries follow the same rule: fold
+tables learn boundaries without their held-out rows, while the retained table
+learns them from all training rows.
+
+With `backoff=True`, scales are ordered fine to coarse as supplied. If the
+weighted count at one scale is below `min_count`, its mean is replaced by the
+first later scale whose count reaches `min_count`; if none does, it receives
+the prior. The optional count column continues to report the original scale's
+count, so support remains inspectable.
+
+The defaults `alpha=5`, `n_folds=5`, and `min_count=20` are placed operating
+points, not established universal thresholds. In particular, `alpha=5` is
+motivated by the S6E9 experiment and has not yet been shown to generalize.
+Version 1 accepts only scalar targets; multiclass and multi-output target
+matrices raise `NotImplementedError`.
+
 ## Limitations
 
 - The Newton-target leaf fit is a second-order approximation for non-squared

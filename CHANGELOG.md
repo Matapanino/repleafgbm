@@ -13,6 +13,9 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   `BaseEncoder.fit_transform_train` hook, and `leaf_model="select"` with
   per-leaf weighted-LOO expert diagnostics. Models using leaf-only metadata or
   bundles write format v9; unaffected configurations retain older formats.
+- Added the NumPy-only `target_encoding` expert with seeded K-fold OOF training
+  values, exact/round/quantile-bin scales, weighted empirical-Bayes smoothing,
+  optional count features, rare-key backoff, and recursive save/load support.
 
 ## [1.12.0] - 2026-09-12
 

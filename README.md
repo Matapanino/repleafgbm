@@ -176,6 +176,7 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"plr"` | Piecewise-linear + linear term. |
 | `"periodic"` | Frozen sinusoidal (PBLD-style) features. |
 | `"cross"` | Residual-correlated pairwise products (interactions). |
+| `"target_encoding"` | Fold-safe scalar-target means over exact, rounded, and quantile-bin numerical keys; use through `leaf_experts` for OOF training values. |
 | `"torch_periodic"` / `"torch_plr"` / `"torch_periodic_plr"` / `"torch_mlp"` | Learned encoders (`[torch]` extra; supervised-pretrained on the initial residual then frozen — torch is needed only at fit time, not at predict). |
 
 API stability follows [Semantic Versioning](https://semver.org) from 1.0.0;
@@ -190,7 +191,7 @@ exactly what is covered vs. experimental is in
 | Tasks | Regression, binary & multiclass classification, multi-output regression (vector leaves). |
 | Objectives | Squared error, `huber`, `quantile`, `poisson`, logistic, softmax (parameterized instances like `Quantile(alpha=0.9)` too). |
 | Leaf models | `constant`, `embedded_linear`, `raw_linear`, `adaptive`, `select`. |
-| Encoders | `identity`, `plr`, `periodic`, `cross`, learned `torch_*`. |
+| Encoders | `identity`, `plr`, `periodic`, `cross`, fold-safe `target_encoding`, learned `torch_*`. |
 | Training | Early stopping, eval metrics (rmse, mae, logloss, multi_logloss, auc, accuracy, or a custom callable via `make_metric`), feature importances, sample weights, `class_weight`, `label_smoothing`. |
 | Data | `RepLeafDataset` with pandas/categorical, leaf-only numerical columns, and embedding caching. |
 | Persistence | Directory-based `save_model` / `load_model` with schema validation and a human-readable `summary()`. |
