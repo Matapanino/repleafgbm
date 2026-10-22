@@ -20,7 +20,6 @@ from repleafgbm.core.leaf_models import make_leaf_model
 from repleafgbm.core.metrics import get_metric
 from repleafgbm.core.objectives import get_objective
 from repleafgbm.core.tree import Tree
-from repleafgbm.encoders import ExpertBundleEncoder
 from repleafgbm.encoders.bundle import LeafExpert
 from repleafgbm.external.lightgbm_model import LightGBMExternalModel
 from repleafgbm.regressor import RepLeafRegressor
@@ -208,6 +207,7 @@ class _RouterExtractionMixin:
         self._validate_leaf_expert_options()
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
+        self._check_select_target(dataset)
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
@@ -228,21 +228,7 @@ class _RouterExtractionMixin:
             leaf_gate_margin=self.leaf_gate_margin,
             leaf_gate=self.leaf_gate,
         )
-        # Same private training view as BaseRepLeafModel.fit: a bundle's
-        # fold-safe training representation must not leak into eval/predict.
-        train = dataset
-        if leaf_model.uses_embeddings and self.leaf_experts is not None:
-            train = copy.copy(dataset)
-        self.encoder_ = (
-            self._build_and_fit_encoder(train) if leaf_model.uses_embeddings else None
-        )
-        if self.leaf_model == "select":
-            if isinstance(self.encoder_, ExpertBundleEncoder):
-                leaf_model.blocks = self.encoder_.block_slices
-                leaf_model.expert_names = self.encoder_.expert_names
-            else:
-                leaf_model.blocks = [slice(0, self.encoder_.output_dim)]
-                leaf_model.expert_names = ["linear"]
+        train = self._fit_leaf_encoder(dataset, leaf_model)
 
         base = self.base if self.base is not None else LightGBMExternalModel(
             task=self._base_task, random_state=self.random_state or 0

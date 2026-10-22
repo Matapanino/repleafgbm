@@ -20,10 +20,10 @@ from sklearn.utils import check_array, check_X_y
 from sklearn.utils.validation import column_or_1d
 
 from repleafgbm.core.booster import Booster, BoosterParams
-from repleafgbm.core.leaf_models import make_leaf_model
+from repleafgbm.core.leaf_models import BaseLeafModel, make_leaf_model
 from repleafgbm.core.metrics import BaseMetric, get_metric, make_metric
 from repleafgbm.core.objectives import BaseObjective, get_objective
-from repleafgbm.core.profiling import profiler_from_env, timed
+from repleafgbm.core.profiling import PhaseProfiler, profiler_from_env, timed
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders import (
@@ -395,38 +395,8 @@ class BaseRepLeafModel(BaseEstimator):
             leaf_fit_precision=self.leaf_fit_precision,
         )
         self._validate_leaf_expert_options()
-        if self.leaf_model == "select" and (
-            dataset.y.ndim != 1 or getattr(self, "n_classes_", 2) > 2
-        ):
-            raise NotImplementedError(
-                "leaf_model='select' supports scalar regression and binary "
-                "classification only; use leaf_model='adaptive' or "
-                "'embedded_linear' for multi-output or multiclass targets"
-            )
-        # A bundle caches its fold-safe training representation on the dataset
-        # it is fitted on (RepLeafDataset.set_embeddings). Fit it on a shallow
-        # view so the caller's dataset keeps the ordinary transform() lifecycle
-        # when it is reused as an eval_set entry or as predict input.
-        train = dataset
-        if leaf_model.uses_embeddings and self.leaf_experts is not None:
-            train = copy.copy(dataset)
-        with timed(profiler, "encoder"):
-            self.encoder_ = (
-                self._build_and_fit_encoder(train)
-                if leaf_model.uses_embeddings
-                else None
-            )
-            if self.encoder_ is None:
-                self.leaf_embedding_input_dim_ = 0
-                self.leaf_embedding_dim_ = 0
-                self.leaf_reduction_ = "none"
-        if self.leaf_model == "select":
-            if isinstance(self.encoder_, ExpertBundleEncoder):
-                leaf_model.blocks = self.encoder_.block_slices
-                leaf_model.expert_names = self.encoder_.expert_names
-            else:
-                leaf_model.blocks = [slice(0, self.encoder_.output_dim)]
-                leaf_model.expert_names = ["linear"]
+        self._check_select_target(dataset)
+        train = self._fit_leaf_encoder(dataset, leaf_model, profiler)
 
         eval_sets = self._prepare_eval_sets(eval_set)
 
@@ -790,6 +760,54 @@ class BaseRepLeafModel(BaseEstimator):
             self.leaf_reduction_ = reduction
         self.leaf_embedding_dim_ = encoder.output_dim
         return encoder
+
+    def _check_select_target(self, dataset: RepLeafDataset) -> None:
+        """``select`` is scalar-only (regression / binary); shared with router extraction."""
+        if self.leaf_model == "select" and (
+            dataset.y.ndim != 1 or getattr(self, "n_classes_", 2) > 2
+        ):
+            raise NotImplementedError(
+                "leaf_model='select' supports scalar regression and binary "
+                "classification only; use leaf_model='adaptive' or "
+                "'embedded_linear' for multi-output or multiclass targets"
+            )
+
+    def _fit_leaf_encoder(
+        self,
+        dataset: RepLeafDataset,
+        leaf_model: BaseLeafModel,
+        profiler: PhaseProfiler | None = None,
+    ) -> RepLeafDataset:
+        """Fit the leaf encoder and wire select blocks; return the training dataset.
+
+        Shared by :meth:`fit` and router extraction. A bundle caches its
+        fold-safe training representation on the dataset it is fitted on
+        (``RepLeafDataset.set_embeddings``), so bundles — from ``leaf_experts``
+        or passed as an ``encoder`` instance — are fitted on a shallow view and
+        the caller's dataset keeps the ordinary ``transform()`` lifecycle when
+        reused as an eval_set entry or as predict input.
+        """
+        train = dataset
+        if leaf_model.uses_embeddings and (
+            self.leaf_experts is not None or isinstance(self.encoder, ExpertBundleEncoder)
+        ):
+            train = copy.copy(dataset)
+        with timed(profiler, "encoder"):
+            self.encoder_ = (
+                self._build_and_fit_encoder(train) if leaf_model.uses_embeddings else None
+            )
+            if self.encoder_ is None:
+                self.leaf_embedding_input_dim_ = 0
+                self.leaf_embedding_dim_ = 0
+                self.leaf_reduction_ = "none"
+        if self.leaf_model == "select":
+            if isinstance(self.encoder_, ExpertBundleEncoder):
+                leaf_model.blocks = self.encoder_.block_slices
+                leaf_model.expert_names = self.encoder_.expert_names
+            else:
+                leaf_model.blocks = [slice(0, self.encoder_.output_dim)]
+                leaf_model.expert_names = ["linear"]
+        return train
 
     def _validate_leaf_expert_options(self) -> None:
         """Reject ``leaf_experts`` combinations the public contract excludes.

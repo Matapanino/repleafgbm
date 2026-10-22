@@ -812,3 +812,36 @@ def test_select_rejects_insample_gate():
         RepLeafRegressor(
             n_estimators=1, min_samples_leaf=5, leaf_model="select", leaf_gate="insample"
         ).fit(X, X[:, 0])
+
+
+def test_bundle_passed_as_encoder_keeps_training_representation_private():
+    from repleafgbm.encoders import ExpertBundleEncoder
+
+    rng = np.random.RandomState(4)
+    X = rng.normal(size=(110, 2))
+    y = X[:, 0] - X[:, 1]
+    ds = RepLeafDataset(X, y)
+    bundle = ExpertBundleEncoder(
+        expert_names=["oof"], encoders=[_OOFEncoder()], column_subsets=[[0]]
+    )
+    model = RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=3,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        encoder=bundle,
+        split_backend="numpy",
+        random_state=2,
+    ).fit(ds)
+    np.testing.assert_array_equal(model.predict(ds), model.predict(X))
+
+
+def test_router_extraction_rejects_select_multi_output_target():
+    pytest.importorskip("lightgbm")
+    from repleafgbm.external import RouterExtractionRegressor
+
+    X = np.arange(120, dtype=np.float64).reshape(60, 2)
+    with pytest.raises(NotImplementedError, match="adaptive.*embedded_linear"):
+        RouterExtractionRegressor(leaf_model="select", min_samples_leaf=5).fit(
+            X, np.column_stack([X[:, 0], X[:, 1]])
+        )
