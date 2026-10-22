@@ -11,7 +11,7 @@ from repleafgbm.utils.random import check_random_state
 class PrototypeDistanceEncoder(BaseEncoder):
     """Represent standardized rows by Euclidean distances or RBF affinities.
 
-    ``n_prototypes=8``, ``max_iter=20``, ``transform='distance'``, and seed 0
+    ``n_prototypes=8``, ``max_iter=20``, ``output='distance'``, and seed 0
     are unmeasured, chosen defaults. Centers start at seeded sampled rows
     without replacement; Lloyd updates retain empty-cluster centers and stop
     when centers are exactly unchanged or max_iter is reached. Fit requires
@@ -25,20 +25,20 @@ class PrototypeDistanceEncoder(BaseEncoder):
     name = "prototype"
 
     def __init__(
-        self, n_prototypes: int = 8, max_iter: int = 20, transform: str = "distance",
+        self, n_prototypes: int = 8, max_iter: int = 20, output: str = "distance",
         random_state: int | None = 0,
     ) -> None:
         if not isinstance(n_prototypes, (int, np.integer)) or n_prototypes < 1:
             raise ValueError("n_prototypes must be an integer >= 1")
         if not isinstance(max_iter, (int, np.integer)) or max_iter < 1:
             raise ValueError("max_iter must be an integer >= 1")
-        if transform not in ("distance", "rbf"):
-            raise ValueError("transform must be 'distance' or 'rbf'")
+        if output not in ("distance", "rbf"):
+            raise ValueError("output must be 'distance' or 'rbf'")
         if random_state is not None and not isinstance(random_state, (int, np.integer)):
             raise ValueError("random_state must be an integer or None")
         self.n_prototypes = int(n_prototypes)
         self.max_iter = int(max_iter)
-        self.transform_kind = transform  # Keep the public transform method callable.
+        self.output = output
         self.random_state = None if random_state is None else int(random_state)
         self.centers_: np.ndarray | None = None
 
@@ -102,7 +102,7 @@ class PrototypeDistanceEncoder(BaseEncoder):
             raise ValueError(f"Expected {self.mean_.size} numerical features, got {X_num.shape[1]}")
         standardized = (np.where(np.isnan(X_num), self.mean_, X_num) - self.mean_) / self.scale_
         squared = self._squared_distances(standardized, self.centers_)
-        if self.transform_kind == "rbf":
+        if self.output == "rbf":
             return np.exp(-squared / (2.0 * self.sigma_**2))
         return np.sqrt(squared)
 
@@ -113,7 +113,7 @@ class PrototypeDistanceEncoder(BaseEncoder):
 
     def get_config(self) -> dict:
         return {"n_prototypes": self.n_prototypes, "max_iter": self.max_iter,
-                "transform": self.transform_kind, "random_state": self.random_state}
+                "output": self.output, "random_state": self.random_state}
 
     def get_state(self) -> dict[str, np.ndarray]:
         self._check_fitted("centers_")

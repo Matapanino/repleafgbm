@@ -32,7 +32,7 @@ CASES = [
     ("row_stats", {}, 8),
     ("row_stats", {"columns": [4, 1, 0]}, 8),
     ("prototype", {}, 8),
-    ("prototype", {"n_prototypes": 3, "max_iter": 7, "transform": "rbf"}, 3),
+    ("prototype", {"n_prototypes": 3, "max_iter": 7, "output": "rbf"}, 3),
 ]
 NAMES = ("pca", "quantile", "spline", "rff", "row_stats", "prototype")
 
@@ -117,7 +117,7 @@ def test_fitted_guard(name):
     ("rff", {"gamma": "auto"}, "gamma"),
     ("prototype", {"n_prototypes": 0}, "n_prototypes"),
     ("prototype", {"max_iter": 0}, "max_iter"),
-    ("prototype", {"transform": "invalid"}, "transform"),
+    ("prototype", {"output": "invalid"}, "output"),
     ("row_stats", {"columns": []}, "columns"),
     ("row_stats", {"columns": [0, 0]}, "columns"),
     ("row_stats", {"columns": [-1]}, "columns"),
@@ -294,7 +294,7 @@ def test_prototype_distances_lloyd_and_rbf_bandwidth():
     distances = enc.transform(X)
     assert (distances >= 0).all()
     assert enc.sigma_ == pytest.approx(expected[1] - expected[0])
-    rbf = PrototypeDistanceEncoder(n_prototypes=2, transform="rbf", random_state=3).fit(X)
+    rbf = PrototypeDistanceEncoder(n_prototypes=2, output="rbf", random_state=3).fit(X)
     np.testing.assert_allclose(rbf.transform(X), np.exp(-distances**2 / (2 * enc.sigma_**2)))
     single = PrototypeDistanceEncoder(n_prototypes=1).fit(X)
     np.testing.assert_allclose(single.centers_, [[0.0]], atol=1e-12)

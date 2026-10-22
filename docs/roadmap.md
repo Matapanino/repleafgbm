@@ -580,6 +580,8 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
 
 Listed here because v0 deliberately freezes the encoder:
 
+- The experimental NumPy space bank (`pca`, `quantile`, `spline`, `rff`,
+  `row_stats`, `prototype`) is shipped; its defaults remain unbenchmarked.
 - ~~PyTorch encoders (learned periodic frequencies, PLR projection)~~
   shipped in Phase 13; ~~interaction-aware features~~ shipped in Phase 16
   (`cross`, `torch_mlp` — negative on real data, see
