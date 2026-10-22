@@ -36,8 +36,8 @@ from repleafgbm import RepLeafClassifier, RepLeafRegressor
 from repleafgbm.core.leaf_models import (
     LeafValues,
     SelectLeafModel,
-    _fit_weighted_ridge,
-    _loo_errors,
+    _constant_loo_error,
+    _fit_block_loo,
     _newton_constant,
 )
 
@@ -220,9 +220,13 @@ class CalibratedSelectLeafModel(SelectLeafModel):
         if grad.ndim != 1 or hess.ndim != 1:
             raise NotImplementedError("calibration supports scalar leaves only")
         emb_dim = Z.shape[1]
-        blocks = self.blocks or [slice(0, emb_dim)]
-        indices = [_slice_indices(block, emb_dim) for block in blocks]
-        if len(indices) != 2 + self.n_false:
+        blocks: list[slice] = []
+        for block in self.blocks or [slice(0, emb_dim)]:
+            start, stop, step = block.indices(emb_dim)
+            if step != 1 or stop <= start:
+                raise ValueError("select leaf blocks must be non-empty contiguous slices")
+            blocks.append(slice(start, stop))
+        if len(blocks) != 2 + self.n_false:
             raise ValueError("n_false does not match the configured expert blocks")
 
         candidates: list[list[tuple[int, float, np.ndarray, float]]] = []
@@ -236,28 +240,26 @@ class CalibratedSelectLeafModel(SelectLeafModel):
         for leaf, rows in enumerate(leaf_rows):
             gl, hl, zl = grad[rows], hess[rows], Z[rows]
             biases[leaf] = _newton_constant(gl, hl, self.l2)
+            active = hl > 0.0
+            if active.all():
+                z_fit = zl
+            else:
+                gl, hl, z_fit = gl[active], hl[active], zl[active]
+            n_active = hl.shape[0]
             leaf_candidates: list[tuple[int, float, np.ndarray, float]] = []
             e_const: float | None = None
-            for block_index, columns in enumerate(indices):
-                if rows.size < max(self.min_samples_linear, columns.size + 2):
+            for block_index, block in enumerate(blocks):
+                if n_active < max(
+                    self.min_samples_linear, block.stop - block.start + 2
+                ):
                     continue
-                block_z = zl[:, columns]
-                block_bias, block_weights = _fit_weighted_ridge(
-                    block_z, gl, hl, self.l2
-                )
-                if block_weights is None:
+                fit = _fit_block_loo(z_fit[:, block], gl, hl, self.l2)
+                if fit is None:
                     continue
-                block_error, current_constant = _loo_errors(
-                    block_z,
-                    gl,
-                    hl,
-                    block_bias,
-                    block_weights,
-                    self.l2,
-                    insample=self.leaf_gate == "insample",
-                )
-                e_const = current_constant if e_const is None else e_const
-                improvement = _relative_improvement(block_error, current_constant)
+                if e_const is None:
+                    e_const = _constant_loo_error(gl, hl)
+                block_bias, block_weights, block_error = fit
+                improvement = _relative_improvement(block_error, e_const)
                 leaf_candidates.append(
                     (block_index, block_bias, block_weights, improvement)
                 )
@@ -284,7 +286,7 @@ class CalibratedSelectLeafModel(SelectLeafModel):
             best = max(leaf_candidates, key=lambda item: item[3], default=None)
             if best is not None and e_const is not None and best[3] > threshold:
                 block_index, block_bias, block_weights, _ = best
-                weights[leaf, indices[block_index]] = block_weights
+                weights[leaf, blocks[block_index]] = block_weights
                 biases[leaf] = block_bias
                 z_leaf = Z[rows]
                 z_min[leaf] = z_leaf.min(axis=0)
@@ -303,13 +305,6 @@ class CalibratedSelectLeafModel(SelectLeafModel):
                 math.log(self.n_false + 1) / n_leaf
             )
         return tree_threshold
-
-
-def _slice_indices(block: slice, emb_dim: int) -> np.ndarray:
-    start, stop, step = block.indices(emb_dim)
-    if step != 1 or stop <= start:
-        raise ValueError("select leaf blocks must be non-empty contiguous slices")
-    return np.arange(start, stop, dtype=np.int64)
 
 
 def _relative_improvement(block_error: float, constant_error: float) -> float:
