@@ -371,6 +371,8 @@ def test_select_direct_bundle_uses_blocks_but_single_encoder_uses_one_block():
 
 @pytest.mark.parametrize("backend", ["numpy", "rust"])
 def test_select_single_expert_matches_adaptive_prediction(backend):
+    if backend == "rust":
+        pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
     rng = np.random.RandomState(31)
     X = rng.normal(size=(280, 3))
     y = 2.5 * X[:, 0] - X[:, 2] + rng.normal(scale=0.1, size=280)
@@ -422,6 +424,8 @@ def _planted_expert_data(seed, n):
 
 @pytest.mark.parametrize("backend", ["numpy", "rust"])
 def test_select_recovers_planted_blocks_and_beats_concatenated_ridge(backend):
+    if backend == "rust":
+        pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
     X_train, y_train = _planted_expert_data(37, 600)
     X_valid, y_valid = _planted_expert_data(41, 300)
     experts = [
