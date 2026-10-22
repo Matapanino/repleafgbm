@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
 from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor
@@ -74,6 +76,18 @@ def test_same_seed_is_deterministic_and_state_round_trips():
     restored.set_state(state)
     probe = np.vstack([X[:8], [[100.0, np.nan]]])
     np.testing.assert_array_equal(first.transform(probe), restored.transform(probe))
+
+
+def test_numpy_integer_scale_config_is_json_serializable_and_round_trips():
+    encoder = TargetEncodingEncoder(scales=[np.int64(0), "exact"])
+
+    config = encoder.get_config()
+    serialized = json.dumps(config)
+    restored = encoder_from_config(encoder.name, json.loads(serialized))
+
+    assert config["scales"] == [0, "exact"]
+    assert type(config["scales"][0]) is int
+    assert restored.get_config() == config
 
 
 def test_unknown_key_uses_prior_and_nan_is_a_learned_key():

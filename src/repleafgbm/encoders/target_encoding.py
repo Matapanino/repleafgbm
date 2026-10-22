@@ -73,7 +73,11 @@ class TargetEncodingEncoder(BaseEncoder):
         random_state: int | None = 42,
     ) -> None:
         self.columns = None if columns is None else [int(column) for column in columns]
-        self.scales = ["exact"] if scales is None else list(scales)
+        self.scales = (
+            ["exact"]
+            if scales is None
+            else [int(scale) if isinstance(scale, np.integer) else scale for scale in scales]
+        )
         self.alpha = float(alpha)
         self.n_folds = int(n_folds)
         self.add_count = bool(add_count)
