@@ -699,17 +699,9 @@ class BaseRepLeafModel(BaseEstimator):
         # fixed encoders ignore it.
         weight = dataset.sample_weight
         target = self._pretrain_target(dataset, sample_weight=weight)
-        if isinstance(encoder, ExpertBundleEncoder):
-            train_embeddings = encoder.fit_transform_train(
-                X_num, y=target, sample_weight=weight
-            )
-            dataset.set_embeddings(encoder, train_embeddings)
-        else:
-            encoder.fit(
-                X_num,
-                y=target,
-                sample_weight=weight,
-            )
+        train_embeddings = encoder.fit_transform_train(
+            X_num, y=target, sample_weight=weight
+        )
         self.leaf_embedding_input_dim_ = encoder.output_dim
         self.leaf_reduction_ = "none"
         if isinstance(encoder, ExpertBundleEncoder):
@@ -754,8 +746,10 @@ class BaseRepLeafModel(BaseEstimator):
             else:
                 encoder = TargetCorrelationEncoder(
                     encoder, out_dim=self.max_leaf_emb_dim
-                ).fit_reduction(X_num, target, weight)
+                ).fit_reduction(X_num, target, weight, base_embeddings=train_embeddings)
+            train_embeddings = train_embeddings @ encoder.projection_
             self.leaf_reduction_ = reduction
+        dataset.set_embeddings(encoder, train_embeddings)
         self.leaf_embedding_dim_ = encoder.output_dim
         return encoder
 

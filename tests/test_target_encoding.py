@@ -191,6 +191,28 @@ def test_estimator_bundle_caches_oof_for_train_and_full_table_for_eval():
     )
 
 
+def test_direct_estimator_encoder_also_caches_oof_training_values():
+    X = np.repeat(np.arange(8, dtype=np.float64), 6).reshape(-1, 1)
+    y = np.linspace(-3.0, 4.0, len(X))
+    train = RepLeafDataset(X, y)
+    encoder_params = dict(alpha=0.0, n_folds=3, add_count=False, random_state=19)
+    model = RepLeafRegressor(
+        n_estimators=1,
+        num_leaves=2,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        encoder="target_encoding",
+        encoder_params=encoder_params,
+        leaf_reduction="none",
+        split_backend="numpy",
+        random_state=19,
+    ).fit(train)
+
+    expected_oof = TargetEncodingEncoder(**encoder_params).fit_transform_train(X, y - y.mean())
+    np.testing.assert_array_equal(train.get_embeddings(model.encoder_), expected_oof)
+    assert not np.array_equal(expected_oof, model.encoder_.transform(X))
+
+
 def test_multiclass_target_is_rejected():
     X = np.arange(12, dtype=np.float64).reshape(6, 2)
     y = np.eye(3, dtype=np.float64)[[0, 1, 2, 0, 1, 2]]
