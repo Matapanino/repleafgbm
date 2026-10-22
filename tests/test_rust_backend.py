@@ -28,6 +28,18 @@ _NATIVE_HAS_SELECT = (
 )
 
 
+class _SelectStatsCallCounter:
+    """Minimal native proxy that proves select parity tests use the fast path."""
+
+    def __init__(self, native):
+        self._native = native
+        self.calls = 0
+
+    def leaf_select_stats(self, *args, **kwargs):
+        self.calls += 1
+        return self._native.leaf_select_stats(*args, **kwargs)
+
+
 @pytest.fixture
 def node_data():
     rng = np.random.default_rng(0)
@@ -104,13 +116,44 @@ def test_leaf_select_stats_matches_numpy(monkeypatch, block_dim):
         return model.last_selections_, values
 
     expected_selection, expected = fit(None)
-    native = importlib.import_module("repleafgbm_native")
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
     actual_selection, actual = fit(native)
+    assert native.calls == 1
     assert actual_selection == expected_selection
     np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(actual.z_min, expected.z_min, rtol=0.0, atol=0.0)
     np.testing.assert_allclose(actual.z_max, expected.z_max, rtol=0.0, atol=0.0)
+
+
+@pytest.mark.skipif(
+    not _NATIVE_HAS_SELECT, reason="native extension predates leaf_select_stats"
+)
+def test_leaf_select_stats_large_offset_matches_numpy(monkeypatch):
+    """Centered native ridge statistics stay stable for large feature offsets."""
+    rng = np.random.default_rng(20261024)
+    n = 2000
+    centered = rng.normal(size=(n, 2))
+    Z = np.ascontiguousarray(1e8 + centered)
+    target = 2.0 * centered[:, 0] - centered[:, 1] + rng.normal(scale=0.05, size=n)
+    grad = np.ascontiguousarray(-target)
+    hess = np.ones(n, dtype=np.float64)
+    leaf_rows = [np.arange(n, dtype=np.int64)]
+
+    def fit(native):
+        monkeypatch.setattr(leaf_models, "_native", native)
+        model = SelectLeafModel(l2=0.5, min_samples_linear=10, leaf_gate_margin=0.01)
+        model.blocks = [slice(0, 2)]
+        values = model.fit_leaves(leaf_rows, grad, hess, Z)
+        return model.last_selections_, values
+
+    expected_selection, expected = fit(None)
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    actual_selection, actual = fit(native)
+    assert native.calls == 1
+    assert actual_selection == expected_selection
+    np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
 
 
 @pytest.mark.skipif(
@@ -127,7 +170,7 @@ def test_leaf_select_stats_fallback_tie_and_determinism(monkeypatch):
     hess = np.full(n, 0.25)
     # Leaf zero is deliberately below max(min_samples_linear, d + 2).
     leaf_rows = [np.arange(3, dtype=np.int64), np.arange(3, n, dtype=np.int64)]
-    native = importlib.import_module("repleafgbm_native")
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
     monkeypatch.setattr(leaf_models, "_native", native)
 
     def fit():
@@ -138,6 +181,7 @@ def test_leaf_select_stats_fallback_tie_and_determinism(monkeypatch):
 
     selection_a, first = fit()
     selection_b, second = fit()
+    assert native.calls == 2
     assert selection_a == selection_b == [None, 0]
     np.testing.assert_array_equal(first.bias, second.bias)
     np.testing.assert_array_equal(first.weights, second.weights)
@@ -169,7 +213,9 @@ def test_leaf_select_stats_singular_block_falls_through(monkeypatch):
         return model.last_selections_, values
 
     expected_selection, expected = fit(None)
-    actual_selection, actual = fit(importlib.import_module("repleafgbm_native"))
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    actual_selection, actual = fit(native)
+    assert native.calls == 1
     assert actual_selection == expected_selection == [1]
     np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
