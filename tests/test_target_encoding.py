@@ -65,8 +65,13 @@ def test_same_seed_is_deterministic_and_state_round_trips():
     second = TargetEncodingEncoder(**params)
 
     np.testing.assert_array_equal(first.fit_transform_train(X, y), second.fit_transform_train(X, y))
+    state = first.get_state()
+    for column in (0, 1):
+        for scale in ("exact", 1, "bin:4"):
+            for statistic in ("keys", "sums", "counts"):
+                assert f"{column}_{scale}_{statistic}" in state
     restored = encoder_from_config(first.name, first.get_config())
-    restored.set_state(first.get_state())
+    restored.set_state(state)
     probe = np.vstack([X[:8], [[100.0, np.nan]]])
     np.testing.assert_array_equal(first.transform(probe), restored.transform(probe))
 
