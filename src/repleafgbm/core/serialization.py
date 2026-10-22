@@ -94,7 +94,7 @@ def save_model_dir(
         target_scale = getattr(booster, "target_scale_", 1.0)
         has_transform = bool(np.any(target_loc != 0.0) or np.any(target_scale != 1.0))
         if metadata.leaf_only_features or (
-            encoder is not None and encoder.name == "expert_bundle"
+            encoder is not None and _encoder_uses_v9(encoder)
         ):
             version = 9
         elif encoder is not None and _encoder_uses_v8(encoder):
@@ -305,6 +305,14 @@ def _encoder_uses_v8(encoder: BaseEncoder) -> bool:
         return True
     base = getattr(encoder, "base", None)
     return isinstance(base, BaseEncoder) and _encoder_uses_v8(base)
+
+
+def _encoder_uses_v9(encoder: BaseEncoder) -> bool:
+    """Whether an encoder tree contains an expert bundle (v9 recursive schema)."""
+    if encoder.name == "expert_bundle":
+        return True
+    base = getattr(encoder, "base", None)
+    return isinstance(base, BaseEncoder) and _encoder_uses_v9(base)
 
 
 def _require_keys(obj: dict, keys: tuple[str, ...], file_name: str) -> None:

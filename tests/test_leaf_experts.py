@@ -845,3 +845,29 @@ def test_router_extraction_rejects_select_multi_output_target():
         RouterExtractionRegressor(leaf_model="select", min_samples_leaf=5).fit(
             X, np.column_stack([X[:, 0], X[:, 1]])
         )
+
+
+def test_wrapped_bundle_encoder_writes_v9(tmp_path):
+    from repleafgbm.encoders import ExpertBundleEncoder, RandomProjectionEncoder, make_encoder
+
+    rng = np.random.RandomState(6)
+    X = rng.normal(size=(120, 2))
+    y = X[:, 0]
+    bundle = ExpertBundleEncoder(
+        expert_names=["p"],
+        encoders=[make_encoder("plr", n_bins=6)],
+        column_subsets=[[0, 1]],
+    )
+    model = RepLeafRegressor(
+        n_estimators=1,
+        min_samples_leaf=8,
+        leaf_model="embedded_linear",
+        encoder=RandomProjectionEncoder(bundle, out_dim=3, random_state=0),
+        split_backend="numpy",
+    ).fit(X, y)
+    model.save_model(tmp_path / "m")
+    config = json.loads((tmp_path / "m" / "model_config.json").read_text())
+    assert config["format_version"] == 9
+    np.testing.assert_array_equal(
+        RepLeafRegressor.load_model(tmp_path / "m").predict(X), model.predict(X)
+    )
