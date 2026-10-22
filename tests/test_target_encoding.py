@@ -154,7 +154,7 @@ def test_classifier_target_encoding_expert_fit_predict_save_load(tmp_path):
     np.testing.assert_array_equal(before, restored.predict_proba(X[:20]))
 
 
-def test_estimator_bundle_caches_oof_for_train_and_full_table_for_eval():
+def test_estimator_bundle_training_cache_is_not_reused_for_prediction():
     rng = np.random.default_rng(41)
     X = np.column_stack([np.repeat(np.arange(10), 6), rng.normal(size=60)]).astype(float)
     y = 0.5 * X[:, 0] + rng.normal(size=60)
@@ -181,17 +181,13 @@ def test_estimator_bundle_caches_oof_for_train_and_full_table_for_eval():
         random_state=13,
     ).fit(train, eval_set=[valid])
 
-    expected_oof = TargetEncodingEncoder(**encoder_params).fit_transform_train(
-        X[:, [0]], y - y.mean()
-    )
-    np.testing.assert_array_equal(train.get_embeddings(model.encoder_), expected_oof)
-    assert not np.array_equal(expected_oof, model.encoder_.transform(X))
+    np.testing.assert_array_equal(model.predict(train), model.predict(X))
     np.testing.assert_array_equal(
         valid.get_embeddings(model.encoder_), model.encoder_.transform(X_eval)
     )
 
 
-def test_direct_estimator_encoder_also_caches_oof_training_values():
+def test_direct_encoder_training_cache_is_not_reused_for_prediction():
     X = np.repeat(np.arange(8, dtype=np.float64), 6).reshape(-1, 1)
     y = np.linspace(-3.0, 4.0, len(X))
     train = RepLeafDataset(X, y)
@@ -208,9 +204,7 @@ def test_direct_estimator_encoder_also_caches_oof_training_values():
         random_state=19,
     ).fit(train)
 
-    expected_oof = TargetEncodingEncoder(**encoder_params).fit_transform_train(X, y - y.mean())
-    np.testing.assert_array_equal(train.get_embeddings(model.encoder_), expected_oof)
-    assert not np.array_equal(expected_oof, model.encoder_.transform(X))
+    np.testing.assert_array_equal(model.predict(train), model.predict(X))
 
 
 def test_multiclass_target_is_rejected():

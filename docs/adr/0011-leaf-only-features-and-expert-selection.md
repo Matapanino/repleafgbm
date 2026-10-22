@@ -29,10 +29,11 @@ block and every other coefficient is zero.
 - `BaseEncoder.fit_transform_train` defaults to the historical
   `fit`-then-`transform` behavior. A supervised encoder may override it with
   cross-fitted/ordered training rows while retaining full-data state for eval
-  and prediction. Only the bundle path seeds this returned matrix into the
-  embedding cache of a private training view of the dataset, so the caller's
-  dataset object still yields ``transform`` output when reused as an eval set
-  or as predict input; the single-encoder lifecycle is unchanged.
+  and prediction. The estimator seeds this returned matrix for both direct
+  encoders and bundles into the embedding cache of a private training view;
+  the caller's dataset still yields ``transform`` output when reused for eval
+  or prediction. Any dimensionality reduction is fitted from and applied to
+  the same training representation.
 - `leaf_model="select"` treats constant plus every expert block as candidates.
   Each eligible block gets its own Hessian-weighted ridge fit and LOO score.
   The lowest-error block is used only if it beats constant by the configured

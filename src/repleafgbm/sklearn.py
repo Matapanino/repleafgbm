@@ -772,18 +772,13 @@ class BaseRepLeafModel(BaseEstimator):
     ) -> RepLeafDataset:
         """Fit the leaf encoder and wire select blocks; return the training dataset.
 
-        Shared by :meth:`fit` and router extraction. A bundle caches its
-        fold-safe training representation on the dataset it is fitted on
-        (``RepLeafDataset.set_embeddings``), so bundles — from ``leaf_experts``
-        or passed as an ``encoder`` instance — are fitted on a shallow view and
-        the caller's dataset keeps the ordinary ``transform()`` lifecycle when
+        Shared by :meth:`fit` and router extraction. ``fit_transform_train``
+        may differ from ``transform`` (for example, an OOF target encoding),
+        so every embedding encoder is fitted on a shallow view. The caller's
+        dataset therefore keeps the ordinary ``transform()`` lifecycle when
         reused as an eval_set entry or as predict input.
         """
-        train = dataset
-        if leaf_model.uses_embeddings and (
-            self.leaf_experts is not None or isinstance(self.encoder, ExpertBundleEncoder)
-        ):
-            train = copy.copy(dataset)
+        train = copy.copy(dataset) if leaf_model.uses_embeddings else dataset
         with timed(profiler, "encoder"):
             self.encoder_ = (
                 self._build_and_fit_encoder(train) if leaf_model.uses_embeddings else None
