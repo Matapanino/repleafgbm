@@ -123,10 +123,8 @@ class RepLeafDataset:
         reused (``Tree.apply`` and the split backends need contiguous input)."""
         if not self.metadata.leaf_only_features:
             return self._X_raw
-        if self._X_routing is None:
-            self._X_routing = np.ascontiguousarray(
-                self._X_raw[:, self.metadata.routing_indices]
-            )
+        if self._X_routing is None:  # np.take: one C-ordered allocation
+            self._X_routing = np.take(self._X_raw, self.metadata.routing_indices, axis=1)
         return self._X_routing
 
     def get_numerical_features(self) -> np.ndarray:
