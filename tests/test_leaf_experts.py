@@ -729,3 +729,25 @@ def test_bundle_rejects_training_representation_width_mismatch():
             leaf_experts=[LeafExpert("wide", _WideTrainEncoder(), columns=[0])],
             split_backend="numpy",
         ).fit(X, X[:, 0])
+
+
+def test_select_ignores_zero_hessian_rows():
+    from repleafgbm.core.leaf_models import SelectLeafModel
+
+    rng = np.random.RandomState(5)
+    Z = rng.normal(size=(80, 2))
+    target = 3.0 * Z[:, 0] + rng.normal(scale=0.05, size=80)
+    grad, hess = -target, np.ones(80)
+    reference = SelectLeafModel(l2=0.5, min_samples_linear=5, leaf_gate_margin=0.0)
+    reference.blocks = [slice(0, 2)]
+    expected = reference.fit_leaves([np.arange(79)], grad[:79], hess[:79], Z[:79])
+    assert reference.last_selections_ == [0]
+    grad_z, hess_z = grad.copy(), hess.copy()
+    grad_z[79] = 0.0
+    hess_z[79] = 0.0
+    select = SelectLeafModel(l2=0.5, min_samples_linear=5, leaf_gate_margin=0.0)
+    select.blocks = [slice(0, 2)]
+    values = select.fit_leaves([np.arange(80)], grad_z, hess_z, Z)
+    assert select.last_selections_ == [0]
+    np.testing.assert_allclose(values.weights, expected.weights, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(values.bias, expected.bias, rtol=1e-12, atol=1e-12)
