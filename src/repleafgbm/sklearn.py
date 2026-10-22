@@ -107,7 +107,8 @@ class BaseRepLeafModel(BaseEstimator):
             those reductions, ~15% faster wide-emb fit; also covers multi-output
             vector leaves) while the solve stays float64. The "float64" default
             itself stays on the fast native kernel up to 256 dims. Inert for
-            "constant" and for narrow embeddings (emb_dim <= 128). Trade-off:
+            "constant", for "select" (float64 per-block solves), and for narrow
+            embeddings (emb_dim <= 128). Trade-off:
             "float32_gram" is allclose-not-bitwise and not guaranteed
             reproducible across BLAS vendors/platforms; "float64" is the
             reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.

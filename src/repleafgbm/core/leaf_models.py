@@ -654,6 +654,8 @@ class SelectLeafModel(AdaptiveLeafModel):
     Rows with a zero Hessian (``sample_weight == 0``) have no Newton target and
     are excluded from the candidate fits and LOO scores; the Newton constant
     and the ``z_min``/``z_max`` bounds still cover every row of the leaf.
+    ``leaf_fit_precision`` is accepted for factory parity but inert: the
+    per-block solves are float64.
     """
 
     name = "select"

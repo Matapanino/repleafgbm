@@ -32,7 +32,9 @@ block and every other coefficient is zero.
   and prediction. Only the bundle path seeds this returned matrix into the
   embedding cache of a private training view of the dataset, so the caller's
   dataset object still yields ``transform`` output when reused as an eval set
-  or as predict input; the single-encoder lifecycle is unchanged.
+  or as predict input; the single-encoder lifecycle is unchanged, and an
+  encoder nested inside a wrapper (e.g. a projection around a bundle) also
+  keeps ``fit`` → ``transform``.
 - `leaf_model="select"` treats constant plus every expert block as candidates.
   Each eligible block gets its own Hessian-weighted ridge fit and LOO score.
   The lowest-error block is used only if it beats constant by the configured
