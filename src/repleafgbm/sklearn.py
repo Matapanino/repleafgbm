@@ -95,7 +95,8 @@ class BaseRepLeafModel(BaseEstimator):
             beats the constant leaf's by this relative margin: 0.0 keeps any
             non-worse linear fit, larger values demand a larger held-out
             improvement. Must be >= 0. Default 0.01.
-        leaf_gate: For leaf_model="adaptive" and "select". "loo" (default,
+        leaf_gate: For leaf_model="adaptive" only ("select" always scores by
+            weighted LOO and rejects "insample"). "loo" (default,
             leverage-corrected held-out error) or "insample" (drops the leverage
             correction — a deliberately weak baseline for diagnostics).
         leaf_fit_precision: "float64" (default) or "float32_gram". A perf knob for

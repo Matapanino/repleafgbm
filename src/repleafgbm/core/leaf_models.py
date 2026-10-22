@@ -660,6 +660,28 @@ class SelectLeafModel(AdaptiveLeafModel):
     uses_embeddings = True
     blocks: list[slice] | None = None
 
+    def __init__(
+        self,
+        l2: float = 1.0,
+        min_samples_linear: int = 10,
+        leaf_gate_margin: float = 0.01,
+        leaf_gate: str = "loo",
+        leaf_fit_precision: str = "float64",
+    ) -> None:
+        if leaf_gate != "loo":
+            raise ValueError(
+                "leaf_model='select' scores experts by weighted LOO only; "
+                f"leaf_gate={leaf_gate!r} is an adaptive-only diagnostic (use "
+                "'loo', or leaf_model='adaptive' for the insample baseline)"
+            )
+        super().__init__(
+            l2=l2,
+            min_samples_linear=min_samples_linear,
+            leaf_gate_margin=leaf_gate_margin,
+            leaf_gate=leaf_gate,
+            leaf_fit_precision=leaf_fit_precision,
+        )
+
     def fit_leaves(
         self,
         leaf_rows: list[np.ndarray],
@@ -676,13 +698,12 @@ class SelectLeafModel(AdaptiveLeafModel):
                 "for vector leaves"
             )
         emb_dim = Z.shape[1]
-        blocks = self.blocks or [slice(0, emb_dim)]
-        indices: list[np.ndarray] = []
-        for block in blocks:
+        blocks: list[slice] = []
+        for block in self.blocks or [slice(0, emb_dim)]:
             start, stop, step = block.indices(emb_dim)
             if step != 1 or stop <= start:
                 raise ValueError("select leaf blocks must be non-empty contiguous slices")
-            indices.append(np.arange(start, stop, dtype=np.int64))
+            blocks.append(slice(start, stop))
 
         n_leaves = len(leaf_rows)
         bias = np.empty(n_leaves, dtype=np.float64)
@@ -690,7 +711,6 @@ class SelectLeafModel(AdaptiveLeafModel):
         z_min = np.full((n_leaves, emb_dim), -np.inf, dtype=np.float64)
         z_max = np.full((n_leaves, emb_dim), np.inf, dtype=np.float64)
         selections: list[int | None] = []
-        insample = self.leaf_gate == "insample"
         for leaf, rows in enumerate(leaf_rows):
             gl = grad[rows]
             hl = hess[rows]
@@ -705,10 +725,10 @@ class SelectLeafModel(AdaptiveLeafModel):
             best_error = np.inf
             best: tuple[int, float, np.ndarray] | None = None
             e_const: float | None = None
-            for block_index, columns in enumerate(indices):
-                if n_active < max(self.min_samples_linear, columns.size + 2):
+            for block_index, block in enumerate(blocks):
+                if n_active < max(self.min_samples_linear, block.stop - block.start + 2):
                     continue
-                fit = _fit_block_loo(Zf[:, columns], gl, hl, self.l2, insample)
+                fit = _fit_block_loo(Zf[:, block], gl, hl, self.l2)
                 if fit is None:
                     continue
                 if e_const is None:  # block-independent: score it once per leaf
@@ -723,7 +743,7 @@ class SelectLeafModel(AdaptiveLeafModel):
                 and best_error < (1.0 - self.leaf_gate_margin) * e_const
             ):
                 block_index, block_bias, block_weights = best
-                weights[leaf, indices[block_index]] = block_weights
+                weights[leaf, blocks[block_index]] = block_weights
                 bias[leaf] = block_bias
                 z_min[leaf] = Zl.min(axis=0)
                 z_max[leaf] = Zl.max(axis=0)
@@ -869,12 +889,14 @@ def _constant_loo_error(gl: np.ndarray, hl: np.ndarray) -> float:
 
 
 def _fit_block_loo(
-    Zb: np.ndarray, gl: np.ndarray, hl: np.ndarray, l2: float, insample: bool
+    Zb: np.ndarray, gl: np.ndarray, hl: np.ndarray, l2: float
 ) -> tuple[float, np.ndarray, float] | None:
     """Weighted ridge on one embedding block plus its weighted LOO error.
 
-    Same objective and centering as :func:`_fit_weighted_ridge`; the centered
-    system ``M`` is reused for the leverages instead of being rebuilt. Returns
+    Same objective and centering as :func:`_fit_weighted_ridge`. The centered
+    system ``M`` is factored once: its solve carries the ridge right-hand side
+    and ``z_tilde^T`` together, so the weights and the hat diagonals
+    (:func:`_loo_leverages` formula) come from one factorization. Returns
     ``(bias, weights, E_loo)``, or ``None`` when the solve is singular or
     non-finite (the block is then ineligible, like the singular fallback of
     the batched path).
@@ -886,16 +908,19 @@ def _fit_block_loo(
     z_tilde = Zb - z_mean
     hz = z_tilde * hl[:, None]
     M = hz.T @ z_tilde + l2 * np.eye(Zb.shape[1])
+    rhs = np.column_stack([hz.T @ (t - t_mean), z_tilde.T])  # (d, 1 + n)
     try:
-        w = np.linalg.solve(M, hz.T @ (t - t_mean))
+        sol = np.linalg.solve(M, rhs)
     except np.linalg.LinAlgError:
         return None
+    w = sol[:, 0]
     if not np.all(np.isfinite(w)):
         return None
-    H, _ = _loo_leverages(z_tilde, hl, M)
+    quad = np.einsum("ij,ji->i", z_tilde, sol[:, 1:])  # z_tilde_i^T M^-1 z_tilde_i
+    H = np.minimum(hl * quad + hl / h_sum, 1.0 - _LOO_LEVERAGE_CAP)
     resid = z_tilde @ w + (t_mean - t)
     bias = t_mean - float(w @ z_mean)
-    return bias, w, _weighted_loo_error(hl, resid, H, insample)
+    return bias, w, _weighted_loo_error(hl, resid, H, insample=False)
 
 
 @dataclass
@@ -971,9 +996,10 @@ def make_leaf_model(
 
     ``raw_linear`` reuses the embedded-linear machinery; the model wrapper is
     responsible for supplying standardized raw numerical features as Z.
-    ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit and
-    ``select`` reuses the same gate per expert block (``leaf_gate_margin``/
-    ``leaf_gate`` are ignored by the other models).
+    ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit;
+    ``select`` applies the same LOO gate per expert block (it shares
+    ``leaf_gate_margin`` but accepts only ``leaf_gate="loo"``; both arguments
+    are ignored by the other models).
     ``leaf_fit_precision`` only affects the wide-embedding (emb>128) BLAS leaf-fit
     of the linear models (and multi-output vector leaves); it is inert for
     ``constant``. Note the float64 default takes the *native* pass up to 256

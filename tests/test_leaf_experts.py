@@ -800,3 +800,15 @@ def test_all_columns_leaf_only_is_rejected_clearly():
     X = np.arange(40, dtype=np.float64).reshape(20, 2)
     with pytest.raises(ValueError, match="every input column"):
         RepLeafDataset(X, X[:, 0], leaf_only_features=[0, 1])
+
+
+def test_select_rejects_insample_gate():
+    from repleafgbm.core.leaf_models import SelectLeafModel
+
+    with pytest.raises(ValueError, match="select.*LOO.*insample"):
+        SelectLeafModel(l2=0.5, min_samples_linear=5, leaf_gate="insample")
+    X = np.arange(60, dtype=np.float64).reshape(30, 2)
+    with pytest.raises(ValueError, match="select.*LOO.*insample"):
+        RepLeafRegressor(
+            n_estimators=1, min_samples_leaf=5, leaf_model="select", leaf_gate="insample"
+        ).fit(X, X[:, 0])
