@@ -2,9 +2,10 @@
 
 Two families implement :class:`~repleafgbm.encoders.base.BaseEncoder`:
 
-* **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross``, plus
-  the experimental space bank (``pca``, ``quantile``, ``spline``, ``rff``,
-  ``row_stats``, ``prototype``) — fitted once and frozen.
+* **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross``,
+  ``target_encoding``, plus the experimental space bank (``pca``,
+  ``quantile``, ``spline``, ``rff``, ``row_stats``, ``prototype``) — fitted
+  once and frozen.
 * **Pretrained-then-frozen** (optional ``[torch]`` extra): ``torch_periodic``,
   ``torch_plr``, ``torch_periodic_plr``, ``torch_mlp`` — parameters are
   supervised-pretrained on the initial Newton residual and then frozen into
@@ -21,6 +22,7 @@ from __future__ import annotations
 import inspect
 
 from repleafgbm.encoders.base import BaseEncoder
+from repleafgbm.encoders.bundle import ExpertBundleEncoder, LeafExpert
 from repleafgbm.encoders.cross import CrossInteractionEncoder
 from repleafgbm.encoders.identity import IdentityEncoder
 from repleafgbm.encoders.pca import PCAEncoder
@@ -33,6 +35,7 @@ from repleafgbm.encoders.rff import RandomFourierEncoder
 from repleafgbm.encoders.row_stats import RowStatsEncoder
 from repleafgbm.encoders.spline import SplineEncoder
 from repleafgbm.encoders.subset import ColumnSubsetEncoder
+from repleafgbm.encoders.target_encoding import TargetEncodingEncoder
 from repleafgbm.encoders.target_reduction import TargetCorrelationEncoder
 from repleafgbm.encoders.torch_encoders import (
     TorchMLPEncoder,
@@ -52,7 +55,9 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "rff": RandomFourierEncoder,
     "row_stats": RowStatsEncoder,
     "prototype": PrototypeDistanceEncoder,
+    "target_encoding": TargetEncodingEncoder,
     "column_subset": ColumnSubsetEncoder,
+    "expert_bundle": ExpertBundleEncoder,
     # Learned encoders: torch needed only at fit time (see torch_encoders).
     "torch_periodic": TorchPeriodicEncoder,
     "torch_plr": TorchPLREncoder,
@@ -79,6 +84,17 @@ def make_encoder(name: str, _default_random_state: int | None = None, **kwargs) 
             _default_random_state=_default_random_state,
         )
         return ColumnSubsetEncoder(base, **kwargs)
+    if name == ExpertBundleEncoder.name:
+        children = kwargs.pop("children")
+        encoders = [
+            encoder_from_config(
+                child["name"],
+                child["config"],
+                _default_random_state=_default_random_state,
+            )
+            for child in children
+        ]
+        return ExpertBundleEncoder(encoders=encoders, **kwargs)
     cls = _ENCODER_REGISTRY[name]
     if (
         _default_random_state is not None
@@ -124,6 +140,7 @@ __all__ = [
     "RandomFourierEncoder",
     "RowStatsEncoder",
     "PrototypeDistanceEncoder",
+    "TargetEncodingEncoder",
     "TorchPeriodicEncoder",
     "TorchPLREncoder",
     "TorchPeriodicPLREncoder",
@@ -131,6 +148,8 @@ __all__ = [
     "RandomProjectionEncoder",
     "TargetCorrelationEncoder",
     "ColumnSubsetEncoder",
+    "ExpertBundleEncoder",
+    "LeafExpert",
     "make_encoder",
     "encoder_from_config",
 ]

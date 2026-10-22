@@ -20,6 +20,7 @@ from repleafgbm.core.leaf_models import make_leaf_model
 from repleafgbm.core.metrics import get_metric
 from repleafgbm.core.objectives import get_objective
 from repleafgbm.core.tree import Tree
+from repleafgbm.encoders.bundle import LeafExpert
 from repleafgbm.external.lightgbm_model import LightGBMExternalModel
 from repleafgbm.regressor import RepLeafRegressor
 
@@ -169,7 +170,7 @@ class _RouterExtractionMixin:
         self,
         base: LightGBMExternalModel | None = None,
         leaf_model: str = "embedded_linear",
-        encoder: str = "identity",
+        encoder: str | None = None,
         encoder_params: dict | None = None,
         max_leaf_emb_dim: int = 64,
         l2_leaf: float = 1.0,
@@ -177,11 +178,19 @@ class _RouterExtractionMixin:
         early_stopping_rounds: int | None = None,
         eval_metric: str | None = None,
         random_state: int | None = 42,
+        leaf_gate_margin: float = 0.01,
+        leaf_gate: str = "loo",
+        leaf_experts: list[dict | LeafExpert] | None = None,
+        leaf_only_features: list[str | int] | None = None,
     ) -> None:
         self.base = base
         self.leaf_model = leaf_model
+        self.leaf_gate_margin = leaf_gate_margin
+        self.leaf_gate = leaf_gate
         self.encoder = encoder
         self.encoder_params = encoder_params
+        self.leaf_experts = leaf_experts
+        self.leaf_only_features = leaf_only_features
         self.max_leaf_emb_dim = max_leaf_emb_dim
         self.l2_leaf = l2_leaf
         self.min_samples_leaf = min_samples_leaf
@@ -195,11 +204,16 @@ class _RouterExtractionMixin:
     ):
         # Replay cannot honor weights; warn and ignore rather than raising.
         self._enforce_weight_capability(sample_weight)
+        self._validate_leaf_expert_options()
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
+        self._check_select_target(dataset)
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
+        self.routing_feature_names_ = np.asarray(
+            dataset.metadata.routing_feature_names, dtype=object
+        )
 
         eval_sets = self._prepare_eval_sets(eval_set)
         if self.early_stopping_rounds is not None and not eval_sets:
@@ -208,11 +222,13 @@ class _RouterExtractionMixin:
             )
 
         leaf_model = make_leaf_model(
-            self.leaf_model, l2=self.l2_leaf, min_samples_linear=2 * self.min_samples_leaf
+            self.leaf_model,
+            l2=self.l2_leaf,
+            min_samples_linear=2 * self.min_samples_leaf,
+            leaf_gate_margin=self.leaf_gate_margin,
+            leaf_gate=self.leaf_gate,
         )
-        self.encoder_ = (
-            self._build_and_fit_encoder(dataset) if leaf_model.uses_embeddings else None
-        )
+        train = self._fit_leaf_encoder(dataset, leaf_model)
 
         base = self.base if self.base is not None else LightGBMExternalModel(
             task=self._base_task, random_state=self.random_state or 0
@@ -236,6 +252,34 @@ class _RouterExtractionMixin:
                 self.base_.fit(dataset)
 
         trees, _ = extract_routes(self.base_)
+        # Extracted split indices address the routing matrix; a base fitted on
+        # a different column set (e.g. the full input including leaf-only
+        # columns) would route on the wrong feature or index out of bounds.
+        n_routing = train.get_raw_features().shape[1]
+        lgb_booster = _unwrap_booster(self.base_)[0]
+        n_base = int(lgb_booster.num_feature())
+        if n_base != n_routing:
+            raise ValueError(
+                f"The base model was fitted on {n_base} features, but the routing "
+                f"matrix has {n_routing} columns (leaf_only_features are excluded "
+                "from routing). Fit the base on dataset.get_raw_features(), or "
+                "pass an unfitted base so it is trained on the routing columns."
+            )
+        # When the base was fitted on a DataFrame its feature names are known;
+        # a same-width but different or reordered column set is then rejected
+        # too. Default LightGBM names (Column_<i>) carry no identity and skip
+        # this check.
+        base_names = [str(name) for name in lgb_booster.feature_name()]
+        routing_names = list(train.metadata.routing_feature_names)
+        if base_names != routing_names and all(
+            name in train.feature_names for name in base_names
+        ):
+            raise ValueError(
+                f"The base model was fitted on columns {base_names}, but the "
+                f"routing columns are {routing_names} (same order required). Fit "
+                "the base on dataset.get_raw_features() or on exactly the "
+                "routing columns."
+            )
         replay_rate = float(self.base_.model_.get_params().get("learning_rate", 0.1))
         params = BoosterParams(
             n_estimators=len(trees),
@@ -246,7 +290,7 @@ class _RouterExtractionMixin:
         )
         self.booster_ = Booster(params, get_objective(self._objective_name))
         self.booster_.fit_with_routes(
-            dataset,
+            train,
             self.encoder_,
             leaf_model,
             trees,
@@ -254,6 +298,9 @@ class _RouterExtractionMixin:
             eval_metric=get_metric(self.eval_metric or self._eval_metric_name),
         )
         self.evals_result_ = self.booster_.evals_result_
+        self.linear_leaf_fraction_ = self._linear_leaf_fraction()
+        if self.leaf_model == "select":
+            self._set_expert_selection_diagnostics()
         return self
 
     def _serializable_config(self, config: dict) -> dict:

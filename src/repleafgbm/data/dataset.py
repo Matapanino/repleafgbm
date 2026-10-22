@@ -58,6 +58,7 @@ class RepLeafDataset:
         categorical_features: list[str] | None = None,
         numerical_features: list[str] | None = None,
         frequency_encoded_features: list[str] | None = None,
+        leaf_only_features: list[str | int] | None = None,
         metadata: FeatureMetadata | None = None,
     ) -> None:
         if metadata is None:
@@ -66,9 +67,24 @@ class RepLeafDataset:
                 categorical_features=categorical_features,
                 numerical_features=numerical_features,
                 frequency_encoded_features=frequency_encoded_features,
+                leaf_only_features=leaf_only_features,
+            )
+        elif leaf_only_features is not None:
+            raise ValueError(
+                "leaf_only_features must be stored in metadata when metadata is provided"
             )
         self.metadata = metadata
         self._X_raw = encode_features(X, metadata)
+        #: Lazily built C-contiguous routing matrix when leaf-only columns are
+        #: excluded; ``get_raw_features`` returns ``_X_raw`` itself otherwise.
+        self._X_routing: np.ndarray | None = None
+        for name in metadata.leaf_only_features:
+            values = self._X_raw[:, metadata.feature_names.index(name)]
+            if not np.isfinite(values).all():
+                raise ValueError(
+                    f"leaf-only feature {name!r} must contain only finite float values; "
+                    "NaN and inf are not allowed"
+                )
         self.y = None if y is None else as_target_array(y, n_rows=self._X_raw.shape[0])
         #: Optional per-row weights (n_rows,) or None for uniform. The booster
         #: scales gradients/Hessians by these (see core/booster.weight_grad_hess).
@@ -102,8 +118,16 @@ class RepLeafDataset:
     # Views used by the booster and encoders
     # ------------------------------------------------------------------ #
     def get_raw_features(self) -> np.ndarray:
-        """Full raw feature matrix used for tree routing (splits)."""
-        return self._X_raw
+        """Raw routing matrix: ``_X_raw`` itself unless leaf-only columns are
+        excluded, in which case a C-contiguous column subset is built once and
+        reused (``Tree.apply`` and the split backends need contiguous input)."""
+        if not self.metadata.leaf_only_features:
+            return self._X_raw
+        if self._X_routing is None:
+            self._X_routing = np.ascontiguousarray(
+                self._X_raw[:, self.metadata.routing_indices]
+            )
+        return self._X_routing
 
     def get_numerical_features(self) -> np.ndarray:
         """Numerical columns only, used as encoder input in v0."""
@@ -121,6 +145,16 @@ class RepLeafDataset:
             self._cached_embeddings = encoder.transform(self.get_numerical_features())
             self._cached_encoder = encoder
         return self._cached_embeddings
+
+    def set_embeddings(self, encoder: Any, embeddings: np.ndarray) -> None:
+        """Cache a precomputed training representation for ``encoder``."""
+        values = np.asarray(embeddings, dtype=np.float64)
+        if values.ndim != 2 or values.shape[0] != self.n_rows:
+            raise ValueError(
+                "embeddings must be a 2-D matrix with one row per dataset row"
+            )
+        self._cached_encoder = encoder
+        self._cached_embeddings = values
 
     def clear_embedding_cache(self) -> None:
         self._cached_encoder = None

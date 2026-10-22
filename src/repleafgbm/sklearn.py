@@ -20,13 +20,16 @@ from sklearn.utils import check_array, check_X_y
 from sklearn.utils.validation import column_or_1d
 
 from repleafgbm.core.booster import Booster, BoosterParams
-from repleafgbm.core.leaf_models import make_leaf_model
+from repleafgbm.core.leaf_models import BaseLeafModel, make_leaf_model
 from repleafgbm.core.metrics import BaseMetric, get_metric, make_metric
 from repleafgbm.core.objectives import BaseObjective, get_objective
-from repleafgbm.core.profiling import profiler_from_env, timed
+from repleafgbm.core.profiling import PhaseProfiler, profiler_from_env, timed
 from repleafgbm.core.serialization import load_model_dir, save_model_dir
 from repleafgbm.data import RepLeafDataset
+from repleafgbm.data.metadata import resolve_leaf_only_features
 from repleafgbm.encoders import (
+    ExpertBundleEncoder,
+    LeafExpert,
     RandomProjectionEncoder,
     TargetCorrelationEncoder,
     make_encoder,
@@ -49,6 +52,13 @@ def _allow_nan_kwargs() -> dict:
     return {_FINITE_KW: "allow-nan"}
 
 
+def _json_columns(columns: Any) -> list[int | str] | None:
+    """Column specs as JSON-native ints/strings (numpy integers are accepted on input)."""
+    if columns is None:
+        return None
+    return [int(c) if isinstance(c, (int, np.integer)) else str(c) for c in columns]
+
+
 class BaseRepLeafModel(BaseEstimator):
     """Shared implementation for RepLeafRegressor / RepLeafClassifier.
 
@@ -67,7 +77,8 @@ class BaseRepLeafModel(BaseEstimator):
             features route as ordered thresholds, not subset splits, and
             multi-output targets are unsupported).
         min_samples_leaf: Minimum rows per leaf for a split to be valid.
-        leaf_model: "constant", "embedded_linear", "raw_linear", or "adaptive".
+        leaf_model: "constant", "embedded_linear", "raw_linear", "adaptive",
+            or "select".
             Defaults to "embedded_linear"; on unknown real-world tabular data the
             OpenML benchmark (docs/roadmap.md, Phase 25) found "constant" the
             honest practical choice — embedded leaves help mainly on
@@ -80,12 +91,13 @@ class BaseRepLeafModel(BaseEstimator):
             accuracy gain (it is per-leaf model *selection*, not jointly-trained
             leaf embeddings). The default is kept for backwards compatibility and
             may change only in a major release.
-        leaf_gate_margin: For leaf_model="adaptive" only (inert otherwise). A
+        leaf_gate_margin: For leaf_model="adaptive" and "select" (inert otherwise). A
             leaf keeps its linear fit only if its weighted leave-one-out error
             beats the constant leaf's by this relative margin: 0.0 keeps any
             non-worse linear fit, larger values demand a larger held-out
             improvement. Must be >= 0. Default 0.01.
-        leaf_gate: For leaf_model="adaptive" only. "loo" (default,
+        leaf_gate: For leaf_model="adaptive" only ("select" always scores by
+            weighted LOO and rejects "insample"). "loo" (default,
             leverage-corrected held-out error) or "insample" (drops the leverage
             correction — a deliberately weak baseline for diagnostics).
         leaf_fit_precision: "float64" (default) or "float32_gram". A perf knob for
@@ -101,9 +113,18 @@ class BaseRepLeafModel(BaseEstimator):
             reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.
         encoder: Encoder name ("identity", "plr") or a BaseEncoder instance.
             Ignored for leaf_model="constant"; for "raw_linear" a standardizing
-            identity encoder is always used.
+            identity encoder is always used. None selects "identity" unless
+            ``leaf_experts`` is supplied.
         encoder_params: Keyword arguments for the encoder constructor when
             ``encoder`` is a name (e.g. {"n_bins": 16} for "plr").
+        leaf_experts: Named frozen encoder blocks. Each dict/LeafExpert provides
+            ``name``, ``encoder``, optional ``columns`` in the ordered numerical
+            block, and optional ``encoder_params``. Mutually exclusive with an
+            explicit ``encoder``; constant is an implicit select candidate.
+        leaf_only_features: Numerical names or input-column indices excluded
+            from tree routing and appended, in declared order, to the encoder's
+            ordered numerical block. Values must be finite, and at least one
+            input column must stay routable.
         freeze_encoder: Must be True in v0. Encoder parameters are fitted once
             before boosting and never updated during boosting.
         max_leaf_emb_dim: Upper bound on the embedding dimension used by leaf
@@ -250,7 +271,7 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_gate_margin: float = 0.01,
         leaf_gate: str = "loo",
         leaf_fit_precision: str = "float64",
-        encoder: str | BaseEncoder = "identity",
+        encoder: str | BaseEncoder | None = None,
         encoder_params: dict | None = None,
         freeze_encoder: bool = True,
         max_leaf_emb_dim: int = 64,
@@ -272,6 +293,8 @@ class BaseRepLeafModel(BaseEstimator):
         class_weight: dict | str | None = None,
         random_state: int | None = 42,
         device: str = "cpu",
+        leaf_experts: list[dict | LeafExpert] | None = None,
+        leaf_only_features: list[str | int] | None = None,
     ) -> None:
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -285,6 +308,8 @@ class BaseRepLeafModel(BaseEstimator):
         self.leaf_fit_precision = leaf_fit_precision
         self.encoder = encoder
         self.encoder_params = encoder_params
+        self.leaf_experts = leaf_experts
+        self.leaf_only_features = leaf_only_features
         self.freeze_encoder = freeze_encoder
         self.max_leaf_emb_dim = max_leaf_emb_dim
         self.leaf_reduction = leaf_reduction
@@ -358,6 +383,9 @@ class BaseRepLeafModel(BaseEstimator):
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
+        self.routing_feature_names_ = np.asarray(
+            dataset.metadata.routing_feature_names, dtype=object
+        )
 
         leaf_model = make_leaf_model(
             self.leaf_model,
@@ -367,16 +395,9 @@ class BaseRepLeafModel(BaseEstimator):
             leaf_gate=self.leaf_gate,
             leaf_fit_precision=self.leaf_fit_precision,
         )
-        with timed(profiler, "encoder"):
-            self.encoder_ = (
-                self._build_and_fit_encoder(dataset)
-                if leaf_model.uses_embeddings
-                else None
-            )
-            if self.encoder_ is None:
-                self.leaf_embedding_input_dim_ = 0
-                self.leaf_embedding_dim_ = 0
-                self.leaf_reduction_ = "none"
+        self._validate_leaf_expert_options()
+        self._check_select_target(dataset)
+        train = self._fit_leaf_encoder(dataset, leaf_model, profiler)
 
         eval_sets = self._prepare_eval_sets(eval_set)
 
@@ -408,7 +429,7 @@ class BaseRepLeafModel(BaseEstimator):
         if target_transform is not None:
             self.booster_.target_loc_, self.booster_.target_scale_ = target_transform
         self.booster_.fit(
-            dataset,
+            train,
             self.encoder_,
             leaf_model,
             eval_sets=eval_sets or None,
@@ -417,6 +438,8 @@ class BaseRepLeafModel(BaseEstimator):
         )
         self.evals_result_ = self.booster_.evals_result_
         self.linear_leaf_fraction_ = self._linear_leaf_fraction()
+        if self.leaf_model == "select":
+            self._set_expert_selection_diagnostics()
         if profiler is not None:
             #: Per-phase fit wall-clock seconds (only when profiling is enabled);
             #: ``_predict_raw`` adds a "predict" entry. Internal/benchmark aid.
@@ -424,12 +447,13 @@ class BaseRepLeafModel(BaseEstimator):
         return self
 
     def get_feature_importance(self, importance_type: str = "gain") -> np.ndarray:
-        """Raw per-feature importance ("gain" or "split"), aligned with
-        ``feature_names_in_``. Aggregated over the trees prediction uses
-        (i.e. up to ``best_iteration_`` under early stopping)."""
+        """Raw routing-feature importance ("gain" or "split"), aligned with
+        ``routing_feature_names_``. Leaf-only columns are absent. Aggregated
+        over the trees prediction uses (up to ``best_iteration_`` under early
+        stopping)."""
         self._check_is_fitted()
         return self.booster_.feature_importance(
-            self.n_features_in_, importance_type=importance_type
+            len(self.routing_feature_names_), importance_type=importance_type
         )
 
     @property
@@ -560,6 +584,15 @@ class BaseRepLeafModel(BaseEstimator):
         if isinstance(X, RepLeafDataset):
             if y is not None:
                 raise ValueError("Pass y inside the RepLeafDataset, not separately")
+            leaf_only_features = getattr(self, "leaf_only_features", None)
+            if leaf_only_features is not None:
+                expected = resolve_leaf_only_features(
+                    X.metadata.feature_names, leaf_only_features
+                )
+                if X.metadata.leaf_only_features != expected:
+                    raise ValueError(
+                        "leaf_only_features differs from the RepLeafDataset metadata"
+                    )
             return X
         if not self._is_dataframe(X):
             if y is None:
@@ -568,7 +601,9 @@ class BaseRepLeafModel(BaseEstimator):
                     "passed, but the target y is None."
                 )
             X, y = self._validate_array_Xy(X, y)
-        return RepLeafDataset(X, y)
+        return RepLeafDataset(
+            X, y, leaf_only_features=getattr(self, "leaf_only_features", None)
+        )
 
     def _prepare_eval_sets(self, eval_set: Any) -> list[tuple[str, RepLeafDataset]]:
         """Normalize eval_set entries (datasets or (X, y) tuples) for the booster."""
@@ -629,22 +664,25 @@ class BaseRepLeafModel(BaseEstimator):
             raise ValueError(
                 f"max_leaf_emb_dim must be >= 1, got {self.max_leaf_emb_dim}"
             )
-        if self.leaf_model == "raw_linear":
+        if self.leaf_experts is not None:
+            encoder = self._build_expert_bundle(dataset, reduction)
+        elif self.leaf_model == "raw_linear":
             encoder: BaseEncoder = make_encoder("identity", standardize=True)
         elif isinstance(self.encoder, BaseEncoder):
             encoder = copy.deepcopy(self.encoder)
         else:
             encoder_params = dict(self.encoder_params or {})
+            encoder_name = self.encoder or "identity"
             # device="cuda" macro: named torch_* encoders pretrain on the GPU
             # unless encoder_params pins a device. Encoder *instances* are
             # user-constructed and never mutated (explicit wins, ADR 0007).
             # getattr: router-extraction estimators reuse this method but do
             # not expose ``device`` in their signature.
             device = getattr(self, "device", "cpu")
-            if device == "cuda" and self.encoder.startswith("torch_"):
+            if device == "cuda" and encoder_name.startswith("torch_"):
                 encoder_params.setdefault("device", "cuda")
             encoder = make_encoder(
-                self.encoder,
+                encoder_name,
                 _default_random_state=self.random_state,
                 **encoder_params,
             )
@@ -661,14 +699,33 @@ class BaseRepLeafModel(BaseEstimator):
         # fixed encoders ignore it.
         weight = dataset.sample_weight
         target = self._pretrain_target(dataset, sample_weight=weight)
-        encoder.fit(
-            X_num,
-            y=target,
-            sample_weight=weight,
+        train_embeddings = encoder.fit_transform_train(
+            X_num, y=target, sample_weight=weight
         )
         self.leaf_embedding_input_dim_ = encoder.output_dim
         self.leaf_reduction_ = "none"
-        if encoder.output_dim > self.max_leaf_emb_dim and reduction != "none":
+        if isinstance(encoder, ExpertBundleEncoder):
+            self.leaf_embedding_input_dim_ = sum(encoder.input_dims_)
+            self.leaf_reduction_ = (
+                "per_expert"
+                if any(name != "none" for name in encoder.reduction_names_)
+                else "none"
+            )
+            for name, input_dim, reduction_name in zip(
+                encoder.expert_names,
+                encoder.input_dims_,
+                encoder.reduction_names_,
+            ):
+                if reduction_name != "none":
+                    warnings.warn(
+                        f"Expert {name!r} output dimension {input_dim} exceeds "
+                        f"max_leaf_emb_dim {self.max_leaf_emb_dim}; "
+                        f"leaf_reduction={reduction_name!r} reduces that expert "
+                        f"to {self.max_leaf_emb_dim} dimensions.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+        elif encoder.output_dim > self.max_leaf_emb_dim and reduction != "none":
             input_dim = encoder.output_dim
             warnings.warn(
                 f"Encoder output dimension {input_dim} exceeds max_leaf_emb_dim "
@@ -689,10 +746,169 @@ class BaseRepLeafModel(BaseEstimator):
             else:
                 encoder = TargetCorrelationEncoder(
                     encoder, out_dim=self.max_leaf_emb_dim
-                ).fit_reduction(X_num, target, weight)
+                ).fit_reduction(X_num, target, weight, base_embeddings=train_embeddings)
+            train_embeddings = train_embeddings @ encoder.projection_
             self.leaf_reduction_ = reduction
+        dataset.set_embeddings(encoder, train_embeddings)
         self.leaf_embedding_dim_ = encoder.output_dim
         return encoder
+
+    def _check_select_target(self, dataset: RepLeafDataset) -> None:
+        """``select`` is scalar-only (regression / binary); shared with router extraction."""
+        if self.leaf_model == "select" and (
+            dataset.y.ndim != 1 or getattr(self, "n_classes_", 2) > 2
+        ):
+            raise NotImplementedError(
+                "leaf_model='select' supports scalar regression and binary "
+                "classification only; use leaf_model='adaptive' or "
+                "'embedded_linear' for multi-output or multiclass targets"
+            )
+
+    def _fit_leaf_encoder(
+        self,
+        dataset: RepLeafDataset,
+        leaf_model: BaseLeafModel,
+        profiler: PhaseProfiler | None = None,
+    ) -> RepLeafDataset:
+        """Fit the leaf encoder and wire select blocks; return the training dataset.
+
+        Shared by :meth:`fit` and router extraction. ``fit_transform_train``
+        may differ from ``transform`` (for example, an OOF target encoding),
+        so every embedding encoder is fitted on a shallow view. The caller's
+        dataset therefore keeps the ordinary ``transform()`` lifecycle when
+        reused as an eval_set entry or as predict input.
+        """
+        train = copy.copy(dataset) if leaf_model.uses_embeddings else dataset
+        with timed(profiler, "encoder"):
+            self.encoder_ = (
+                self._build_and_fit_encoder(train) if leaf_model.uses_embeddings else None
+            )
+            if self.encoder_ is None:
+                self.leaf_embedding_input_dim_ = 0
+                self.leaf_embedding_dim_ = 0
+                self.leaf_reduction_ = "none"
+        if self.leaf_model == "select":
+            if isinstance(self.encoder_, ExpertBundleEncoder):
+                leaf_model.blocks = self.encoder_.block_slices
+                leaf_model.expert_names = self.encoder_.expert_names
+            else:
+                leaf_model.blocks = [slice(0, self.encoder_.output_dim)]
+                leaf_model.expert_names = ["linear"]
+        return train
+
+    def _validate_leaf_expert_options(self) -> None:
+        """Reject ``leaf_experts`` combinations the public contract excludes.
+
+        Shared by :meth:`fit` and the router-extraction fit path so neither can
+        silently ignore experts (``constant``) or replace the ``raw_linear``
+        standardized encoder with a bundle.
+        """
+        if self.leaf_experts is None:
+            return
+        if self.leaf_model not in ("embedded_linear", "adaptive", "select"):
+            raise ValueError(
+                "leaf_experts requires leaf_model='embedded_linear', "
+                "'adaptive', or 'select'"
+            )
+        if self.encoder is not None or self.encoder_params is not None:
+            raise ValueError(
+                "leaf_experts and encoder/encoder_params cannot be specified "
+                "together; put every encoder in leaf_experts"
+            )
+
+    def _build_expert_bundle(
+        self, dataset: RepLeafDataset, reduction: str
+    ) -> ExpertBundleEncoder:
+        """Resolve public expert specs against the ordered numerical block."""
+        names: list[str] = []
+        encoders: list[BaseEncoder] = []
+        subsets: list[list[int]] = []
+        numerical_names = dataset.metadata.ordered_numerical_features
+        for raw in self.leaf_experts or []:
+            if isinstance(raw, LeafExpert):
+                spec = raw
+            elif isinstance(raw, dict):
+                unknown = set(raw) - {"name", "encoder", "columns", "encoder_params"}
+                if unknown:
+                    raise ValueError(f"Unknown leaf expert keys: {sorted(unknown)}")
+                try:
+                    spec = LeafExpert(**raw)
+                except TypeError as exc:
+                    raise ValueError(f"Invalid leaf expert specification: {exc}") from exc
+            else:
+                raise ValueError("leaf_experts entries must be dict or LeafExpert")
+            if not isinstance(spec.name, str) or not spec.name:
+                raise ValueError("leaf expert name must be a non-empty string")
+            if spec.name == "constant":
+                raise ValueError(
+                    "leaf expert name 'constant' is reserved for the implicit "
+                    "constant candidate"
+                )
+            if spec.name in names:
+                raise ValueError(f"leaf expert name {spec.name!r} is duplicated")
+            names.append(spec.name)
+            if isinstance(spec.encoder, BaseEncoder):
+                if spec.encoder_params:
+                    raise ValueError(
+                        f"leaf expert {spec.name!r} supplies encoder_params with "
+                        "an encoder instance"
+                    )
+                child = copy.deepcopy(spec.encoder)
+            elif isinstance(spec.encoder, str):
+                params = dict(spec.encoder_params or {})
+                device = getattr(self, "device", "cpu")
+                if device == "cuda" and spec.encoder.startswith("torch_"):
+                    params.setdefault("device", "cuda")
+                child = make_encoder(
+                    spec.encoder,
+                    _default_random_state=self.random_state,
+                    **params,
+                )
+            else:
+                raise ValueError(
+                    f"leaf expert {spec.name!r} encoder must be a registry name "
+                    "or BaseEncoder instance"
+                )
+            encoders.append(child)
+            if spec.columns is None:
+                subset = list(range(len(numerical_names)))
+            else:
+                subset = []
+                for column in spec.columns:
+                    if isinstance(column, (int, np.integer)):
+                        index = int(column)
+                        if index < 0 or index >= len(numerical_names):
+                            raise ValueError(
+                                f"leaf expert {spec.name!r} column index {index} "
+                                f"is invalid for the {len(numerical_names)}-column "
+                                "ordered numerical block"
+                            )
+                    else:
+                        name = str(column)
+                        if name not in numerical_names:
+                            raise ValueError(
+                                f"leaf expert {spec.name!r} column {name!r} is not "
+                                "in the ordered numerical block"
+                            )
+                        index = numerical_names.index(name)
+                    if index in subset:
+                        raise ValueError(
+                            f"leaf expert {spec.name!r} columns contain duplicates"
+                        )
+                    subset.append(index)
+                if not subset:
+                    raise ValueError(f"leaf expert {spec.name!r} columns must not be empty")
+            subsets.append(subset)
+        if not names:
+            raise ValueError("leaf_experts must contain at least one expert")
+        return ExpertBundleEncoder(
+            expert_names=names,
+            encoders=encoders,
+            column_subsets=subsets,
+            max_output_dim=self.max_leaf_emb_dim,
+            reduction=reduction,
+            random_state=self.random_state,
+        )
 
     def _linear_leaf_fraction(self) -> float:
         """Fraction of prediction-used leaves retaining nonzero linear weights."""
@@ -708,6 +924,34 @@ class BaseRepLeafModel(BaseEstimator):
             if value.weights.shape[1] > 0
         )
         return linear / max(total, 1)
+
+    def _set_expert_selection_diagnostics(self) -> None:
+        """Publish counts for the selected block in every prediction-used leaf."""
+        if isinstance(self.encoder_, ExpertBundleEncoder):
+            names = self.encoder_.expert_names
+            blocks = self.encoder_.block_slices
+        else:
+            names = ["linear"]
+            blocks = [slice(0, self.encoder_.output_dim)]
+        counts = {"constant": 0, **{name: 0 for name in names}}
+        n_values = len(self.booster_.leaf_values_)
+        if self.booster_.best_iteration_ is not None:
+            n_values = self.booster_.best_iteration_ * getattr(
+                self.booster_, "n_classes", 1
+            )
+        for values in self.booster_.leaf_values_[:n_values]:
+            for row in values.weights:
+                selected = None
+                for name, block in zip(names, blocks):
+                    if np.any(row[block] != 0.0):
+                        selected = name
+                        break
+                counts[selected or "constant"] += 1
+        total = sum(counts.values())
+        self.expert_selection_counts_ = counts
+        self.expert_selection_fraction_ = {
+            name: count / max(total, 1) for name, count in counts.items()
+        }
 
     def _pretrain_target(
         self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
@@ -861,6 +1105,11 @@ class BaseRepLeafModel(BaseEstimator):
         )
         if md.frequency_maps:
             feats += f", {len(md.frequency_maps)} frequency-encoded"
+        if md.leaf_only_features:
+            feats += (
+                f", {len(md.leaf_only_features)} leaf-only, "
+                f"{len(md.routing_feature_names)} routable"
+            )
         lines.append(feats + ")")
         shown = [
             f"{k}={params[k]}"
@@ -875,9 +1124,11 @@ class BaseRepLeafModel(BaseEstimator):
         order = np.argsort(importance)[::-1]
         top = [i for i in order[:top_features] if importance[i] > 0]
         if top:
-            lines.append(f"top features by gain (of {md.n_features}):")
+            lines.append(
+                f"top features by gain (of {len(md.routing_feature_names)} routable):"
+            )
             lines += [
-                f"  {self.feature_names_in_[i]}: {importance[i]:.1%}" for i in top
+                f"  {self.routing_feature_names_[i]}: {importance[i]:.1%}" for i in top
             ]
         return "\n".join(lines)
 
@@ -887,6 +1138,25 @@ class BaseRepLeafModel(BaseEstimator):
         # and record only its registry name here.
         if isinstance(config.get("encoder"), BaseEncoder):
             config["encoder"] = config["encoder"].name
+        elif config.get("encoder") is None and config.get("leaf_experts") is None:
+            # Preserve the historical serialized default for pre-v9 readers.
+            config["encoder"] = "identity"
+        if config.get("leaf_only_features") is not None:
+            config["leaf_only_features"] = _json_columns(config["leaf_only_features"])
+        if config.get("leaf_experts") is not None:
+            serialized = []
+            for raw in config["leaf_experts"]:
+                spec = raw if isinstance(raw, LeafExpert) else LeafExpert(**raw)
+                encoder = spec.encoder
+                serialized.append(
+                    {
+                        "name": spec.name,
+                        "encoder": encoder.name if isinstance(encoder, BaseEncoder) else encoder,
+                        "columns": _json_columns(spec.columns),
+                        "encoder_params": spec.encoder_params,
+                    }
+                )
+            config["leaf_experts"] = serialized
         # Metric objects/callables are saved by name only; registered names
         # resolve on refit, custom metrics must be passed in again.
         metric = config.get("eval_metric")
@@ -921,6 +1191,9 @@ class BaseRepLeafModel(BaseEstimator):
         model.metadata_ = parts["metadata"]
         model.n_features_in_ = parts["metadata"].n_features
         model.feature_names_in_ = np.asarray(parts["metadata"].feature_names, dtype=object)
+        model.routing_feature_names_ = np.asarray(
+            parts["metadata"].routing_feature_names, dtype=object
+        )
         if model.encoder_ is None:
             model.leaf_embedding_input_dim_ = model.leaf_embedding_dim_ = 0
             model.leaf_reduction_ = "none"
@@ -929,10 +1202,24 @@ class BaseRepLeafModel(BaseEstimator):
             if isinstance(model.encoder_, (RandomProjectionEncoder, TargetCorrelationEncoder)):
                 model.leaf_embedding_input_dim_ = model.encoder_.base.output_dim
                 model.leaf_reduction_ = model.encoder_.name
+            elif isinstance(model.encoder_, ExpertBundleEncoder):
+                # Per-expert reduction wraps a child the same way; report the
+                # pre-reduction widths like fit() does.
+                reduced = [
+                    isinstance(child, (RandomProjectionEncoder, TargetCorrelationEncoder))
+                    for child in model.encoder_.encoders
+                ]
+                model.leaf_embedding_input_dim_ = sum(
+                    child.base.output_dim if is_reduced else child.output_dim
+                    for child, is_reduced in zip(model.encoder_.encoders, reduced)
+                )
+                model.leaf_reduction_ = "per_expert" if any(reduced) else "none"
             else:
                 model.leaf_embedding_input_dim_ = model.encoder_.output_dim
                 model.leaf_reduction_ = "none"
         model.linear_leaf_fraction_ = model._linear_leaf_fraction()
+        if model.leaf_model == "select":
+            model._set_expert_selection_diagnostics()
         model._restore_extra_config(parts["config"])
         return model
 

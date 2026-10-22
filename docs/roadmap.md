@@ -527,6 +527,35 @@ v2 polish and v3 (GPU/scale) are plans, not promises.
   categorical-subset and multi-output symmetric; a compact oblivious storage +
   bitwise-indexed predictor.
 
+## MatGBM track (2026-10-22〜)
+
+Design authority, experiment protocol, and decision record: [docs/matgbm/README.md](matgbm/README.md).
+The implementation status below is subordinate to that MatGBM design record.
+
+Implemented:
+
+- ✅ Leaf-only numerical columns: excluded from raw routing, split-feature
+  sampling, and importance, but appended to the ordered encoder block.
+- ✅ Named frozen `leaf_experts`, per-expert column subsets/reduction, recursive
+  save/load, and a fold-safe `fit_transform_train` lifecycle seam.
+- ✅ Scalar `leaf_model="select"`: per-leaf constant-or-one-expert selection by
+  Hessian-weighted ridge LOO with a margin, selection diagnostics, NumPy/Rust
+  routing coverage, and a permuted false-expert guard.
+
+Not implemented:
+
+- ❌ A production target-encoding expert (the lifecycle hook exists, but no TE
+  algorithm or fold policy is bundled).
+- ❌ ICL/PFN leaf experts, which need a different fit/predict contract than an
+  affine encoder block.
+- ❌ The S6E10 factorial harness, automatic/static space-bank generation, and
+  selection-bias/complexity penalties. Performance adoption belongs to that
+  separate harness lane; the present synthetic tests establish correctness,
+  not an AUC claim.
+- ❌ Multiclass/multi-output select leaves and a native selector kernel.
+- ❌ Root-only routing with every column leaf-only (needs zero-feature
+  splitter/sampler support; such configurations are rejected).
+
 ## v2 — native high-performance backend (Phase 10: core shipped ✅)
 
 - ✅ Rust kernels for the `BaseSplitBackend` contract (histogram building +

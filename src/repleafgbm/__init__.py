@@ -9,6 +9,7 @@ from repleafgbm.classifier import RepLeafClassifier
 from repleafgbm.core.metrics import get_metric, make_metric
 from repleafgbm.core.objectives import Huber, PoissonRegression, Quantile
 from repleafgbm.data import RepLeafDataset
+from repleafgbm.encoders import LeafExpert
 from repleafgbm.regressor import RepLeafRegressor
 
 __version__ = "1.12.0"
@@ -17,6 +18,7 @@ __all__ = [
     "RepLeafRegressor",
     "RepLeafClassifier",
     "RepLeafDataset",
+    "LeafExpert",
     "make_metric",
     "get_metric",
     "Huber",
