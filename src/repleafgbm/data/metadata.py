@@ -75,6 +75,13 @@ class FeatureMetadata:
                 f"leaf-only features {categorical_leaf_only} are categorical; "
                 "leaf-only columns must be finite numerical columns"
             )
+        if self.leaf_only_features and len(self.leaf_only_features) == len(
+            self.feature_names
+        ):
+            raise ValueError(
+                "leaf_only_features cannot list every input column; at least one "
+                "column must stay available to tree routing"
+            )
 
     @property
     def n_features(self) -> int:

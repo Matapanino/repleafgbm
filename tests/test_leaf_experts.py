@@ -794,3 +794,9 @@ def test_loaded_bundle_restores_per_expert_reduction_diagnostics(tmp_path):
     assert loaded.leaf_embedding_input_dim_ == model.leaf_embedding_input_dim_ == 7
     assert loaded.leaf_reduction_ == model.leaf_reduction_ == "per_expert"
     assert loaded.leaf_embedding_dim_ == model.leaf_embedding_dim_ == 4
+
+
+def test_all_columns_leaf_only_is_rejected_clearly():
+    X = np.arange(40, dtype=np.float64).reshape(20, 2)
+    with pytest.raises(ValueError, match="every input column"):
+        RepLeafDataset(X, X[:, 0], leaf_only_features=[0, 1])

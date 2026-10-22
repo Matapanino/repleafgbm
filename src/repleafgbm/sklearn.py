@@ -121,7 +121,8 @@ class BaseRepLeafModel(BaseEstimator):
             explicit ``encoder``; constant is an implicit select candidate.
         leaf_only_features: Numerical names or input-column indices excluded
             from tree routing and appended, in declared order, to the encoder's
-            ordered numerical block. Values must be finite.
+            ordered numerical block. Values must be finite, and at least one
+            input column must stay routable.
         freeze_encoder: Must be True in v0. Encoder parameters are fitted once
             before boosting and never updated during boosting.
         max_leaf_emb_dim: Upper bound on the embedding dimension used by leaf
