@@ -115,7 +115,7 @@ def test_leaf_only_integer_indices_follow_declared_order():
     np.testing.assert_array_equal(ds.get_numerical_features(), X[:, [0, 2, 3, 1]])
 
 
-def test_default_path_matches_origin_main_bitwise_fixture():
+def test_default_path_matches_origin_main_fixture():
     rng = np.random.RandomState(123)
     X = rng.normal(size=(80, 4))
     y = 1.5 * X[:, 0] - 0.7 * X[:, 2] + 0.2 * rng.normal(size=80)
@@ -141,7 +141,8 @@ def test_default_path_matches_origin_main_bitwise_fixture():
             float.fromhex("0x1.aa7fdf8f89668p-3"),
         ]
     )
-    assert np.array_equal(model.predict(X[:10]), expected)
+    # Linear solves vary by a few ULP across BLAS implementations and platforms.
+    np.testing.assert_allclose(model.predict(X[:10]), expected, rtol=1e-14, atol=1e-15)
     implicit_identity = RepLeafRegressor(
         n_estimators=4,
         num_leaves=4,
@@ -150,7 +151,9 @@ def test_default_path_matches_origin_main_bitwise_fixture():
         split_backend="numpy",
         random_state=7,
     ).fit(X, y)
-    assert np.array_equal(implicit_identity.predict(X[:10]), expected)
+    np.testing.assert_allclose(
+        implicit_identity.predict(X[:10]), expected, rtol=1e-14, atol=1e-15
+    )
 
 
 def test_expert_bundle_concatenates_named_column_subsets_in_order():
