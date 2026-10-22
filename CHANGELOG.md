@@ -9,6 +9,8 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ### Added
 
+- Added `repleafgbm-native` 0.3.1 with an optional rayon-parallel fused
+  `leaf_select_stats` fast path for per-block ridge and weighted-LOO selection.
 - Added `leaf_only_features`, named frozen `leaf_experts`, the fold-safe
   `BaseEncoder.fit_transform_train` hook, and `leaf_model="select"` with
   per-leaf weighted-LOO expert diagnostics. Models using leaf-only metadata or
