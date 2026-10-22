@@ -75,6 +75,9 @@ class RepLeafDataset:
             )
         self.metadata = metadata
         self._X_raw = encode_features(X, metadata)
+        #: Lazily built C-contiguous routing matrix when leaf-only columns are
+        #: excluded; ``get_raw_features`` returns ``_X_raw`` itself otherwise.
+        self._X_routing: np.ndarray | None = None
         for name in metadata.leaf_only_features:
             values = self._X_raw[:, metadata.feature_names.index(name)]
             if not np.isfinite(values).all():
@@ -115,8 +118,16 @@ class RepLeafDataset:
     # Views used by the booster and encoders
     # ------------------------------------------------------------------ #
     def get_raw_features(self) -> np.ndarray:
-        """Raw routing matrix, excluding leaf-only columns."""
-        return self._X_raw[:, self.metadata.routing_indices]
+        """Raw routing matrix: ``_X_raw`` itself unless leaf-only columns are
+        excluded, in which case a C-contiguous column subset is built once and
+        reused (``Tree.apply`` and the split backends need contiguous input)."""
+        if not self.metadata.leaf_only_features:
+            return self._X_raw
+        if self._X_routing is None:
+            self._X_routing = np.ascontiguousarray(
+                self._X_raw[:, self.metadata.routing_indices]
+            )
+        return self._X_routing
 
     def get_numerical_features(self) -> np.ndarray:
         """Numerical columns only, used as encoder input in v0."""

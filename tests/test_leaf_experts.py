@@ -581,3 +581,15 @@ def test_select_same_seed_is_deterministic():
     second = RepLeafRegressor(**params).fit(X, y)
     assert np.array_equal(first.predict(X), second.predict(X))
     assert first.expert_selection_counts_ == second.expert_selection_counts_
+
+
+def test_routing_matrix_is_not_copied_per_call():
+    X = np.arange(24, dtype=np.float64).reshape(6, 4)
+    ds = RepLeafDataset(X, np.arange(6))
+    assert ds.get_raw_features() is ds.get_raw_features()
+    assert ds.get_raw_features().flags["C_CONTIGUOUS"]
+    ds_leaf = RepLeafDataset(X, np.arange(6), leaf_only_features=[1])
+    routing = ds_leaf.get_raw_features()
+    assert routing is ds_leaf.get_raw_features()
+    assert routing.flags["C_CONTIGUOUS"]
+    np.testing.assert_array_equal(routing, X[:, [0, 2, 3]])
