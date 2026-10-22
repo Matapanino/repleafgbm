@@ -114,6 +114,28 @@ def test_sparse_weights_use_full_prior_when_a_fold_complement_has_no_mass():
     np.testing.assert_array_equal(transformed, np.full((4, 1), 7.0))
 
 
+def test_oof_fold_tables_copy_only_selected_columns():
+    class RecordingEncoder(TargetEncodingEncoder):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.table_input_shapes = []
+
+        def _build_tables(self, X, target, weight, columns):
+            self.table_input_shapes.append(X.shape)
+            return super()._build_tables(X, target, weight, columns)
+
+    X = np.arange(600, dtype=np.float64).reshape(12, 50)
+    y = np.arange(12, dtype=np.float64)
+    encoder = RecordingEncoder(
+        columns=[3, 47], n_folds=3, random_state=9, add_count=False
+    )
+
+    encoder.fit_transform_train(X, y)
+
+    assert encoder.table_input_shapes[:-1] == [(8, 2), (8, 2), (8, 2)]
+    assert encoder.table_input_shapes[-1] == (12, 50)
+
+
 def test_exact_round_and_bin_scales_have_the_documented_width():
     X = np.arange(24, dtype=np.float64).reshape(8, 3)
     y = np.arange(8, dtype=np.float64)

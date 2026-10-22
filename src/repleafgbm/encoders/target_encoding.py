@@ -317,6 +317,8 @@ class TargetEncodingEncoder(BaseEncoder):
         if self.n_folds > X.shape[0]:
             raise ValueError(f"n_folds={self.n_folds} cannot exceed n_rows={X.shape[0]}")
         columns = list(range(X.shape[1])) if self.columns is None else list(self.columns)
+        selected = X[:, columns]
+        fold_columns = list(range(len(columns)))
         permutation = check_random_state(self.random_state).permutation(X.shape[0])
         folds = np.empty(X.shape[0], dtype=np.int64)
         folds[permutation] = np.arange(X.shape[0]) % self.n_folds
@@ -333,9 +335,11 @@ class TargetEncodingEncoder(BaseEncoder):
                 output[validation] = fallback
                 continue
             prior, tables = self._build_tables(
-                X[training], target[training], weight[training], columns
+                selected[training], target[training], weight[training], fold_columns
             )
-            output[validation] = self._transform_with(X[validation], prior, tables, columns)
+            output[validation] = self._transform_with(
+                selected[validation], prior, tables, fold_columns
+            )
         self.fit(X, target, weight)
         return output
 
