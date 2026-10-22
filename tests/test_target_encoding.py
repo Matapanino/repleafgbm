@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from repleafgbm import RepLeafClassifier, RepLeafDataset
+from repleafgbm import RepLeafClassifier, RepLeafDataset, RepLeafRegressor
 from repleafgbm.encoders import (
-    ExpertBundleEncoder,
     TargetEncodingEncoder,
     encoder_from_config,
 )
@@ -150,24 +149,41 @@ def test_classifier_target_encoding_expert_fit_predict_save_load(tmp_path):
     np.testing.assert_array_equal(before, restored.predict_proba(X[:20]))
 
 
-def test_bundle_caches_oof_for_train_and_uses_full_table_for_eval():
-    X = np.repeat(np.arange(5, dtype=np.float64), 6).reshape(-1, 1)
-    y = np.arange(len(X), dtype=np.float64)
-    bundle = ExpertBundleEncoder(
-        expert_names=["te"],
-        encoders=[TargetEncodingEncoder(alpha=0.0, n_folds=3, add_count=False, random_state=13)],
-        column_subsets=[[0]],
-        reduction="none",
-    )
+def test_estimator_bundle_caches_oof_for_train_and_full_table_for_eval():
+    rng = np.random.default_rng(41)
+    X = np.column_stack([np.repeat(np.arange(10), 6), rng.normal(size=60)]).astype(float)
+    y = 0.5 * X[:, 0] + rng.normal(size=60)
+    X_eval = np.column_stack([np.arange(12) % 10, rng.normal(size=12)]).astype(float)
+    y_eval = 0.5 * X_eval[:, 0]
     train = RepLeafDataset(X, y)
-    oof = bundle.fit_transform_train(train.get_numerical_features(), y=y, sample_weight=None)
-    train.set_embeddings(bundle, oof)
+    valid = RepLeafDataset(X_eval, y_eval, metadata=train.metadata)
+    encoder_params = dict(alpha=0.0, n_folds=3, add_count=False, random_state=13)
+    model = RepLeafRegressor(
+        n_estimators=2,
+        num_leaves=3,
+        min_samples_leaf=5,
+        leaf_model="embedded_linear",
+        leaf_experts=[
+            {
+                "name": "te",
+                "encoder": "target_encoding",
+                "columns": [0],
+                "encoder_params": encoder_params,
+            }
+        ],
+        leaf_reduction="none",
+        split_backend="numpy",
+        random_state=13,
+    ).fit(train, eval_set=[valid])
 
-    np.testing.assert_array_equal(train.get_embeddings(bundle), oof)
-    assert not np.array_equal(oof, bundle.transform(X))
-
-    eval_data = RepLeafDataset(X[:5], metadata=train.metadata)
-    np.testing.assert_array_equal(eval_data.get_embeddings(bundle), bundle.transform(X[:5]))
+    expected_oof = TargetEncodingEncoder(**encoder_params).fit_transform_train(
+        X[:, [0]], y - y.mean()
+    )
+    np.testing.assert_array_equal(train.get_embeddings(model.encoder_), expected_oof)
+    assert not np.array_equal(expected_oof, model.encoder_.transform(X))
+    np.testing.assert_array_equal(
+        valid.get_embeddings(model.encoder_), model.encoder_.transform(X_eval)
+    )
 
 
 def test_multiclass_target_is_rejected():
