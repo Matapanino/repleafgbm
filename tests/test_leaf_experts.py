@@ -709,3 +709,23 @@ def test_router_extraction_rejects_experts_for_unsupported_leaf_models(leaf_mode
             leaf_experts=[{"name": "a", "encoder": "identity", "columns": [0]}],
             min_samples_leaf=5,
         ).fit(X, y)
+
+
+class _WideTrainEncoder(_OOFEncoder):
+    name = "review_wide_train"
+
+    def fit_transform_train(self, X_num, y=None, sample_weight=None):
+        self.fit(X_num)
+        X_num = np.asarray(X_num, dtype=np.float64)
+        return np.column_stack([X_num, X_num])
+
+
+def test_bundle_rejects_training_representation_width_mismatch():
+    X = np.arange(60, dtype=np.float64).reshape(30, 2)
+    with pytest.raises(ValueError, match="wide.*2 columns.*output_dim.*1"):
+        RepLeafRegressor(
+            n_estimators=1,
+            min_samples_leaf=5,
+            leaf_experts=[LeafExpert("wide", _WideTrainEncoder(), columns=[0])],
+            split_backend="numpy",
+        ).fit(X, X[:, 0])

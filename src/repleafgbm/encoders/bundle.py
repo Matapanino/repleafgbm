@@ -92,7 +92,9 @@ class ExpertBundleEncoder(BaseEncoder):
         fitted: list[BaseEncoder] = []
         self.input_dims_ = []
         self.reduction_names_ = []
-        for encoder, columns in zip(self.encoders, self.column_subsets):
+        for name, encoder, columns in zip(
+            self.expert_names, self.encoders, self.column_subsets
+        ):
             selected = self._select(X_num, columns)
             train_block = np.asarray(
                 encoder.fit_transform_train(selected, y=y, sample_weight=sample_weight),
@@ -100,8 +102,17 @@ class ExpertBundleEncoder(BaseEncoder):
             )
             if train_block.ndim != 2 or train_block.shape[0] != X_num.shape[0]:
                 raise ValueError(
-                    "expert fit_transform_train must return a 2-D matrix with "
-                    "one row per training sample"
+                    f"expert {name!r} fit_transform_train must return a 2-D matrix "
+                    "with one row per training sample"
+                )
+            if train_block.shape[1] != encoder.output_dim:
+                # Leaf weights are fitted at the training width while predict
+                # uses transform(); a mismatch would silently mis-index weights.
+                raise ValueError(
+                    f"expert {name!r} fit_transform_train returned "
+                    f"{train_block.shape[1]} columns but its transform output_dim "
+                    f"is {encoder.output_dim}; the training representation must "
+                    "have the same width as transform()"
                 )
             self.input_dims_.append(train_block.shape[1])
             reduction_name = "none"
