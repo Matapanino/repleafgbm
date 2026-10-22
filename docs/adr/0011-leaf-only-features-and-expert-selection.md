@@ -40,6 +40,10 @@ block and every other coefficient is zero.
   encoder nested inside a wrapper (e.g. a projection around a bundle) also
   keeps ``fit`` → ``transform``.
 - `leaf_model="select"` treats constant plus every expert block as candidates.
+  A directly supplied `encoder=ExpertBundleEncoder(...)` also exposes every
+  bundle block as a separate candidate. A single non-bundle encoder supplies
+  one block, so selection is equivalent to the adaptive constant-vs-linear
+  choice.
   Each eligible block gets its own Hessian-weighted ridge fit and LOO score.
   The lowest-error block is used only if it beats constant by the configured
   `leaf_gate_margin`; ties remain constant. Blocks and backend handles are

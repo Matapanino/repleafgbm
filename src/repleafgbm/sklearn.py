@@ -90,7 +90,10 @@ class BaseRepLeafModel(BaseEstimator):
             noise — a robust per-leaf hedge, not a statistically separated
             accuracy gain (it is per-leaf model *selection*, not jointly-trained
             leaf embeddings). The default is kept for backwards compatibility and
-            may change only in a major release.
+            may change only in a major release. For "select", an
+            ExpertBundleEncoder passed directly through ``encoder`` exposes each
+            bundle block as a candidate; any single encoder supplies one block,
+            making the choice equivalent to adaptive's constant-vs-linear gate.
         leaf_gate_margin: For leaf_model="adaptive" and "select" (inert otherwise). A
             leaf keeps its linear fit only if its weighted leave-one-out error
             beats the constant leaf's by this relative margin: 0.0 keeps any

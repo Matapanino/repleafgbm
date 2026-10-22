@@ -166,7 +166,7 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"embedded_linear"` | Ridge linear model over `z_theta(x)` (default). |
 | `"raw_linear"` | Ridge linear model over the raw features. |
 | `"adaptive"` | Per-leaf weighted-LOO gate: keeps the `embedded_linear` leaf only where it beats a constant, else falls back. |
-| `"select"` | Per-leaf weighted-LOO choice among constant and named expert blocks (scalar regression/binary only). |
+| `"select"` | Per-leaf weighted-LOO choice among constant and named expert blocks; a directly supplied bundle contributes each block, while a single encoder contributes one adaptive-equivalent block (scalar regression/binary only). |
 
 **`encoder`**
 

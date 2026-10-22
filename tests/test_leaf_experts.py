@@ -343,6 +343,32 @@ def test_select_estimator_exposes_named_selection_diagnostics():
     assert sum(model.expert_selection_fraction_.values()) == pytest.approx(1.0)
 
 
+def test_select_direct_bundle_uses_blocks_but_single_encoder_uses_one_block():
+    rng = np.random.RandomState(30)
+    X = rng.normal(size=(180, 3))
+    y = np.where(X[:, 0] < 0, 2.0 * X[:, 1], -3.0 * X[:, 2])
+    common = dict(
+        n_estimators=2,
+        num_leaves=3,
+        min_samples_leaf=12,
+        leaf_model="select",
+        leaf_gate_margin=0.0,
+        split_backend="numpy",
+        random_state=5,
+    )
+    bundle = ExpertBundleEncoder(
+        expert_names=["left", "right"],
+        encoders=[make_encoder("identity"), make_encoder("identity")],
+        column_subsets=[[1], [2]],
+    )
+
+    bundled = RepLeafRegressor(encoder=bundle, **common).fit(X, y)
+    single = RepLeafRegressor(encoder="identity", **common).fit(X, y)
+
+    assert set(bundled.expert_selection_counts_) == {"constant", "left", "right"}
+    assert set(single.expert_selection_counts_) == {"constant", "linear"}
+
+
 @pytest.mark.parametrize("backend", ["numpy", "rust"])
 def test_select_single_expert_matches_adaptive_prediction(backend):
     rng = np.random.RandomState(31)
