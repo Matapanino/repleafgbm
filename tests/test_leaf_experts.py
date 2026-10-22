@@ -955,3 +955,41 @@ def test_router_rejects_base_fitted_on_unrelated_named_columns():
             min_samples_leaf=10,
             random_state=4,
         ).fit(X, y)
+
+
+def test_expert_columns_scalar_string_is_rejected():
+    X = pd.DataFrame({"a": [0.0, 1.0, 2.0, 3.0] * 5, "b": [1.0, 2.0, 3.0, 4.0] * 5})
+    with pytest.raises(ValueError, match="list of column names"):
+        RepLeafRegressor(
+            n_estimators=1,
+            min_samples_leaf=5,
+            leaf_experts=[{"name": "e", "encoder": "identity", "columns": "ab"}],
+        ).fit(X, X["a"])
+
+
+def test_registry_name_bundle_keeps_training_representation_private():
+    from repleafgbm.encoders import _ENCODER_REGISTRY
+
+    rng = np.random.RandomState(10)
+    X = rng.normal(size=(100, 2))
+    y = X[:, 0] - X[:, 1]
+    ds = RepLeafDataset(X, y)
+    _ENCODER_REGISTRY.setdefault(_OOFEncoder.name, _OOFEncoder)
+    try:
+        model = RepLeafRegressor(
+            n_estimators=2,
+            num_leaves=3,
+            min_samples_leaf=5,
+            leaf_model="embedded_linear",
+            encoder="expert_bundle",
+            encoder_params={
+                "expert_names": ["oof"],
+                "column_subsets": [[0]],
+                "children": [{"name": _OOFEncoder.name, "config": {}}],
+            },
+            split_backend="numpy",
+            random_state=2,
+        ).fit(ds)
+    finally:
+        _ENCODER_REGISTRY.pop(_OOFEncoder.name, None)
+    np.testing.assert_array_equal(model.predict(ds), model.predict(X))

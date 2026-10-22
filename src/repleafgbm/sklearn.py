@@ -780,14 +780,17 @@ class BaseRepLeafModel(BaseEstimator):
 
         Shared by :meth:`fit` and router extraction. A bundle caches its
         fold-safe training representation on the dataset it is fitted on
-        (``RepLeafDataset.set_embeddings``), so bundles — from ``leaf_experts``
-        or passed as an ``encoder`` instance — are fitted on a shallow view and
+        (``RepLeafDataset.set_embeddings``), so bundles — from ``leaf_experts``,
+        passed as an ``encoder`` instance, or named ``encoder="expert_bundle"``
+        — are fitted on a shallow view and
         the caller's dataset keeps the ordinary ``transform()`` lifecycle when
         reused as an eval_set entry or as predict input.
         """
         train = dataset
         if leaf_model.uses_embeddings and (
-            self.leaf_experts is not None or isinstance(self.encoder, ExpertBundleEncoder)
+            self.leaf_experts is not None
+            or isinstance(self.encoder, ExpertBundleEncoder)
+            or self.encoder == ExpertBundleEncoder.name
         ):
             train = copy.copy(dataset)
         with timed(profiler, "encoder"):
@@ -883,6 +886,11 @@ class BaseRepLeafModel(BaseEstimator):
             encoders.append(child)
             if spec.columns is None:
                 subset = list(range(len(numerical_names)))
+            elif isinstance(spec.columns, (str, bytes)):
+                raise ValueError(
+                    f"leaf expert {spec.name!r} columns must be a list of column "
+                    "names or indices, not a single string"
+                )
             else:
                 subset = []
                 for column in spec.columns:
