@@ -644,6 +644,109 @@ class AdaptiveLeafModel(EmbeddedLinearLeafModel):
         self.leaf_gate = leaf_gate
 
 
+class SelectLeafModel(AdaptiveLeafModel):
+    """Choose one named embedding block or a constant independently per leaf.
+
+    Candidate blocks are supplied through the fit-local ``blocks`` attribute.
+    Each eligible block gets its own ridge solve and weighted LOO score; the
+    lowest-error block is retained only when it clears ``leaf_gate_margin``
+    against the constant. Non-selected weight columns remain exactly zero.
+    """
+
+    name = "select"
+    uses_embeddings = True
+    blocks: list[slice] | None = None
+
+    def fit_leaves(
+        self,
+        leaf_rows: list[np.ndarray],
+        grad: np.ndarray,
+        hess: np.ndarray,
+        Z: np.ndarray | None,
+    ) -> LeafValues:
+        if Z is None:
+            raise ValueError("SelectLeafModel requires an embedding matrix Z")
+        if grad.ndim != 1 or hess.ndim != 1:
+            raise NotImplementedError(
+                "leaf_model='select' supports scalar regression and binary "
+                "classification only; use 'adaptive' or 'embedded_linear' "
+                "for vector leaves"
+            )
+        emb_dim = Z.shape[1]
+        blocks = self.blocks or [slice(0, emb_dim)]
+        indices: list[np.ndarray] = []
+        for block in blocks:
+            start, stop, step = block.indices(emb_dim)
+            if step != 1 or stop <= start:
+                raise ValueError("select leaf blocks must be non-empty contiguous slices")
+            indices.append(np.arange(start, stop, dtype=np.int64))
+
+        n_leaves = len(leaf_rows)
+        bias = np.empty(n_leaves, dtype=np.float64)
+        weights = np.zeros((n_leaves, emb_dim), dtype=np.float64)
+        z_min = np.full((n_leaves, emb_dim), -np.inf, dtype=np.float64)
+        z_max = np.full((n_leaves, emb_dim), np.inf, dtype=np.float64)
+        selections: list[int | None] = []
+        for leaf, rows in enumerate(leaf_rows):
+            gl = grad[rows]
+            hl = hess[rows]
+            Zl = Z[rows]
+            bias[leaf] = _newton_constant(gl, hl, self.l2)
+            best_error = np.inf
+            best: tuple[int, float, np.ndarray] | None = None
+            e_const: float | None = None
+            for block_index, columns in enumerate(indices):
+                if rows.shape[0] < max(self.min_samples_linear, columns.size + 2):
+                    continue
+                block_Z = Zl[:, columns]
+                block_bias, block_weights = _fit_weighted_ridge(
+                    block_Z, gl, hl, self.l2
+                )
+                if block_weights is None:
+                    continue
+                block_error, constant_error = _loo_errors(
+                    block_Z,
+                    gl,
+                    hl,
+                    block_bias,
+                    block_weights,
+                    self.l2,
+                    insample=self.leaf_gate == "insample",
+                )
+                if e_const is None:
+                    e_const = constant_error
+                if block_error < best_error:
+                    best_error = block_error
+                    best = (block_index, block_bias, block_weights)
+            if (
+                best is not None
+                and e_const is not None
+                and best_error < (1.0 - self.leaf_gate_margin) * e_const
+            ):
+                block_index, block_bias, block_weights = best
+                weights[leaf, indices[block_index]] = block_weights
+                bias[leaf] = block_bias
+                z_min[leaf] = Zl.min(axis=0)
+                z_max[leaf] = Zl.max(axis=0)
+                selections.append(block_index)
+            else:
+                selections.append(None)
+        self.last_selections_ = selections
+        return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+
+    def fit_leaves_multiclass(
+        self,
+        leaf_rows_per_class: list[list[np.ndarray]],
+        grad: np.ndarray,
+        hess: np.ndarray,
+        Z: np.ndarray | None,
+    ) -> list[LeafValues]:
+        raise NotImplementedError(
+            "leaf_model='select' does not support multiclass pooled leaves; "
+            "use leaf_model='adaptive' or 'embedded_linear'"
+        )
+
+
 def _newton_constant(g: np.ndarray, h: np.ndarray, l2: float) -> float:
     """Optimal constant leaf value: -sum(g) / (sum(h) + l2)."""
     return float(-g.sum() / (h.sum() + l2))
@@ -747,6 +850,33 @@ def _loo_keep_linear(
     return e_lin < (1.0 - margin) * e_const
 
 
+def _loo_errors(
+    Zl: np.ndarray,
+    gl: np.ndarray,
+    hl: np.ndarray,
+    bias: float,
+    w: np.ndarray,
+    l2: float,
+    insample: bool = False,
+) -> tuple[float, float]:
+    """Weighted LOO errors for one fitted ridge block and its constant arm."""
+    t = -gl / hl
+    h_sum = hl.sum()
+    z_mean = (hl[:, None] * Zl).sum(axis=0) / h_sum
+    t_mean = float((hl * t).sum() / h_sum)
+    z_tilde = Zl - z_mean
+    M = (z_tilde * hl[:, None]).T @ z_tilde + l2 * np.eye(Zl.shape[1])
+    H, H0 = _loo_leverages(z_tilde, hl, M)
+    residual = bias + Zl @ w - t
+    if insample:
+        e_linear = float(np.sum(hl * residual * residual))
+    else:
+        e_linear = float(np.sum(hl * (residual / (1.0 - H)) ** 2))
+    residual0 = t_mean - t
+    e_constant = float(np.sum(hl * (residual0 / (1.0 - H0)) ** 2))
+    return e_linear, e_constant
+
+
 @dataclass
 class _LeafGate:
     """Per-leaf generalization gate context for :class:`AdaptiveLeafModel`.
@@ -848,7 +978,15 @@ def make_leaf_model(
             leaf_gate=leaf_gate,
             leaf_fit_precision=leaf_fit_precision,
         )
+    if name == "select":
+        return SelectLeafModel(
+            l2=l2,
+            min_samples_linear=min_samples_linear,
+            leaf_gate_margin=leaf_gate_margin,
+            leaf_gate=leaf_gate,
+            leaf_fit_precision=leaf_fit_precision,
+        )
     raise ValueError(
         f"Unknown leaf_model {name!r}. Available: 'constant', 'embedded_linear', "
-        "'raw_linear', 'adaptive'"
+        "'raw_linear', 'adaptive', 'select'"
     )

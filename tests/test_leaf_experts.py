@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from repleafgbm import LeafExpert, RepLeafDataset, RepLeafRegressor
+from repleafgbm import LeafExpert, RepLeafClassifier, RepLeafDataset, RepLeafRegressor
+from repleafgbm.core.leaf_models import AdaptiveLeafModel, SelectLeafModel
 from repleafgbm.encoders import ExpertBundleEncoder, make_encoder
 from repleafgbm.encoders.base import BaseEncoder
 
@@ -181,11 +184,291 @@ def test_bundle_training_cache_uses_fit_transform_train_but_eval_uses_transform(
     assert 17 in _DifferentTrainEncoder.transform_row_counts
 
 
-def test_leaf_experts_and_nondefault_encoder_are_rejected():
+@pytest.mark.parametrize("encoder", ["identity", "plr"])
+def test_leaf_experts_and_encoder_are_rejected(encoder):
     X = np.arange(40, dtype=np.float64).reshape(20, 2)
     with pytest.raises(ValueError, match="leaf_experts.*encoder"):
         RepLeafRegressor(
             n_estimators=1,
             leaf_experts=[{"name": "x", "encoder": "identity"}],
-            encoder="plr",
+            encoder=encoder,
         ).fit(X, X[:, 0])
+
+
+def test_select_single_block_matches_adaptive_leaf_fit():
+    rng = np.random.RandomState(19)
+    Z = rng.normal(size=(180, 3))
+    target = 2.0 * Z[:, 0] - 0.8 * Z[:, 2] + rng.normal(scale=0.05, size=180)
+    grad = -target
+    hess = np.ones(180)
+    leaves = [np.arange(90), np.arange(90, 180)]
+    adaptive = AdaptiveLeafModel(
+        l2=0.2, min_samples_linear=10, leaf_gate_margin=0.01
+    ).fit_leaves(leaves, grad, hess, Z)
+    select = SelectLeafModel(
+        l2=0.2, min_samples_linear=10, leaf_gate_margin=0.01
+    )
+    select.blocks = [slice(0, 3)]
+    selected = select.fit_leaves(leaves, grad, hess, Z)
+    np.testing.assert_allclose(selected.bias, adaptive.bias, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(
+        selected.weights, adaptive.weights, rtol=1e-12, atol=1e-12
+    )
+    np.testing.assert_allclose(selected.z_min, adaptive.z_min)
+    np.testing.assert_allclose(selected.z_max, adaptive.z_max)
+
+
+def test_select_chooses_different_planted_blocks_and_zeroes_other_weights():
+    rng = np.random.RandomState(23)
+    n = 300
+    route = np.repeat([0, 1], n // 2)
+    Z = rng.normal(size=(n, 4))
+    target = np.where(
+        route == 0,
+        4.0 * Z[:, 0] - 2.0 * Z[:, 1],
+        -3.0 * Z[:, 2] + 1.5 * Z[:, 3],
+    ) + rng.normal(scale=0.03, size=n)
+    leaves = [np.flatnonzero(route == 0), np.flatnonzero(route == 1)]
+    select = SelectLeafModel(
+        l2=0.1, min_samples_linear=20, leaf_gate_margin=0.01
+    )
+    select.blocks = [slice(0, 2), slice(2, 4)]
+    values = select.fit_leaves(leaves, -target, np.ones(n), Z)
+    assert select.last_selections_ == [0, 1]
+    assert np.all(values.weights[0, 2:] == 0.0)
+    assert np.all(values.weights[1, :2] == 0.0)
+    assert np.all(np.isfinite(values.z_min))
+
+
+def test_select_estimator_exposes_named_selection_diagnostics():
+    rng = np.random.RandomState(29)
+    X = rng.normal(size=(260, 3))
+    y = np.where(X[:, 0] < 0, 3.0 * X[:, 1], -4.0 * X[:, 2])
+    model = RepLeafRegressor(
+        n_estimators=5,
+        num_leaves=4,
+        min_samples_leaf=15,
+        leaf_model="select",
+        leaf_gate_margin=0.0,
+        leaf_experts=[
+            {"name": "left_signal", "encoder": "identity", "columns": [1]},
+            {"name": "right_signal", "encoder": "identity", "columns": [2]},
+        ],
+        split_backend="numpy",
+        random_state=4,
+    ).fit(X, y)
+    assert set(model.expert_selection_counts_) == {
+        "constant",
+        "left_signal",
+        "right_signal",
+    }
+    assert sum(model.expert_selection_counts_.values()) == sum(
+        tree.n_leaves for tree in model.booster_.trees_
+    )
+    assert sum(model.expert_selection_fraction_.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("backend", ["numpy", "rust"])
+def test_select_single_expert_matches_adaptive_prediction(backend):
+    rng = np.random.RandomState(31)
+    X = rng.normal(size=(280, 3))
+    y = 2.5 * X[:, 0] - X[:, 2] + rng.normal(scale=0.1, size=280)
+    common = dict(
+        n_estimators=7,
+        num_leaves=5,
+        min_samples_leaf=12,
+        leaf_gate_margin=0.01,
+        split_backend=backend,
+        random_state=8,
+    )
+    adaptive = RepLeafRegressor(
+        leaf_model="adaptive", encoder="identity", **common
+    ).fit(X, y)
+    select = RepLeafRegressor(
+        leaf_model="select",
+        leaf_experts=[{"name": "identity", "encoder": "identity"}],
+        **common,
+    ).fit(X, y)
+    np.testing.assert_allclose(
+        select.predict(X), adaptive.predict(X), rtol=1e-9, atol=1e-11
+    )
+
+
+def _planted_expert_data(seed, n):
+    rng = np.random.RandomState(seed)
+    route = rng.uniform(-1.0, 1.0, size=n)
+    noise = rng.normal(size=n)
+    a = rng.normal(size=(n, 2))
+    b = rng.normal(size=(n, 2))
+    y = (
+        np.where(route < 0, -3.0, 3.0)
+        + np.where(route < 0, 4.0 * a[:, 0] - 2.0 * a[:, 1],
+                   -3.0 * b[:, 0] + 1.5 * b[:, 1])
+        + rng.normal(scale=0.05, size=n)
+    )
+    X = pd.DataFrame(
+        {
+            "route": route,
+            "noise": noise,
+            "a0": a[:, 0],
+            "a1": a[:, 1],
+            "b0": b[:, 0],
+            "b1": b[:, 1],
+        }
+    )
+    return X, y
+
+
+@pytest.mark.parametrize("backend", ["numpy", "rust"])
+def test_select_recovers_planted_blocks_and_beats_concatenated_ridge(backend):
+    X_train, y_train = _planted_expert_data(37, 600)
+    X_valid, y_valid = _planted_expert_data(41, 300)
+    experts = [
+        {"name": "a", "encoder": "identity", "columns": ["a0", "a1"]},
+        {"name": "b", "encoder": "identity", "columns": ["b0", "b1"]},
+    ]
+    common = dict(
+        n_estimators=8,
+        num_leaves=4,
+        max_depth=2,
+        min_samples_leaf=35,
+        leaf_experts=experts,
+        leaf_only_features=["a0", "a1", "b0", "b1"],
+        leaf_reduction="none",
+        leaf_gate_margin=0.05,
+        split_backend=backend,
+        random_state=9,
+    )
+    select = RepLeafRegressor(leaf_model="select", **common).fit(X_train, y_train)
+    concat = RepLeafRegressor(leaf_model="embedded_linear", **common).fit(
+        X_train, y_train
+    )
+    select_rmse = np.sqrt(np.mean((select.predict(X_valid) - y_valid) ** 2))
+    concat_rmse = np.sqrt(np.mean((concat.predict(X_valid) - y_valid) ** 2))
+    selected_true = (
+        select.expert_selection_counts_["a"]
+        + select.expert_selection_counts_["b"]
+    )
+    assert selected_true > select.expert_selection_counts_["constant"]
+    assert select_rmse <= concat_rmse
+
+
+def test_permuted_false_block_is_selected_less_and_does_not_change_validation_rmse():
+    X_train, y_train = _planted_expert_data(43, 700)
+    X_valid, y_valid = _planted_expert_data(47, 350)
+    rng = np.random.RandomState(53)
+    X_train["fake"] = X_train["a0"].to_numpy()[rng.permutation(len(X_train))]
+    X_valid["fake"] = X_valid["a0"].to_numpy()[rng.permutation(len(X_valid))]
+    true_experts = [
+        {"name": "a", "encoder": "identity", "columns": ["a0", "a1"]},
+        {"name": "b", "encoder": "identity", "columns": ["b0", "b1"]},
+    ]
+    common = dict(
+        n_estimators=6,
+        num_leaves=4,
+        max_depth=2,
+        min_samples_leaf=40,
+        leaf_model="select",
+        leaf_only_features=["a0", "a1", "b0", "b1", "fake"],
+        leaf_reduction="none",
+        leaf_gate_margin=0.1,
+        split_backend="numpy",
+        random_state=10,
+    )
+    baseline = RepLeafRegressor(leaf_experts=true_experts, **common).fit(
+        X_train, y_train
+    )
+    with_fake = RepLeafRegressor(
+        leaf_experts=true_experts
+        + [{"name": "fake", "encoder": "identity", "columns": ["fake"]}],
+        **common,
+    ).fit(X_train, y_train)
+    true_count = (
+        with_fake.expert_selection_counts_["a"]
+        + with_fake.expert_selection_counts_["b"]
+    )
+    assert with_fake.expert_selection_counts_["fake"] < true_count
+    rmse_baseline = np.sqrt(np.mean((baseline.predict(X_valid) - y_valid) ** 2))
+    rmse_fake = np.sqrt(np.mean((with_fake.predict(X_valid) - y_valid) ** 2))
+    assert rmse_fake == pytest.approx(rmse_baseline, rel=1e-3, abs=1e-3)
+
+
+def test_select_rejects_multiclass_and_multioutput():
+    rng = np.random.RandomState(59)
+    X = rng.normal(size=(90, 3))
+    with pytest.raises(NotImplementedError, match="adaptive.*embedded_linear"):
+        RepLeafClassifier(n_estimators=1, leaf_model="select").fit(
+            X, np.arange(90) % 3
+        )
+    with pytest.raises(NotImplementedError, match="adaptive.*embedded_linear"):
+        RepLeafRegressor(n_estimators=1, leaf_model="select").fit(
+            X, np.column_stack([X[:, 0], X[:, 1]])
+        )
+
+
+def test_leaf_only_bundle_select_roundtrip_writes_v9(tmp_path, monkeypatch):
+    X, y = _planted_expert_data(61, 260)
+    model = RepLeafRegressor(
+        n_estimators=4,
+        num_leaves=4,
+        min_samples_leaf=20,
+        leaf_model="select",
+        leaf_experts=[
+            {"name": "a", "encoder": "identity", "columns": ["a0", "a1"]},
+            {"name": "b", "encoder": "identity", "columns": ["b0", "b1"]},
+        ],
+        leaf_only_features=["a0", "a1", "b0", "b1"],
+        leaf_reduction="none",
+        split_backend="numpy",
+        random_state=12,
+    ).fit(X, y)
+    expected = model.predict(X)
+    path = tmp_path / "v9_model"
+    model.save_model(path)
+    config = json.loads((path / "model_config.json").read_text())
+    metadata = json.loads((path / "feature_metadata.json").read_text())
+    assert config["format_version"] == 9
+    assert metadata["leaf_only_features"] == ["a0", "a1", "b0", "b1"]
+    loaded = RepLeafRegressor.load_model(path)
+    np.testing.assert_allclose(loaded.predict(X), expected, rtol=0, atol=0)
+    assert loaded.expert_selection_counts_ == model.expert_selection_counts_
+
+    import repleafgbm.core.serialization as serialization
+
+    monkeypatch.setattr(serialization, "READABLE_VERSIONS", tuple(range(1, 9)))
+    with pytest.raises(ValueError, match="Unsupported model format version 9"):
+        RepLeafRegressor.load_model(path)
+
+
+def test_legacy_configuration_keeps_pre_v9_format(tmp_path):
+    rng = np.random.RandomState(67)
+    X = rng.normal(size=(100, 2))
+    y = X[:, 0]
+    model = RepLeafRegressor(
+        n_estimators=2, leaf_model="adaptive", split_backend="numpy"
+    ).fit(X, y)
+    path = tmp_path / "legacy"
+    model.save_model(path)
+    config = json.loads((path / "model_config.json").read_text())
+    assert config["format_version"] == 3
+
+
+def test_select_same_seed_is_deterministic():
+    X, y = _planted_expert_data(71, 320)
+    params = dict(
+        n_estimators=5,
+        num_leaves=4,
+        min_samples_leaf=20,
+        leaf_model="select",
+        leaf_experts=[
+            {"name": "a", "encoder": "identity", "columns": ["a0", "a1"]},
+            {"name": "b", "encoder": "identity", "columns": ["b0", "b1"]},
+        ],
+        leaf_only_features=["a0", "a1", "b0", "b1"],
+        split_backend="numpy",
+        random_state=13,
+    )
+    first = RepLeafRegressor(**params).fit(X, y)
+    second = RepLeafRegressor(**params).fit(X, y)
+    assert np.array_equal(first.predict(X), second.predict(X))
+    assert first.expert_selection_counts_ == second.expert_selection_counts_

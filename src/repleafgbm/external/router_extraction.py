@@ -20,6 +20,7 @@ from repleafgbm.core.leaf_models import make_leaf_model
 from repleafgbm.core.metrics import get_metric
 from repleafgbm.core.objectives import get_objective
 from repleafgbm.core.tree import Tree
+from repleafgbm.encoders import ExpertBundleEncoder
 from repleafgbm.encoders.bundle import LeafExpert
 from repleafgbm.external.lightgbm_model import LightGBMExternalModel
 from repleafgbm.regressor import RepLeafRegressor
@@ -170,7 +171,9 @@ class _RouterExtractionMixin:
         self,
         base: LightGBMExternalModel | None = None,
         leaf_model: str = "embedded_linear",
-        encoder: str = "identity",
+        leaf_gate_margin: float = 0.01,
+        leaf_gate: str = "loo",
+        encoder: str | None = None,
         encoder_params: dict | None = None,
         leaf_experts: list[dict | LeafExpert] | None = None,
         leaf_only_features: list[str | int] | None = None,
@@ -183,6 +186,8 @@ class _RouterExtractionMixin:
     ) -> None:
         self.base = base
         self.leaf_model = leaf_model
+        self.leaf_gate_margin = leaf_gate_margin
+        self.leaf_gate = leaf_gate
         self.encoder = encoder
         self.encoder_params = encoder_params
         self.leaf_experts = leaf_experts
@@ -216,11 +221,22 @@ class _RouterExtractionMixin:
             )
 
         leaf_model = make_leaf_model(
-            self.leaf_model, l2=self.l2_leaf, min_samples_linear=2 * self.min_samples_leaf
+            self.leaf_model,
+            l2=self.l2_leaf,
+            min_samples_linear=2 * self.min_samples_leaf,
+            leaf_gate_margin=self.leaf_gate_margin,
+            leaf_gate=self.leaf_gate,
         )
         self.encoder_ = (
             self._build_and_fit_encoder(dataset) if leaf_model.uses_embeddings else None
         )
+        if self.leaf_model == "select":
+            if isinstance(self.encoder_, ExpertBundleEncoder):
+                leaf_model.blocks = self.encoder_.block_slices
+                leaf_model.expert_names = self.encoder_.expert_names
+            else:
+                leaf_model.blocks = [slice(0, self.encoder_.output_dim)]
+                leaf_model.expert_names = ["linear"]
 
         base = self.base if self.base is not None else LightGBMExternalModel(
             task=self._base_task, random_state=self.random_state or 0
@@ -262,6 +278,9 @@ class _RouterExtractionMixin:
             eval_metric=get_metric(self.eval_metric or self._eval_metric_name),
         )
         self.evals_result_ = self.booster_.evals_result_
+        self.linear_leaf_fraction_ = self._linear_leaf_fraction()
+        if self.leaf_model == "select":
+            self._set_expert_selection_diagnostics()
         return self
 
     def _serializable_config(self, config: dict) -> dict:
