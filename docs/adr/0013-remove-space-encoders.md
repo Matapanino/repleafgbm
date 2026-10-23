@@ -55,7 +55,9 @@ S6E10 harness, transcribed in the MatGBM notes (`ideas.md`, section
   `ValueError` from `load_model` that names the directory and tells the user to
   load it with repleafgbm 1.13.x or retrain with a remaining encoder. As with
   ADR 0012, the check keys on the saved name, not on the format version: such
-  models were written as v3 to v9 depending on their other options.
+  models were written as v3 to v9 depending on their other options. ADR 0003's
+  serialization promise now says explicitly that it covers a model only while
+  the Experimental features it uses still exist.
 - No `DeprecationWarning` cycle: the names were Experimental, so they are
   removed in the 1.14.0 minor release and listed under `### Removed` in the
   changelog.

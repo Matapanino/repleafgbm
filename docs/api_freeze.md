@@ -56,7 +56,10 @@ encoders `pca`, `quantile`, `spline`, `rff`, `row_stats`, and `prototype`
 Format is at `format_version = 9` with the full v1→v9 read ladder tested
 (`docs/serialization.md`, `tests/test_serialization.py`). Declared **stable**:
 within a major version a model saved by version X loads in every version ≥ X;
-format changes bump the version and ship a migration test.
+format changes bump the version and ship a migration test. A model that uses an
+Experimental feature loads only in versions that still have that feature
+(1.14.0 cannot load 1.13.x models that used `leaf_model="select"` or a removed
+space encoder; ADR 0012, ADR 0013).
 
 ## Deliberately deferred (documented limitations, not blockers)
 

@@ -48,7 +48,10 @@ at 1.0.0.
 - The **on-disk serialization format** (`docs/serialization.md`): a model
   saved by version X loads in every version ≥ X within the same major.
   Format changes bump `format_version` and ship a migration test; older
-  readers are never silently broken.
+  readers are never silently broken. A model that uses an Experimental feature
+  (below) loads only in versions that still have that feature: 1.14.0 cannot
+  load 1.13.x models that used `leaf_model="select"` (ADR 0012) or a removed
+  space encoder (ADR 0013).
 - scikit-learn estimator-contract conformance (`check_estimator`), enforced by
   `tests/test_sklearn_compat.py`, so the estimators stay usable in pipelines,
   `clone`, cross-validation, and grid search.
