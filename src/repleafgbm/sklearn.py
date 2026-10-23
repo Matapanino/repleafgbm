@@ -32,6 +32,7 @@ from repleafgbm.encoders import (
     LeafExpert,
     RandomProjectionEncoder,
     TargetCorrelationEncoder,
+    _RemovedEncoderError,
     make_encoder,
 )
 from repleafgbm.encoders.base import BaseEncoder
@@ -1149,7 +1150,16 @@ class BaseRepLeafModel(BaseEstimator):
     @classmethod
     def load_model(cls, path: str | Path) -> BaseRepLeafModel:
         """Load a model saved with :meth:`save_model`."""
-        parts = load_model_dir(path)
+        try:
+            parts = load_model_dir(path)
+        except _RemovedEncoderError as error:
+            raise ValueError(
+                f"The model at {path} was trained with encoder "
+                f"{error.encoder_name!r}, which was removed in repleafgbm 1.14.0 "
+                "(docs/adr/0013-remove-space-encoders.md). Load it with repleafgbm "
+                "1.13.x, or retrain with a remaining encoder (for example "
+                "'identity')."
+            ) from error
         if parts["model_class"] != cls.__name__:
             raise ValueError(
                 f"Model directory contains a {parts['model_class']}, "
