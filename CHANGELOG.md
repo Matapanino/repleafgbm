@@ -7,6 +7,18 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-10-24
+
+Removal release: the experimental `leaf_model="select"` and the six
+experimental space encoders added in 1.13.0 are removed after the S6E10
+MatGBM wave-4 experiments (ADR 0012, ADR 0013). They were Experimental (not
+SemVer-gated), so this is a minor release with no deprecation cycle; the
+stable API, defaults, and model format v9 are unchanged. Models saved by
+1.13.x that used a removed feature do not load in 1.14.0. The optional
+`repleafgbm-native` extension moves from 0.3.1 to 0.4.0 (the
+`leaf_select_stats` kernel is removed); 1.14.0 works with either native
+build, and 1.13.x falls back to NumPy on 0.4.0.
+
 ### Removed
 
 - Removed the experimental `leaf_model="select"` (`SelectLeafModel`) and its
