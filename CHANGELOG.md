@@ -16,6 +16,9 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   The public `encoder="identity"` default is preserved; `leaf_experts` takes
   precedence over that exact default, while non-default encoder settings remain
   mutually exclusive.
+- Add CPU-only NumPy space encoders `pca`, `quantile`, `spline`, `rff`,
+  `row_stats`, and `prototype`, with deterministic seeded fitting and
+  array-only save/load state; defaults are chosen and unbenchmarked.
 
 ## [1.12.0] - 2026-09-12
 

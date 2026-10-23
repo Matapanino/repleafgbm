@@ -39,12 +39,14 @@ Changes that got there:
 
 Covered by SemVer: `repleafgbm.__all__`, the estimator constructor
 hyperparameters, the documented fitted attributes/methods, the registered
-encoder/objective/metric names, the serialization format, and
+stable encoder names plus objective/metric names, the serialization format, and
 `check_estimator` conformance.
 
-Experimental (not SemVer-gated): `repleafgbm.external`, the `router_extraction`
-estimators, `backends` / `repleafgbm_native` internals, `core` internals,
-private names, and exact message text.
+Experimental (not SemVer-gated): the `pca`, `quantile`, `spline`, `rff`,
+`row_stats`, and `prototype` encoder registry names and their unbenchmarked,
+changeable defaults; `repleafgbm.external`; the `router_extraction` estimators;
+`backends` / `repleafgbm_native` internals; `core` internals; private names;
+and exact message text.
 
 ## Serialization
 

@@ -2,8 +2,9 @@
 
 Two families implement :class:`~repleafgbm.encoders.base.BaseEncoder`:
 
-* **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross`` —
-  fitted once (statistics / seeded parameters / pair selection) and frozen.
+* **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross``, plus
+  the experimental space bank (``pca``, ``quantile``, ``spline``, ``rff``,
+  ``row_stats``, ``prototype``) — fitted once and frozen.
 * **Pretrained-then-frozen** (optional ``[torch]`` extra): ``torch_periodic``,
   ``torch_plr``, ``torch_periodic_plr``, ``torch_mlp`` — parameters are
   supervised-pretrained on the initial Newton residual and then frozen into
@@ -23,9 +24,15 @@ from repleafgbm.encoders.base import BaseEncoder
 from repleafgbm.encoders.bundle import ExpertBundleEncoder, LeafExpert
 from repleafgbm.encoders.cross import CrossInteractionEncoder
 from repleafgbm.encoders.identity import IdentityEncoder
+from repleafgbm.encoders.pca import PCAEncoder
 from repleafgbm.encoders.periodic import PeriodicEncoder
 from repleafgbm.encoders.plr import SimplePLREncoder
 from repleafgbm.encoders.projection import RandomProjectionEncoder
+from repleafgbm.encoders.prototype import PrototypeDistanceEncoder
+from repleafgbm.encoders.quantile import QuantileEncoder
+from repleafgbm.encoders.rff import RandomFourierEncoder
+from repleafgbm.encoders.row_stats import RowStatsEncoder
+from repleafgbm.encoders.spline import SplineEncoder
 from repleafgbm.encoders.subset import ColumnSubsetEncoder
 from repleafgbm.encoders.target_reduction import TargetCorrelationEncoder
 from repleafgbm.encoders.torch_encoders import (
@@ -40,6 +47,12 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "plr": SimplePLREncoder,
     "periodic": PeriodicEncoder,
     "cross": CrossInteractionEncoder,
+    "pca": PCAEncoder,
+    "quantile": QuantileEncoder,
+    "spline": SplineEncoder,
+    "rff": RandomFourierEncoder,
+    "row_stats": RowStatsEncoder,
+    "prototype": PrototypeDistanceEncoder,
     "column_subset": ColumnSubsetEncoder,
     "expert_bundle": ExpertBundleEncoder,
     # Learned encoders: torch needed only at fit time (see torch_encoders).
@@ -118,6 +131,12 @@ __all__ = [
     "SimplePLREncoder",
     "PeriodicEncoder",
     "CrossInteractionEncoder",
+    "PCAEncoder",
+    "QuantileEncoder",
+    "SplineEncoder",
+    "RandomFourierEncoder",
+    "RowStatsEncoder",
+    "PrototypeDistanceEncoder",
     "TorchPeriodicEncoder",
     "TorchPLREncoder",
     "TorchPeriodicPLREncoder",

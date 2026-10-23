@@ -177,6 +177,12 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"periodic"` | Frozen sinusoidal (PBLD-style) features. |
 | `"cross"` | Residual-correlated pairwise products (interactions). |
 | `"torch_periodic"` / `"torch_plr"` / `"torch_periodic_plr"` / `"torch_mlp"` | Learned encoders (`[torch]` extra; supervised-pretrained on the initial residual then frozen — torch is needed only at fit time, not at predict). |
+| `"pca"` | NumPy standardized SVD projection (8 components, clipped to column count); optional whitening. |
+| `"quantile"` | NumPy interpolated ECDF ranks (100 quantiles), with uniform or normal scores. |
+| `"spline"` | NumPy standardized quantile hinges (4 knots per column) plus a linear extrapolation term. |
+| `"rff"` | NumPy seeded Gaussian Fourier features (16 cosine/sine pairs), with median-distance or fixed gamma. |
+| `"row_stats"` | Eight NumPy row aggregates over all or selected numerical columns, including slope and half-mean difference. |
+| `"prototype"` | NumPy seeded Lloyd centers (8 prototypes, 20 iterations); distances or RBF affinities. |
 
 API stability follows [Semantic Versioning](https://semver.org) from 1.0.0;
 exactly what is covered vs. experimental is in
