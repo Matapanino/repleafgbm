@@ -50,12 +50,16 @@ Sources: the wave-4 decision audit `matgbm_decision/wave4-decision.md` and its
 - `leaf_model="select"` now raises a `ValueError` that names the replacement:
   `embedded_linear` with fixed `leaf_experts` blocks, or `adaptive` for the
   per-leaf constant-vs-linear gate. `RouterExtraction*` estimators share the
-  same factory and error.
-- Loading a model whose saved config has `leaf_model="select"` raises a
-  `ValueError` telling the user to load it with repleafgbm 1.13.x or retrain.
-  The check keys on the saved `leaf_model`, not on the format version: a
-  `select` model is v9 only when it used leaf-only columns or an expert bundle,
-  and a single plain encoder writes v3.
+  same factory and error, and build the leaf model before checking
+  `leaf_experts`, so the removal error is the one a caller sees.
+- Loading a `save_model` directory whose saved config has
+  `leaf_model="select"` raises a `ValueError` telling the user to load it with
+  repleafgbm 1.13.x or retrain. The check keys on the saved `leaf_model`, not
+  on the format version: a `select` model is v9 only when it used leaf-only
+  columns or an expert bundle; otherwise it carries whatever earlier version
+  its other options imply (v3 for a single plain encoder). The guard does not
+  cover pickle/joblib: an unpickled 1.13.x `select` estimator still predicts
+  (its leaf arrays are ordinary `LeafValues`) but cannot be refit.
 - No `DeprecationWarning` cycle: `docs/api_freeze.md` and ADR 0003 list
   `leaf_model="select"` as Experimental (not SemVer-gated), so it is removed in
   the 1.14.0 minor release and listed under `### Removed` in the changelog.

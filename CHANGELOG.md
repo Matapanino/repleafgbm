@@ -16,9 +16,10 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   blocks on every fold (mean AUC −0.000722 against the 0.000128 bar). Passing
   `leaf_model="select"` now raises a `ValueError` naming the replacement
   (`embedded_linear` with fixed `leaf_experts`, or `adaptive`); loading a model
-  saved with `leaf_model="select"` raises a `ValueError` that points to
-  repleafgbm 1.13.x. It was Experimental (not SemVer-gated), so there is no
-  deprecation cycle.
+  saved with `leaf_model="select"` via `save_model` raises a `ValueError` that
+  points to repleafgbm 1.13.x (a pickled 1.13.x `select` estimator still
+  predicts but cannot be refit). It was Experimental (not SemVer-gated), so
+  there is no deprecation cycle.
 - Removed the `leaf_select_stats` fast path from the optional
   `repleafgbm-native` extension. repleafgbm 1.13.x checks for it with
   `hasattr` and falls back to NumPy, so it keeps working with the new native

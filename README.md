@@ -134,8 +134,9 @@ feature sampling, and importance calculations.
 
 Pass named frozen spaces through `leaf_experts`; each block specifies an
 `encoder`, optional `columns`, and optional `encoder_params`. With
-`leaf_model="embedded_linear"`, every leaf fits one ridge model over the fixed,
-concatenated blocks. The per-leaf block selection `leaf_model="select"` of
+`leaf_model="embedded_linear"`, each leaf with enough rows fits one ridge model
+over the fixed, concatenated blocks (smaller leaves stay constant). The
+per-leaf block selection `leaf_model="select"` of
 1.13.0 was removed in 1.14.0 because fixed blocks beat it
 ([ADR 0012](docs/adr/0012-remove-leaf-select.md)).
 
