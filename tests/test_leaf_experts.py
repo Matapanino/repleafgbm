@@ -339,6 +339,26 @@ def test_legacy_configuration_keeps_pre_v9_format(tmp_path):
     assert config["format_version"] == 3
 
 
+def test_leaf_only_bundle_same_seed_is_deterministic():
+    X, y = _planted_expert_data(71, 320)
+    params = dict(
+        n_estimators=5,
+        num_leaves=4,
+        min_samples_leaf=20,
+        leaf_model="embedded_linear",
+        leaf_experts=[
+            {"name": "a", "encoder": "identity", "columns": ["a0", "a1"]},
+            {"name": "b", "encoder": "identity", "columns": ["b0", "b1"]},
+        ],
+        leaf_only_features=["a0", "a1", "b0", "b1"],
+        split_backend="numpy",
+        random_state=13,
+    )
+    first = RepLeafRegressor(**params).fit(X, y)
+    second = RepLeafRegressor(**params).fit(X, y)
+    assert np.array_equal(first.predict(X), second.predict(X))
+
+
 def test_routing_matrix_is_not_copied_per_call():
     X = np.arange(24, dtype=np.float64).reshape(6, 4)
     ds = RepLeafDataset(X, np.arange(6))
