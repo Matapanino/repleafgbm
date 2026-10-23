@@ -3,6 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Import this checkout's src first, so a git worktree is checked against its
+# own code instead of whichever checkout is editable-installed. (The compiled
+# repleafgbm_native extension still comes from the active environment.)
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+
 # torch and lightgbm each bundle their own OpenMP runtime; loading both into
 # one process can deadlock parallel regions on macOS. Single-threaded OpenMP
 # avoids it, and the test suite/examples are small enough not to care.
