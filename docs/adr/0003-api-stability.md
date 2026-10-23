@@ -40,8 +40,8 @@ at 1.0.0.
   `classes_`, `n_classes_`, `evals_result_`, and the methods `fit`, `predict`,
   `predict_proba`, `score`, `get_feature_importance`, `summary`, `save_model`,
   `load_model`.
-- The registered string names for encoders (`identity`, `plr`, `periodic`,
-  `cross`, optional `torch_*`), objectives (`squared_error`, `huber`,
+- The stable registered string names for encoders (`identity`, `plr`,
+  `periodic`, `cross`, optional `torch_*`), objectives (`squared_error`, `huber`,
   `quantile`, `poisson`), and metrics (`rmse`, `mae`, `logloss`, `auc`,
   `accuracy`, `multi_logloss`).
 - The **on-disk serialization format** (`docs/serialization.md`): a model
@@ -54,6 +54,9 @@ at 1.0.0.
 
 ### Not covered (may change in any release)
 
+- The experimental space-encoder registry names (`pca`, `quantile`, `spline`,
+  `rff`, `row_stats`, `prototype`) and their parameters/defaults. Their
+  defaults have not been benchmarked and may change before stabilization.
 - `repleafgbm.external` (LightGBM/XGBoost/CatBoost integration), the
   `router_extraction` estimators, and `repleafgbm.backends` /
   `repleafgbm_native` internals — documented as **experimental**; changes are
