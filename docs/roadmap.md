@@ -538,9 +538,12 @@ Implemented:
   sampling, and importance, but appended to the ordered encoder block.
 - ✅ Named frozen `leaf_experts`, per-expert column subsets/reduction, recursive
   save/load, and a fold-safe `fit_transform_train` lifecycle seam.
-- ✅ Scalar `leaf_model="select"`: per-leaf constant-or-one-expert selection by
-  Hessian-weighted ridge LOO with a margin, selection diagnostics, NumPy/Rust
-  routing coverage, and a permuted false-expert guard.
+- ~~Scalar `leaf_model="select"`~~ — shipped in 1.13.0 (per-leaf
+  constant-or-one-expert selection by Hessian-weighted ridge LOO, plus a Rust
+  fast path), **removed in 1.14.0**: in the S6E10 wave-4 experiment it lost to
+  fixed `embedded_linear` expert blocks on 5/5 folds
+  ([ADR 0012](adr/0012-remove-leaf-select.md)). The recipe is now raw routing
+  plus fixed blocks.
 
 Not implemented:
 
@@ -552,7 +555,6 @@ Not implemented:
   selection-bias/complexity penalties. Performance adoption belongs to that
   separate harness lane; the present synthetic tests establish correctness,
   not an AUC claim.
-- ❌ Multiclass/multi-output select leaves and a native selector kernel.
 - ❌ Root-only routing with every column leaf-only (needs zero-feature
   splitter/sampler support; such configurations are rejected).
 

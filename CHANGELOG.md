@@ -7,6 +7,27 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the experimental `leaf_model="select"` (`SelectLeafModel`) and its
+  fitted `expert_selection_counts_` / `expert_selection_fraction_` attributes
+  ([ADR 0012](docs/adr/0012-remove-leaf-select.md)). In the S6E10 MatGBM
+  experiments (wave 4, 5 folds) it lost to fixed `embedded_linear` expert
+  blocks on every fold (mean AUC −0.000722 against the 0.000128 bar). Passing
+  `leaf_model="select"` now raises a `ValueError` naming the replacement
+  (`embedded_linear` with fixed `leaf_experts`, or `adaptive`); loading a model
+  saved with `leaf_model="select"` via `save_model` raises a `ValueError` that
+  points to repleafgbm 1.13.x (a pickled 1.13.x `select` estimator still
+  predicts but cannot be refit). It was Experimental (not SemVer-gated), so
+  there is no deprecation cycle.
+- Removed the `leaf_select_stats` fast path from the optional
+  `repleafgbm-native` extension. repleafgbm 1.13.x checks for it with
+  `hasattr` and falls back to NumPy, so it keeps working with the new native
+  build.
+- Removed the `select` null-calibration experiment script and the
+  select-statistics benchmark; the 1.13.0 calibration report stays in
+  `experiments/results/` as history.
+
 ## [1.13.0] - 2026-10-23
 
 Feature release: experimental leaf-only features, named frozen expert bundles,

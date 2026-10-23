@@ -22,6 +22,8 @@
 
 ## select と winner's curse
 
+> `select` は 1.14.0 で削除した（ADR 0012）。波 4 で固定 2 ブロック S8+O に 0/5 で負けた（KS1 −0.000722、bar 0.000128）。以下は削除前（1.13.0）の契約の記録である。
+
 各葉で constant と eligible expert block を比較する。block `k` は `n_leaf >= d_k + 2` のとき h 重み付き ridge を fit し、weighted LOO 誤差 `E_k` を求める。constant の誤差を `E_const` とし、
 
 `k* = argmin_k E_k`、`E_k* < (1 - leaf_gate_margin) * E_const`

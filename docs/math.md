@@ -139,7 +139,12 @@ degenerate (e.g. PLR components constant within the leaf). Guards:
 `raw_linear` is the same fit with `z_i` replaced by standardized raw
 numerical features.
 
-## Expert selection leaf model
+## Expert selection leaf model (removed in 1.14.0)
+
+`leaf_model="select"` was removed in 1.14.0
+([ADR 0012](adr/0012-remove-leaf-select.md)); this section records the math of
+the 1.13.0 implementation. With fixed expert blocks, `embedded_linear` solves
+the ridge problem above on the concatenated `Z`.
 
 Let a frozen expert bundle produce `Z = [Z_1 | ... | Z_K]`. In leaf `l`, expert
 `k` is eligible when `n_l >= max(min_samples_linear, d_k + 2)`. It independently

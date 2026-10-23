@@ -51,7 +51,8 @@ class ExpertBundleEncoder(BaseEncoder):
             raise ValueError("expert names must be unique")
         if "constant" in expert_names:
             raise ValueError(
-                "expert name 'constant' is reserved for the implicit constant candidate"
+                "expert name 'constant' is reserved (it names the constant leaf "
+                "model); choose another expert name"
             )
         self.expert_names = list(expert_names)
         self.encoders = list(encoders)

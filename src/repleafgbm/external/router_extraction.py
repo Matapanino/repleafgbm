@@ -204,10 +204,8 @@ class _RouterExtractionMixin:
     ):
         # Replay cannot honor weights; warn and ignore rather than raising.
         self._enforce_weight_capability(sample_weight)
-        self._validate_leaf_expert_options()
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
-        self._check_select_target(dataset)
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
@@ -228,6 +226,7 @@ class _RouterExtractionMixin:
             leaf_gate_margin=self.leaf_gate_margin,
             leaf_gate=self.leaf_gate,
         )
+        self._validate_leaf_expert_options()
         train = self._fit_leaf_encoder(dataset, leaf_model)
 
         base = self.base if self.base is not None else LightGBMExternalModel(
@@ -300,8 +299,6 @@ class _RouterExtractionMixin:
         )
         self.evals_result_ = self.booster_.evals_result_
         self.linear_leaf_fraction_ = self._linear_leaf_fraction()
-        if self.leaf_model == "select":
-            self._set_expert_selection_diagnostics()
         return self
 
     def _serializable_config(self, config: dict) -> dict:

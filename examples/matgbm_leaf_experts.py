@@ -1,8 +1,14 @@
-"""MatGBM leaf-only features and per-leaf expert selection.
+"""MatGBM leaf-only features with fixed frozen expert blocks.
 
-The first two columns route trees.  The smooth value and discrete identifier
-are intentionally leaf-only: they are unavailable to split search, but three
-frozen experts may use them inside a leaf.
+The first two columns route trees.  A discrete identifier and an external
+teacher score are leaf-only: they are unavailable to split search, but two
+frozen expert blocks expose them to ``embedded_linear`` leaves.  This mirrors
+the leaf recipe that was kept after the MatGBM experiments (ADR 0012): raw
+routing plus fixed blocks, a fold-safe target encoding of the key (plus a
+teacher score) in the leaves, and no per-leaf block selection.  Those experiments
+replayed a LightGBM router (``RouterExtractionClassifier``, see
+docs/matgbm/README.md); this example uses the native router so that it runs
+without optional dependencies.
 
 Run from the repository root:
     PYTHONPATH=src python3 examples/matgbm_leaf_experts.py
@@ -12,42 +18,33 @@ import numpy as np
 
 from repleafgbm import RepLeafClassifier, RepLeafRegressor
 
-LEAF_EXPERTS = [
-    {"name": "identity", "encoder": "identity", "columns": [2]},
-    {
-        "name": "target_encoding",
-        "encoder": "target_encoding",
-        "columns": [3],
-        "encoder_params": {
-            "scales": ["exact", 0],
-            "n_folds": 4,
-            "alpha": 5.0,
-            "random_state": 17,
-        },
+TARGET_ENCODING = {
+    "name": "te",
+    "encoder": "target_encoding",
+    "columns": [2],
+    "encoder_params": {
+        "scales": ["exact", 0],
+        "n_folds": 4,
+        "alpha": 5.0,
+        "random_state": 17,
     },
-    {
-        "name": "pca",
-        "encoder": "pca",
-        "columns": [2, 3],
-        "encoder_params": {"n_components": 2},
-    },
-]
+}
+TEACHER = {"name": "teacher", "encoder": "identity", "columns": [3]}
 
 
 def make_data(n_rows: int, seed: int, *, classification: bool) -> tuple[np.ndarray, np.ndarray]:
-    """Create a raw-routing signal plus leaf-only smooth and discrete signals."""
+    """Create a raw-routing signal plus a leaf-only key and teacher score."""
     rng = np.random.default_rng(seed)
     routing = rng.normal(size=(n_rows, 2))
-    smooth = rng.normal(size=n_rows)
     identifier = rng.integers(0, 8, size=n_rows).astype(float)
-    companion = 0.7 * smooth + rng.normal(0.0, 0.45, size=n_rows)
-    X = np.column_stack([routing, smooth, identifier, companion])
+    smooth = rng.normal(size=n_rows)
+    teacher = smooth + rng.normal(0.0, 0.4, size=n_rows)
+    X = np.column_stack([routing, identifier, teacher])
     score = (
         1.7 * (routing[:, 0] > 0.0)
         - 1.2 * (routing[:, 1] > 0.5)
-        + 1.4 * smooth
-        + 0.5 * companion
         + 0.65 * (identifier % 3)
+        + 1.4 * smooth
         + rng.normal(0.0, 0.3, size=n_rows)
     )
     if classification:
@@ -65,7 +62,7 @@ def logloss(y_true: np.ndarray, probability: np.ndarray) -> float:
 
 
 def fit_models(estimator_cls, X_train: np.ndarray, y_train: np.ndarray):
-    """Fit classic, bundled, and per-leaf-selecting variants with one router."""
+    """Fit constant leaves and two fixed-block variants with one router."""
     common = {
         "n_estimators": 24,
         "learning_rate": 0.12,
@@ -76,42 +73,32 @@ def fit_models(estimator_cls, X_train: np.ndarray, y_train: np.ndarray):
         "random_state": 19,
     }
     constant = estimator_cls(leaf_model="constant", **common).fit(X_train, y_train)
-    embedded = estimator_cls(
-        leaf_model="embedded_linear", leaf_experts=LEAF_EXPERTS, **common
+    te_only = estimator_cls(
+        leaf_model="embedded_linear", leaf_experts=[TARGET_ENCODING], **common
     ).fit(X_train, y_train)
-    select = estimator_cls(
-        leaf_model="select",
-        leaf_experts=LEAF_EXPERTS,
-        leaf_gate_margin=0.01,
-        **common,
+    te_teacher = estimator_cls(
+        leaf_model="embedded_linear", leaf_experts=[TARGET_ENCODING, TEACHER], **common
     ).fit(X_train, y_train)
-    return constant, embedded, select
-
-
-def print_selection(fraction: dict[str, float]) -> None:
-    selected = ", ".join(f"{name}={value:.3f}" for name, value in fraction.items())
-    print(f"  select expert_selection_fraction_: {selected}")
+    return {"constant": constant, "te": te_only, "te+teacher": te_teacher}
 
 
 def run_regression() -> None:
     X_train, y_train = make_data(480, seed=11, classification=False)
     X_test, y_test = make_data(180, seed=29, classification=False)
-    constant, embedded, select = fit_models(RepLeafRegressor, X_train, y_train)
+    models = fit_models(RepLeafRegressor, X_train, y_train)
     print("regression holdout RMSE")
-    for name, model in (("constant", constant), ("embedded_linear", embedded), ("select", select)):
-        print(f"  {name:16s} {rmse(y_test, model.predict(X_test)):.4f}")
-    print_selection(select.expert_selection_fraction_)
+    for name, model in models.items():
+        print(f"  {name:12s} {rmse(y_test, model.predict(X_test)):.4f}")
 
 
 def run_binary_classification() -> None:
     X_train, y_train = make_data(480, seed=11, classification=True)
     X_test, y_test = make_data(180, seed=29, classification=True)
-    constant, embedded, select = fit_models(RepLeafClassifier, X_train, y_train)
+    models = fit_models(RepLeafClassifier, X_train, y_train)
     print("binary holdout logloss")
-    for name, model in (("constant", constant), ("embedded_linear", embedded), ("select", select)):
+    for name, model in models.items():
         probability = model.predict_proba(X_test)[:, 1]
-        print(f"  {name:16s} {logloss(y_test, probability):.4f}")
-    print_selection(select.expert_selection_fraction_)
+        print(f"  {name:12s} {logloss(y_test, probability):.4f}")
 
 
 def main() -> None:

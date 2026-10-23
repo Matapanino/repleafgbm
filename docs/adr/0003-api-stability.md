@@ -56,7 +56,8 @@ at 1.0.0.
 ### Not covered (may change in any release)
 
 - The experimental MatGBM composition APIs: `leaf_only_features`,
-  `leaf_experts`, `leaf_model="select"`, and the `target_encoding` encoder.
+  `leaf_experts`, and the `target_encoding` encoder. (The experimental
+  `leaf_model="select"` was removed in 1.14.0 under this rule; ADR 0012.)
 - The experimental space-encoder registry names (`pca`, `quantile`, `spline`,
   `rff`, `row_stats`, `prototype`) and their parameters/defaults. Their
   defaults have not been benchmarked and may change before stabilization.
