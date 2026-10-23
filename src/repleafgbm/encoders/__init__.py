@@ -21,6 +21,7 @@ from __future__ import annotations
 import inspect
 
 from repleafgbm.encoders.base import BaseEncoder
+from repleafgbm.encoders.bundle import ExpertBundleEncoder, LeafExpert
 from repleafgbm.encoders.cross import CrossInteractionEncoder
 from repleafgbm.encoders.identity import IdentityEncoder
 from repleafgbm.encoders.pca import PCAEncoder
@@ -53,6 +54,7 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "row_stats": RowStatsEncoder,
     "prototype": PrototypeDistanceEncoder,
     "column_subset": ColumnSubsetEncoder,
+    "expert_bundle": ExpertBundleEncoder,
     # Learned encoders: torch needed only at fit time (see torch_encoders).
     "torch_periodic": TorchPeriodicEncoder,
     "torch_plr": TorchPLREncoder,
@@ -79,6 +81,17 @@ def make_encoder(name: str, _default_random_state: int | None = None, **kwargs) 
             _default_random_state=_default_random_state,
         )
         return ColumnSubsetEncoder(base, **kwargs)
+    if name == ExpertBundleEncoder.name:
+        children = kwargs.pop("children")
+        encoders = [
+            encoder_from_config(
+                child["name"],
+                child["config"],
+                _default_random_state=_default_random_state,
+            )
+            for child in children
+        ]
+        return ExpertBundleEncoder(encoders=encoders, **kwargs)
     cls = _ENCODER_REGISTRY[name]
     if (
         _default_random_state is not None
@@ -131,6 +144,8 @@ __all__ = [
     "RandomProjectionEncoder",
     "TargetCorrelationEncoder",
     "ColumnSubsetEncoder",
+    "ExpertBundleEncoder",
+    "LeafExpert",
     "make_encoder",
     "encoder_from_config",
 ]

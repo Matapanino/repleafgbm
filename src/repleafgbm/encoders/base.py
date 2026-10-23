@@ -45,6 +45,26 @@ class BaseEncoder(ABC):
         after fit (v0 rule).
         """
 
+    def fit_transform_train(
+        self,
+        X_num: np.ndarray,
+        y: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Fit once and return the representation used for training rows.
+
+        Supervised encoders may override this to return cross-fitted or ordered
+        representations while retaining a full-data fitted state for later
+        :meth:`transform` calls. The default preserves the historical
+        ``fit``-then-``transform`` lifecycle. Estimators call this hook only on
+        the expert bundle they fit (``leaf_experts``, or an
+        ``ExpertBundleEncoder`` given as ``encoder``), which forwards it to each
+        child; the single-encoder path and encoders nested inside wrappers keep
+        ``fit`` → ``transform``.
+        """
+        self.fit(X_num, y=y, sample_weight=sample_weight)
+        return self.transform(X_num)
+
     @abstractmethod
     def transform(self, X_num: np.ndarray) -> np.ndarray:
         """Map (n_rows, n_num_features) to a float64 (n_rows, output_dim) matrix."""

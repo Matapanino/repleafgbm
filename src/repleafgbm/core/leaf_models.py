@@ -644,6 +644,130 @@ class AdaptiveLeafModel(EmbeddedLinearLeafModel):
         self.leaf_gate = leaf_gate
 
 
+class SelectLeafModel(AdaptiveLeafModel):
+    """Choose one named embedding block or a constant independently per leaf.
+
+    Candidate blocks are supplied through the fit-local ``blocks`` attribute.
+    Each eligible block gets its own ridge solve and weighted LOO score; the
+    lowest-error block is retained only when it clears ``leaf_gate_margin``
+    against the constant. Non-selected weight columns remain exactly zero.
+    Rows with a zero Hessian (``sample_weight == 0``) have no Newton target and
+    are excluded from the candidate fits and LOO scores; the Newton constant
+    and the ``z_min``/``z_max`` bounds still cover every row of the leaf.
+    ``leaf_fit_precision`` is accepted for factory parity but inert: the
+    per-block solves are float64.
+    """
+
+    name = "select"
+    uses_embeddings = True
+    blocks: list[slice] | None = None
+
+    def __init__(
+        self,
+        l2: float = 1.0,
+        min_samples_linear: int = 10,
+        leaf_gate_margin: float = 0.01,
+        leaf_gate: str = "loo",
+        leaf_fit_precision: str = "float64",
+    ) -> None:
+        if leaf_gate != "loo":
+            raise ValueError(
+                "leaf_model='select' scores experts by weighted LOO only; "
+                f"leaf_gate={leaf_gate!r} is an adaptive-only diagnostic (use "
+                "'loo', or leaf_model='adaptive' for the insample baseline)"
+            )
+        super().__init__(
+            l2=l2,
+            min_samples_linear=min_samples_linear,
+            leaf_gate_margin=leaf_gate_margin,
+            leaf_gate=leaf_gate,
+            leaf_fit_precision=leaf_fit_precision,
+        )
+
+    def fit_leaves(
+        self,
+        leaf_rows: list[np.ndarray],
+        grad: np.ndarray,
+        hess: np.ndarray,
+        Z: np.ndarray | None,
+    ) -> LeafValues:
+        if Z is None:
+            raise ValueError("SelectLeafModel requires an embedding matrix Z")
+        if grad.ndim != 1 or hess.ndim != 1:
+            raise NotImplementedError(
+                "leaf_model='select' supports scalar regression and binary "
+                "classification only; use 'adaptive' or 'embedded_linear' "
+                "for vector leaves"
+            )
+        emb_dim = Z.shape[1]
+        blocks: list[slice] = []
+        for block in self.blocks or [slice(0, emb_dim)]:
+            start, stop, step = block.indices(emb_dim)
+            if step != 1 or stop <= start:
+                raise ValueError("select leaf blocks must be non-empty contiguous slices")
+            blocks.append(slice(start, stop))
+
+        n_leaves = len(leaf_rows)
+        bias = np.empty(n_leaves, dtype=np.float64)
+        weights = np.zeros((n_leaves, emb_dim), dtype=np.float64)
+        z_min = np.full((n_leaves, emb_dim), -np.inf, dtype=np.float64)
+        z_max = np.full((n_leaves, emb_dim), np.inf, dtype=np.float64)
+        selections: list[int | None] = []
+        for leaf, rows in enumerate(leaf_rows):
+            gl = grad[rows]
+            hl = hess[rows]
+            Zl = Z[rows]
+            bias[leaf] = _newton_constant(gl, hl, self.l2)
+            active = hl > 0.0
+            if active.all():
+                Zf = Zl
+            else:  # zero-weight rows: no Newton target, no ridge contribution
+                gl, hl, Zf = gl[active], hl[active], Zl[active]
+            n_active = hl.shape[0]
+            best_error = np.inf
+            best: tuple[int, float, np.ndarray] | None = None
+            e_const: float | None = None
+            for block_index, block in enumerate(blocks):
+                if n_active < max(self.min_samples_linear, block.stop - block.start + 2):
+                    continue
+                fit = _fit_block_loo(Zf[:, block], gl, hl, self.l2)
+                if fit is None:
+                    continue
+                if e_const is None:  # block-independent: score it once per leaf
+                    e_const = _constant_loo_error(gl, hl)
+                block_bias, block_weights, block_error = fit
+                if block_error < best_error:
+                    best_error = block_error
+                    best = (block_index, block_bias, block_weights)
+            if (
+                best is not None
+                and e_const is not None
+                and best_error < (1.0 - self.leaf_gate_margin) * e_const
+            ):
+                block_index, block_bias, block_weights = best
+                weights[leaf, blocks[block_index]] = block_weights
+                bias[leaf] = block_bias
+                z_min[leaf] = Zl.min(axis=0)
+                z_max[leaf] = Zl.max(axis=0)
+                selections.append(block_index)
+            else:
+                selections.append(None)
+        self.last_selections_ = selections
+        return LeafValues(bias=bias, weights=weights, z_min=z_min, z_max=z_max)
+
+    def fit_leaves_multiclass(
+        self,
+        leaf_rows_per_class: list[list[np.ndarray]],
+        grad: np.ndarray,
+        hess: np.ndarray,
+        Z: np.ndarray | None,
+    ) -> list[LeafValues]:
+        raise NotImplementedError(
+            "leaf_model='select' does not support multiclass pooled leaves; "
+            "use leaf_model='adaptive' or 'embedded_linear'"
+        )
+
+
 def _newton_constant(g: np.ndarray, h: np.ndarray, l2: float) -> float:
     """Optimal constant leaf value: -sum(g) / (sum(h) + l2)."""
     return float(-g.sum() / (h.sum() + l2))
@@ -734,17 +858,81 @@ def _loo_keep_linear(
     t = -gl / hl
     H, H0 = _loo_leverages(z_tilde, hl, M)
     resid = z_tilde @ w + (t_mean - t)  # fitted f_i - t_i
-    if insample:
-        e_lin = float(np.sum(hl * resid * resid))
-    else:
-        e_lin = float(np.sum(hl * (resid / (1.0 - H)) ** 2))
+    e_lin = _weighted_loo_error(hl, resid, H, insample)
     # Constant baseline: the intercept-only weighted-LOO error. (A demoted leaf
     # actually ships the l2-regularized Newton bias -g_sum/(h_sum+l2); the
     # O(l2/h_sum) gap only makes the constant look marginally better, i.e. it
     # biases the comparison toward demotion — the safe direction.)
-    resid0 = t_mean - t
-    e_const = float(np.sum(hl * (resid0 / (1.0 - H0)) ** 2))
+    e_const = _weighted_loo_error(hl, t_mean - t, H0, insample=False)
     return e_lin < (1.0 - margin) * e_const
+
+
+def _weighted_loo_error(
+    hl: np.ndarray, resid: np.ndarray, H: np.ndarray, insample: bool
+) -> float:
+    """Hessian-weighted leave-one-out error of an affine smoother.
+
+    ``resid`` are the in-sample residuals ``f_i - t_i`` and ``H`` the hat
+    diagonals from :func:`_loo_leverages`; ``insample=True`` drops the leverage
+    correction. Shared by the adaptive gate and the select candidates.
+    """
+    if insample:
+        return float(np.sum(hl * resid * resid))
+    return float(np.sum(hl * (resid / (1.0 - H)) ** 2))
+
+
+def _constant_loo_error(gl: np.ndarray, hl: np.ndarray) -> float:
+    """Intercept-only weighted LOO error (the constant arm of the select gate)."""
+    t = -gl / hl
+    h_sum = hl.sum()
+    t_mean = float((hl * t).sum() / h_sum)
+    H0 = np.minimum(hl / h_sum, 1.0 - _LOO_LEVERAGE_CAP)
+    return _weighted_loo_error(hl, t_mean - t, H0, insample=False)
+
+
+#: Rows per leverage solve in :func:`_fit_block_loo`: bounds the transient
+#: ``d x rows`` right-hand side for very large leaves (a 64-dim block at this
+#: chunk size is ~32 MB per solve instead of ``d x n_leaf``).
+_LOO_CHUNK_ROWS = 65536
+
+
+def _fit_block_loo(
+    Zb: np.ndarray, gl: np.ndarray, hl: np.ndarray, l2: float
+) -> tuple[float, np.ndarray, float] | None:
+    """Weighted ridge on one embedding block plus its weighted LOO error.
+
+    Same objective and centering as :func:`_fit_weighted_ridge`; the centered
+    system ``M`` is reused for the hat diagonals (:func:`_loo_leverages`
+    formula), which are solved in bounded row chunks. Returns ``(bias,
+    weights, E_loo)``, or ``None`` when the solve is singular or non-finite
+    (the block is then ineligible, like the singular fallback of the batched
+    path).
+    """
+    h_sum = hl.sum()
+    t = -gl / hl
+    z_mean = (hl[:, None] * Zb).sum(axis=0) / h_sum
+    t_mean = float((hl * t).sum() / h_sum)
+    z_tilde = Zb - z_mean
+    hz = z_tilde * hl[:, None]
+    M = hz.T @ z_tilde + l2 * np.eye(Zb.shape[1])
+    rhs = hz.T @ (t - t_mean)
+    del hz
+    try:
+        w = np.linalg.solve(M, rhs)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(w)):
+        return None
+    quad = np.empty(Zb.shape[0], dtype=np.float64)  # z_tilde_i^T M^-1 z_tilde_i
+    for start in range(0, Zb.shape[0], _LOO_CHUNK_ROWS):
+        chunk = z_tilde[start : start + _LOO_CHUNK_ROWS]
+        quad[start : start + _LOO_CHUNK_ROWS] = np.einsum(
+            "ij,ji->i", chunk, np.linalg.solve(M, chunk.T)
+        )
+    H = np.minimum(hl * quad + hl / h_sum, 1.0 - _LOO_LEVERAGE_CAP)
+    resid = z_tilde @ w + (t_mean - t)
+    bias = t_mean - float(w @ z_mean)
+    return bias, w, _weighted_loo_error(hl, resid, H, insample=False)
 
 
 @dataclass
@@ -820,8 +1008,10 @@ def make_leaf_model(
 
     ``raw_linear`` reuses the embedded-linear machinery; the model wrapper is
     responsible for supplying standardized raw numerical features as Z.
-    ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit
-    (``leaf_gate_margin``/``leaf_gate`` are ignored by the other models).
+    ``adaptive`` adds a per-leaf LOO gate on top of the embedded-linear fit;
+    ``select`` applies the same LOO gate per expert block (it shares
+    ``leaf_gate_margin`` but accepts only ``leaf_gate="loo"``; both arguments
+    are ignored by the other models).
     ``leaf_fit_precision`` only affects the wide-embedding (emb>128) BLAS leaf-fit
     of the linear models (and multi-output vector leaves); it is inert for
     ``constant``. Note the float64 default takes the *native* pass up to 256
@@ -848,7 +1038,15 @@ def make_leaf_model(
             leaf_gate=leaf_gate,
             leaf_fit_precision=leaf_fit_precision,
         )
+    if name == "select":
+        return SelectLeafModel(
+            l2=l2,
+            min_samples_linear=min_samples_linear,
+            leaf_gate_margin=leaf_gate_margin,
+            leaf_gate=leaf_gate,
+            leaf_fit_precision=leaf_fit_precision,
+        )
     raise ValueError(
         f"Unknown leaf_model {name!r}. Available: 'constant', 'embedded_linear', "
-        "'raw_linear', 'adaptive'"
+        "'raw_linear', 'adaptive', 'select'"
     )

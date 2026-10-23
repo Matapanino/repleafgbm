@@ -139,6 +139,36 @@ degenerate (e.g. PLR components constant within the leaf). Guards:
 `raw_linear` is the same fit with `z_i` replaced by standardized raw
 numerical features.
 
+## Expert selection leaf model
+
+Let a frozen expert bundle produce `Z = [Z_1 | ... | Z_K]`. In leaf `l`, expert
+`k` is eligible when `n_l >= max(min_samples_linear, d_k + 2)`. It independently
+solves the existing Hessian-weighted ridge problem on `Z_k`, with Newton targets
+`t_i = -g_i/h_i` and the same penalty `lambda`.
+
+For the fitted affine smoother, let `r_ki` be its residual and `H_ki` its hat
+diagonal, computed by the same centered-ridge leverage formula used by the
+adaptive leaf. The weighted LOO errors are
+
+```text
+E_k     = sum_i h_i [r_ki / (1 - H_ki)]^2
+E_const = sum_i h_i [r_0i / (1 - H_0i)]^2 .
+```
+
+Constant is an explicit candidate. Among eligible expert blocks, choose
+`k* = argmin_k E_k`, but write that block's coefficients only when
+
+```text
+E_k* < (1 - leaf_gate_margin) E_const .
+```
+
+The inequality is strict: an exact tie selects constant. All non-selected
+blocks are exactly zero in the full-width weight row, so ordinary prediction
+and serialization need no expert-specific branch. `z_min`/`z_max` retain their
+existing full embedding width. Choosing a minimum over many estimated errors
+introduces selection bias (winner's curse); the margin is a conservatism knob,
+not a multiple-comparison correction.
+
 ## Objectives
 
 **Regression (squared error).** `L = (1/2)(y - F)^2`, `g = F - y`, `h = 1`,

@@ -41,6 +41,7 @@ def infer_metadata(
     categorical_features: list[str] | None = None,
     numerical_features: list[str] | None = None,
     frequency_encoded_features: list[str] | None = None,
+    leaf_only_features: list[str | int] | None = None,
 ) -> FeatureMetadata:
     """Build FeatureMetadata from training input.
 
@@ -154,6 +155,7 @@ def infer_metadata(
         categorical_features=categorical_features,
         category_maps=category_maps,
         frequency_maps=frequency_maps,
+        leaf_only_features=leaf_only_features,
     )
 
 

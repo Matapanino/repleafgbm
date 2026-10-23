@@ -38,7 +38,7 @@ from repleafgbm.data.metadata import FeatureMetadata
 from repleafgbm.encoders import encoder_from_config
 from repleafgbm.encoders.base import BaseEncoder
 
-FORMAT_VERSION = 8
+FORMAT_VERSION = 9
 #: Older versions this build can still read. v1 lacks per-node
 #: ``missing_left`` (defaulted to True, the convention those trees used);
 #: v2 lacks categorical subset splits (``left_categories``), which v1/v2
@@ -55,8 +55,9 @@ FORMAT_VERSION = 8
 #: written only when the transform is non-identity — so squared-error /
 #: multiclass / multi-output-squared models keep writing v3/v5/v6 and load
 #: bit-for-bit on older builds; older models load with the identity transform;
-#: v8 identifies recursively composed routed/learned-reduction encoders.
-READABLE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8)
+#: v8 identifies recursively composed routed/learned-reduction encoders; v9
+#: adds leaf-only metadata and named expert bundles.
+READABLE_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
 
 def save_model_dir(
@@ -92,7 +93,11 @@ def save_model_dir(
         target_loc = getattr(booster, "target_loc_", 0.0)
         target_scale = getattr(booster, "target_scale_", 1.0)
         has_transform = bool(np.any(target_loc != 0.0) or np.any(target_scale != 1.0))
-        if encoder is not None and _encoder_uses_v8(encoder):
+        if metadata.leaf_only_features or (
+            encoder is not None and _encoder_uses_v9(encoder)
+        ):
+            version = 9
+        elif encoder is not None and _encoder_uses_v8(encoder):
             version = 8
         elif has_transform:
             version = 7
@@ -300,6 +305,14 @@ def _encoder_uses_v8(encoder: BaseEncoder) -> bool:
         return True
     base = getattr(encoder, "base", None)
     return isinstance(base, BaseEncoder) and _encoder_uses_v8(base)
+
+
+def _encoder_uses_v9(encoder: BaseEncoder) -> bool:
+    """Whether an encoder tree contains an expert bundle (v9 recursive schema)."""
+    if encoder.name == "expert_bundle":
+        return True
+    base = getattr(encoder, "base", None)
+    return isinstance(base, BaseEncoder) and _encoder_uses_v9(base)
 
 
 def _require_keys(obj: dict, keys: tuple[str, ...], file_name: str) -> None:

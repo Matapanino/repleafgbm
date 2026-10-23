@@ -9,6 +9,45 @@ data at prediction time so that train/predict preprocessing always matches.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+
+
+def resolve_leaf_only_features(feature_names: list[str], specs: Any) -> list[str]:
+    """Normalize leaf-only column specs (names or input-column indices) to names.
+
+    ``None`` means no leaf-only columns. A scalar string is rejected (iterating
+    one would silently select single-character column names), as are negative
+    or out-of-range indices, unknown names, and duplicates.
+    """
+    if specs is None:
+        return []
+    if isinstance(specs, (str, bytes)):
+        raise ValueError(
+            "leaf_only_features must be a list of column names or indices, "
+            "not a single string"
+        )
+    resolved: list[str] = []
+    for column in specs:
+        if isinstance(column, (int, np.integer)):
+            index = int(column)
+            if index < 0 or index >= len(feature_names):
+                raise ValueError(
+                    f"leaf_only_features index {index} is out of bounds for "
+                    f"{len(feature_names)} input columns"
+                )
+            name = feature_names[index]
+        else:
+            name = str(column)
+            if name not in feature_names:
+                raise ValueError(
+                    f"leaf_only_features column {name!r} not found in input columns"
+                )
+        if name in resolved:
+            raise ValueError("leaf_only_features must not contain duplicates")
+        resolved.append(name)
+    return resolved
 
 
 @dataclass
@@ -38,6 +77,9 @@ class FeatureMetadata:
     categorical_features: list[str]
     category_maps: dict[str, list[str]] = field(default_factory=dict)
     frequency_maps: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: Leaf-only column specs (names or input-column indices, or None);
+    #: normalized to names in ``__post_init__``.
+    leaf_only_features: list[str | int] | None = field(default_factory=list)
 
     def __post_init__(self) -> None:
         known = set(self.numerical_features) | set(self.categorical_features)
@@ -58,6 +100,24 @@ class FeatureMetadata:
                 "numerical (they are routed with threshold splits), not "
                 "categorical."
             )
+        self.leaf_only_features = resolve_leaf_only_features(
+            self.feature_names, self.leaf_only_features
+        )
+        categorical_leaf_only = [
+            f for f in self.leaf_only_features if f in set(self.categorical_features)
+        ]
+        if categorical_leaf_only:
+            raise ValueError(
+                f"leaf-only features {categorical_leaf_only} are categorical; "
+                "leaf-only columns must be finite numerical columns"
+            )
+        if self.leaf_only_features and len(self.leaf_only_features) == len(
+            self.feature_names
+        ):
+            raise ValueError(
+                "leaf_only_features cannot list every input column; at least one "
+                "column must stay available to tree routing"
+            )
 
     @property
     def n_features(self) -> int:
@@ -65,8 +125,40 @@ class FeatureMetadata:
 
     @property
     def numerical_indices(self) -> list[int]:
-        """Column indices of numerical features in the raw feature matrix."""
-        return [i for i, f in enumerate(self.feature_names) if f in set(self.numerical_features)]
+        """Ordered encoder-input indices: regular numerical, then leaf-only."""
+        position = {f: i for i, f in enumerate(self.feature_names)}
+        return [position[f] for f in self.ordered_numerical_features]
+
+    @property
+    def ordered_numerical_features(self) -> list[str]:
+        """Encoder block names, with leaf-only columns appended as declared."""
+        leaf_only = set(self.leaf_only_features)
+        regular = [
+            f
+            for f in self.feature_names
+            if f in set(self.numerical_features) and f not in leaf_only
+        ]
+        return regular + list(self.leaf_only_features)
+
+    @property
+    def routing_feature_names(self) -> list[str]:
+        """Input columns available to tree split search, in raw order."""
+        leaf_only = set(self.leaf_only_features)
+        return [f for f in self.feature_names if f not in leaf_only]
+
+    @property
+    def routing_indices(self) -> list[int]:
+        """Column indices of features available to tree split search."""
+        leaf_only = set(self.leaf_only_features)
+        return [i for i, f in enumerate(self.feature_names) if f not in leaf_only]
+
+    @property
+    def routing_categorical_indices(self) -> list[int]:
+        """Categorical indices relative to the routing feature matrix."""
+        categorical = set(self.categorical_features)
+        return [
+            i for i, f in enumerate(self.routing_feature_names) if f in categorical
+        ]
 
     @property
     def categorical_indices(self) -> list[int]:
@@ -84,6 +176,8 @@ class FeatureMetadata:
         # format that older builds (format_version 3) can read.
         if self.frequency_maps:
             d["frequency_maps"] = {k: dict(v) for k, v in self.frequency_maps.items()}
+        if self.leaf_only_features:
+            d["leaf_only_features"] = list(self.leaf_only_features)
         return d
 
     @classmethod
@@ -94,4 +188,5 @@ class FeatureMetadata:
             categorical_features=list(d["categorical_features"]),
             category_maps={k: list(v) for k, v in d.get("category_maps", {}).items()},
             frequency_maps={k: dict(v) for k, v in d.get("frequency_maps", {}).items()},
+            leaf_only_features=list(d.get("leaf_only_features", [])),
         )
