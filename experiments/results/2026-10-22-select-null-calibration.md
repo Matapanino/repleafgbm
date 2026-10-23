@@ -1,5 +1,7 @@
 # `leaf_model="select"` null-selection calibration
 
+> 対象機能 `leaf_model="select"` は repleafgbm 1.14.0 で削除した（ADR 0012）。生成スクリプト `experiments/select_null_calibration.py` も削除済みのため、再実行は 1.13.0 の tree で行う。
+
 ## 要約（10行）
 
 1. 実行モードは **full**、学習行数は [2000, 20000]、seed は [0, 1, 2, 3, 4]。
