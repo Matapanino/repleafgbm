@@ -34,7 +34,8 @@ at 1.0.0.
   `RepLeafClassifier`, `RepLeafDataset`, `make_metric`, `Huber`, `Quantile`,
   `PoissonRegression`, `__version__`.
 - The constructor hyperparameters of `RepLeafRegressor` / `RepLeafClassifier`
-  (names, defaults, semantics) — i.e. `BaseRepLeafModel.__init__`.
+  (names, defaults, semantics) — i.e. `BaseRepLeafModel.__init__`, except the
+  experimental items listed below.
 - The fitted attributes documented as public: `feature_importances_`,
   `feature_names_in_`, `n_features_in_`, `best_iteration_`, `best_score_`,
   `classes_`, `n_classes_`, `evals_result_`, and the methods `fit`, `predict`,
@@ -54,6 +55,8 @@ at 1.0.0.
 
 ### Not covered (may change in any release)
 
+- The experimental MatGBM composition APIs: `leaf_only_features`,
+  `leaf_experts`, `leaf_model="select"`, and the `target_encoding` encoder.
 - The experimental space-encoder registry names (`pca`, `quantile`, `spline`,
   `rff`, `row_stats`, `prototype`) and their parameters/defaults. Their
   defaults have not been benchmarked and may change before stabilization.
@@ -77,5 +80,5 @@ in the next MAJOR.
 - The README instability warning is replaced by this policy (Phase 26).
 - New estimator parameters must have defaults that preserve existing behavior.
 - Serialization changes follow the existing additive-format precedent
-  (v1→v6 all readable; see `docs/serialization.md`).
+  (v1→v9 all readable; see `docs/serialization.md`).
 - PyPI publication (Phase 27) is unblocked: the API is now a contract.

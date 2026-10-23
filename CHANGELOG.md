@@ -7,6 +7,14 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-23
+
+Feature release: experimental leaf-only features, named frozen expert bundles,
+per-leaf expert selection, fold-safe target encoding, and a NumPy-only space
+encoder bank. Existing defaults are unchanged, and model format v9 is written
+only when leaf-only metadata or expert bundles are used. The optional
+`repleafgbm-native` extension moves from 0.3.0 to 0.3.1.
+
 ### Added
 
 - Added `repleafgbm-native` 0.3.1 with an optional rayon-parallel fused
