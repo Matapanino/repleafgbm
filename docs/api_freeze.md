@@ -42,15 +42,16 @@ hyperparameters, the documented fitted attributes/methods, the registered
 stable encoder names plus objective/metric names, the serialization format, and
 `check_estimator` conformance.
 
-Experimental (not SemVer-gated): the `pca`, `quantile`, `spline`, `rff`,
-`row_stats`, and `prototype` encoder registry names and their unbenchmarked,
+Experimental (not SemVer-gated): `leaf_only_features`, `leaf_experts`,
+`leaf_model="select"`, and the `target_encoding`, `pca`, `quantile`, `spline`,
+`rff`, `row_stats`, and `prototype` encoder registry names and their
 changeable defaults; `repleafgbm.external`; the `router_extraction` estimators;
 `backends` / `repleafgbm_native` internals; `core` internals; private names;
 and exact message text.
 
 ## Serialization
 
-Format is at `format_version = 8` with the full v1→v8 read ladder tested
+Format is at `format_version = 9` with the full v1→v9 read ladder tested
 (`docs/serialization.md`, `tests/test_serialization.py`). Declared **stable**:
 within a major version a model saved by version X loads in every version ≥ X;
 format changes bump the version and ship a migration test.

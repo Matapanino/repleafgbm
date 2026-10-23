@@ -12,7 +12,7 @@ from repleafgbm.data import RepLeafDataset
 from repleafgbm.encoders import LeafExpert
 from repleafgbm.regressor import RepLeafRegressor
 
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 __all__ = [
     "RepLeafRegressor",
