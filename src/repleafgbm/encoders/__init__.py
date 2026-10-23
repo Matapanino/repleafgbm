@@ -3,9 +3,7 @@
 Two families implement :class:`~repleafgbm.encoders.base.BaseEncoder`:
 
 * **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross``,
-  ``target_encoding``, plus the experimental space bank (``pca``,
-  ``quantile``, ``spline``, ``rff``, ``row_stats``, ``prototype``) — fitted
-  once and frozen.
+  ``target_encoding`` — fitted once and frozen.
 * **Pretrained-then-frozen** (optional ``[torch]`` extra): ``torch_periodic``,
   ``torch_plr``, ``torch_periodic_plr``, ``torch_mlp`` — parameters are
   supervised-pretrained on the initial Newton residual and then frozen into
@@ -14,7 +12,10 @@ Two families implement :class:`~repleafgbm.encoders.base.BaseEncoder`:
 
 The encoder is frozen for all of boosting (see docs/math.md); joint/alternating
 encoder training is a roadmap item, not implemented here. New encoders register
-in ``_ENCODER_REGISTRY`` below.
+in ``_ENCODER_REGISTRY`` below. The experimental space bank of 1.13.0 (``pca``,
+``quantile``, ``spline``, ``rff``, ``row_stats``, ``prototype``) was removed in
+1.14.0 (docs/adr/0013-remove-space-encoders.md); naming one raises a removal
+error instead of the generic unknown-encoder error.
 """
 
 from __future__ import annotations
@@ -25,15 +26,9 @@ from repleafgbm.encoders.base import BaseEncoder
 from repleafgbm.encoders.bundle import ExpertBundleEncoder, LeafExpert
 from repleafgbm.encoders.cross import CrossInteractionEncoder
 from repleafgbm.encoders.identity import IdentityEncoder
-from repleafgbm.encoders.pca import PCAEncoder
 from repleafgbm.encoders.periodic import PeriodicEncoder
 from repleafgbm.encoders.plr import SimplePLREncoder
 from repleafgbm.encoders.projection import RandomProjectionEncoder
-from repleafgbm.encoders.prototype import PrototypeDistanceEncoder
-from repleafgbm.encoders.quantile import QuantileEncoder
-from repleafgbm.encoders.rff import RandomFourierEncoder
-from repleafgbm.encoders.row_stats import RowStatsEncoder
-from repleafgbm.encoders.spline import SplineEncoder
 from repleafgbm.encoders.subset import ColumnSubsetEncoder
 from repleafgbm.encoders.target_encoding import TargetEncodingEncoder
 from repleafgbm.encoders.target_reduction import TargetCorrelationEncoder
@@ -49,12 +44,6 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "plr": SimplePLREncoder,
     "periodic": PeriodicEncoder,
     "cross": CrossInteractionEncoder,
-    "pca": PCAEncoder,
-    "quantile": QuantileEncoder,
-    "spline": SplineEncoder,
-    "rff": RandomFourierEncoder,
-    "row_stats": RowStatsEncoder,
-    "prototype": PrototypeDistanceEncoder,
     "target_encoding": TargetEncodingEncoder,
     "column_subset": ColumnSubsetEncoder,
     "expert_bundle": ExpertBundleEncoder,
@@ -65,6 +54,23 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "torch_mlp": TorchMLPEncoder,
 }
 
+#: Registry names removed in 1.14.0 (ADR 0013). Naming one, directly or through
+#: a saved model, raises :class:`_RemovedEncoderError` instead of the generic
+#: unknown-encoder error.
+_REMOVED_ENCODERS = frozenset({"pca", "quantile", "spline", "rff", "row_stats", "prototype"})
+
+
+class _RemovedEncoderError(ValueError):
+    """An encoder name that repleafgbm 1.13.x registered and 1.14.0 removed."""
+
+    def __init__(self, name: str) -> None:
+        self.encoder_name = name
+        super().__init__(
+            f"Encoder {name!r} was removed in repleafgbm 1.14.0 "
+            "(docs/adr/0013-remove-space-encoders.md). Choose one of the "
+            f"remaining encoders: {sorted(_ENCODER_REGISTRY)}"
+        )
+
 
 def make_encoder(name: str, _default_random_state: int | None = None, **kwargs) -> BaseEncoder:
     """Instantiate a registered encoder by name (e.g. encoder="plr").
@@ -73,6 +79,8 @@ def make_encoder(name: str, _default_random_state: int | None = None, **kwargs) 
     "periodic") when the caller did not pass ``random_state`` explicitly;
     encoders without that argument ignore it.
     """
+    if name in _REMOVED_ENCODERS:
+        raise _RemovedEncoderError(name)
     if name not in _ENCODER_REGISTRY:
         raise ValueError(
             f"Unknown encoder {name!r}. Available encoders: {sorted(_ENCODER_REGISTRY)}"
@@ -134,12 +142,6 @@ __all__ = [
     "SimplePLREncoder",
     "PeriodicEncoder",
     "CrossInteractionEncoder",
-    "PCAEncoder",
-    "QuantileEncoder",
-    "SplineEncoder",
-    "RandomFourierEncoder",
-    "RowStatsEncoder",
-    "PrototypeDistanceEncoder",
     "TargetEncodingEncoder",
     "TorchPeriodicEncoder",
     "TorchPLREncoder",
