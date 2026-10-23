@@ -77,8 +77,8 @@ class BaseRepLeafModel(BaseEstimator):
             features route as ordered thresholds, not subset splits, and
             multi-output targets are unsupported).
         min_samples_leaf: Minimum rows per leaf for a split to be valid.
-        leaf_model: "constant", "embedded_linear", "raw_linear", "adaptive",
-            or "select".
+        leaf_model: "constant", "embedded_linear", "raw_linear", or "adaptive"
+            ("select" was removed in 1.14.0; see docs/adr/0012-remove-leaf-select.md).
             Defaults to "embedded_linear"; on unknown real-world tabular data the
             OpenML benchmark (docs/roadmap.md, Phase 25) found "constant" the
             honest practical choice — embedded leaves help mainly on
@@ -90,17 +90,13 @@ class BaseRepLeafModel(BaseEstimator):
             noise — a robust per-leaf hedge, not a statistically separated
             accuracy gain (it is per-leaf model *selection*, not jointly-trained
             leaf embeddings). The default is kept for backwards compatibility and
-            may change only in a major release. For "select", an
-            ExpertBundleEncoder passed directly through ``encoder`` exposes each
-            bundle block as a candidate; any single encoder supplies one block,
-            making the choice equivalent to adaptive's constant-vs-linear gate.
-        leaf_gate_margin: For leaf_model="adaptive" and "select" (inert otherwise). A
+            may change only in a major release.
+        leaf_gate_margin: For leaf_model="adaptive" only (inert otherwise). A
             leaf keeps its linear fit only if its weighted leave-one-out error
             beats the constant leaf's by this relative margin: 0.0 keeps any
             non-worse linear fit, larger values demand a larger held-out
             improvement. Must be >= 0. Default 0.01.
-        leaf_gate: For leaf_model="adaptive" only ("select" always scores by
-            weighted LOO and rejects "insample"). "loo" (default,
+        leaf_gate: For leaf_model="adaptive" only. "loo" (default,
             leverage-corrected held-out error) or "insample" (drops the leverage
             correction — a deliberately weak baseline for diagnostics).
         leaf_fit_precision: "float64" (default) or "float32_gram". A perf knob for
@@ -110,8 +106,7 @@ class BaseRepLeafModel(BaseEstimator):
             those reductions, ~15% faster wide-emb fit; also covers multi-output
             vector leaves) while the solve stays float64. The "float64" default
             itself stays on the fast native kernel up to 256 dims. Inert for
-            "constant", for "select" (float64 per-block solves), and for narrow
-            embeddings (emb_dim <= 128). Trade-off:
+            "constant" and for narrow embeddings (emb_dim <= 128). Trade-off:
             "float32_gram" is allclose-not-bitwise and not guaranteed
             reproducible across BLAS vendors/platforms; "float64" is the
             reproducible, NumPy<->Rust bitwise-parity default. Opt-in only.
@@ -125,8 +120,8 @@ class BaseRepLeafModel(BaseEstimator):
         leaf_experts: Named frozen encoder blocks. Each dict/LeafExpert provides
             ``name``, ``encoder``, optional ``columns`` in the ordered numerical
             block, and optional ``encoder_params``. Mutually exclusive with a
-            non-default ``encoder`` or top-level ``encoder_params``; constant is
-            an implicit select candidate.
+            non-default ``encoder`` or top-level ``encoder_params``; the expert
+            name "constant" is reserved.
         leaf_only_features: Numerical names or input-column indices excluded
             from tree routing and appended, in declared order, to the encoder's
             ordered numerical block. Values must be finite, and at least one
@@ -402,7 +397,6 @@ class BaseRepLeafModel(BaseEstimator):
             leaf_fit_precision=self.leaf_fit_precision,
         )
         self._validate_leaf_expert_options()
-        self._check_select_target(dataset)
         train = self._fit_leaf_encoder(dataset, leaf_model, profiler)
 
         eval_sets = self._prepare_eval_sets(eval_set)
@@ -444,8 +438,6 @@ class BaseRepLeafModel(BaseEstimator):
         )
         self.evals_result_ = self.booster_.evals_result_
         self.linear_leaf_fraction_ = self._linear_leaf_fraction()
-        if self.leaf_model == "select":
-            self._set_expert_selection_diagnostics()
         if profiler is not None:
             #: Per-phase fit wall-clock seconds (only when profiling is enabled);
             #: ``_predict_raw`` adds a "predict" entry. Internal/benchmark aid.
@@ -759,24 +751,13 @@ class BaseRepLeafModel(BaseEstimator):
         self.leaf_embedding_dim_ = encoder.output_dim
         return encoder
 
-    def _check_select_target(self, dataset: RepLeafDataset) -> None:
-        """``select`` is scalar-only (regression / binary); shared with router extraction."""
-        if self.leaf_model == "select" and (
-            dataset.y.ndim != 1 or getattr(self, "n_classes_", 2) > 2
-        ):
-            raise NotImplementedError(
-                "leaf_model='select' supports scalar regression and binary "
-                "classification only; use leaf_model='adaptive' or "
-                "'embedded_linear' for multi-output or multiclass targets"
-            )
-
     def _fit_leaf_encoder(
         self,
         dataset: RepLeafDataset,
         leaf_model: BaseLeafModel,
         profiler: PhaseProfiler | None = None,
     ) -> RepLeafDataset:
-        """Fit the leaf encoder and wire select blocks; return the training dataset.
+        """Fit the leaf encoder; return the training dataset.
 
         Shared by :meth:`fit` and router extraction. ``fit_transform_train``
         may differ from ``transform`` (for example, an OOF target encoding),
@@ -797,13 +778,6 @@ class BaseRepLeafModel(BaseEstimator):
                 self.leaf_embedding_input_dim_ = 0
                 self.leaf_embedding_dim_ = 0
                 self.leaf_reduction_ = "none"
-        if self.leaf_model == "select":
-            if isinstance(self.encoder_, ExpertBundleEncoder):
-                leaf_model.blocks = self.encoder_.block_slices
-                leaf_model.expert_names = self.encoder_.expert_names
-            else:
-                leaf_model.blocks = [slice(0, self.encoder_.output_dim)]
-                leaf_model.expert_names = ["linear"]
         return train
 
     def _validate_leaf_expert_options(self) -> None:
@@ -815,10 +789,9 @@ class BaseRepLeafModel(BaseEstimator):
         """
         if self.leaf_experts is None:
             return
-        if self.leaf_model not in ("embedded_linear", "adaptive", "select"):
+        if self.leaf_model not in ("embedded_linear", "adaptive"):
             raise ValueError(
-                "leaf_experts requires leaf_model='embedded_linear', "
-                "'adaptive', or 'select'"
+                "leaf_experts requires leaf_model='embedded_linear' or 'adaptive'"
             )
         if self.encoder not in (None, "identity") or self.encoder_params is not None:
             raise ValueError(
@@ -939,34 +912,6 @@ class BaseRepLeafModel(BaseEstimator):
             if value.weights.shape[1] > 0
         )
         return linear / max(total, 1)
-
-    def _set_expert_selection_diagnostics(self) -> None:
-        """Publish counts for the selected block in every prediction-used leaf."""
-        if isinstance(self.encoder_, ExpertBundleEncoder):
-            names = self.encoder_.expert_names
-            blocks = self.encoder_.block_slices
-        else:
-            names = ["linear"]
-            blocks = [slice(0, self.encoder_.output_dim)]
-        counts = {"constant": 0, **{name: 0 for name in names}}
-        n_values = len(self.booster_.leaf_values_)
-        if self.booster_.best_iteration_ is not None:
-            n_values = self.booster_.best_iteration_ * getattr(
-                self.booster_, "n_classes", 1
-            )
-        for values in self.booster_.leaf_values_[:n_values]:
-            for row in values.weights:
-                selected = None
-                for name, block in zip(names, blocks):
-                    if np.any(row[block] != 0.0):
-                        selected = name
-                        break
-                counts[selected or "constant"] += 1
-        total = sum(counts.values())
-        self.expert_selection_counts_ = counts
-        self.expert_selection_fraction_ = {
-            name: count / max(total, 1) for name, count in counts.items()
-        }
 
     def _pretrain_target(
         self, dataset: RepLeafDataset, sample_weight: np.ndarray | None = None
@@ -1210,6 +1155,14 @@ class BaseRepLeafModel(BaseEstimator):
                 f"Model directory contains a {parts['model_class']}, "
                 f"but load_model was called on {cls.__name__}"
             )
+        if parts["config"].get("leaf_model") == "select":
+            raise ValueError(
+                f"The model at {path} was trained with leaf_model='select', which "
+                "was removed in repleafgbm 1.14.0 "
+                "(docs/adr/0012-remove-leaf-select.md). Load it with repleafgbm "
+                "1.13.x, or retrain with leaf_model='embedded_linear' and fixed "
+                "leaf_experts blocks (or leaf_model='adaptive')."
+            )
         init_params = set(inspect.signature(cls.__init__).parameters) - {"self"}
         kwargs = {k: v for k, v in parts["config"].items() if k in init_params}
         model = cls(**kwargs)
@@ -1245,8 +1198,6 @@ class BaseRepLeafModel(BaseEstimator):
                 model.leaf_embedding_input_dim_ = model.encoder_.output_dim
                 model.leaf_reduction_ = "none"
         model.linear_leaf_fraction_ = model._linear_leaf_fraction()
-        if model.leaf_model == "select":
-            model._set_expert_selection_diagnostics()
         model._restore_extra_config(parts["config"])
         return model
 

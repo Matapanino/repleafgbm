@@ -176,7 +176,7 @@ def test_classifier_target_encoding_expert_fit_predict_save_load(tmp_path):
         n_estimators=5,
         num_leaves=5,
         min_samples_leaf=12,
-        leaf_model="select",
+        leaf_model="embedded_linear",
         leaf_experts=[
             {
                 "name": "te",
@@ -196,7 +196,7 @@ def test_classifier_target_encoding_expert_fit_predict_save_load(tmp_path):
 
     before = model.predict_proba(X[:20])
     assert before.shape == (20, 2)
-    assert "te" in model.expert_selection_counts_
+    assert model.encoder_.expert_names == ["te"]
     path = tmp_path / "te-model"
     model.save_model(path)
     restored = RepLeafClassifier.load_model(path)

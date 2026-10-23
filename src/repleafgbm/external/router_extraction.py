@@ -207,7 +207,6 @@ class _RouterExtractionMixin:
         self._validate_leaf_expert_options()
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
-        self._check_select_target(dataset)
         self.metadata_ = dataset.metadata
         self.n_features_in_ = dataset.n_features
         self.feature_names_in_ = np.asarray(dataset.feature_names, dtype=object)
@@ -300,8 +299,6 @@ class _RouterExtractionMixin:
         )
         self.evals_result_ = self.booster_.evals_result_
         self.linear_leaf_fraction_ = self._linear_leaf_fraction()
-        if self.leaf_model == "select":
-            self._set_expert_selection_diagnostics()
         return self
 
     def _serializable_config(self, config: dict) -> dict:
