@@ -33,12 +33,11 @@ block and every other coefficient is zero.
 - `BaseEncoder.fit_transform_train` defaults to the historical
   `fit`-then-`transform` behavior. A supervised encoder may override it with
   cross-fitted/ordered training rows while retaining full-data state for eval
-  and prediction. Only the bundle path seeds this returned matrix into the
-  embedding cache of a private training view of the dataset, so the caller's
-  dataset object still yields ``transform`` output when reused as an eval set
-  or as predict input; the single-encoder lifecycle is unchanged, and an
-  encoder nested inside a wrapper (e.g. a projection around a bundle) also
-  keeps ``fit`` → ``transform``.
+  and prediction. The estimator seeds this returned matrix for both direct
+  encoders and bundles into the embedding cache of a private training view;
+  the caller's dataset still yields ``transform`` output when reused for eval
+  or prediction. Any dimensionality reduction is fitted from and applied to
+  the same training representation.
 - `leaf_model="select"` treats constant plus every expert block as candidates.
   A directly supplied `encoder=ExpertBundleEncoder(...)` also exposes every
   bundle block as a separate candidate. A single non-bundle encoder supplies
@@ -69,9 +68,14 @@ known generality debt, not evidence that LOO is unbiased after selection.
 Version 1 is scalar-only: regression and binary classification are supported;
 multiclass pooled leaves and multi-output vector leaves raise
 `NotImplementedError` and direct users to `adaptive` or `embedded_linear`.
-No OOF target encoder, ICL leaf, automatic expert generation, selection-bias
-correction, or native selector kernel is implemented. The selector's leaf loop
-is NumPy; NumPy/Rust split backends remain untouched. At least one input
-column must stay routable: a root-only router whose columns are all leaf-only
-would need zero-feature support in the splitter and sampler, which this change
-leaves untouched.
+The follow-up `target_encoding` expert uses this cache seam to give training
+rows seeded K-fold OOF statistics while retaining full-training tables for eval
+and prediction. It supports scalar pretraining targets, exact/rounded/quantile-bin
+keys, empirical-Bayes smoothing, and ordered rare-key backoff. Its multiclass
+and multi-output behavior remains deliberately unimplemented in version 1.
+
+No ICL leaf, automatic expert generation, selection-bias correction, or native
+selector kernel is implemented. The selector's leaf loop is NumPy; NumPy/Rust
+split backends remain untouched. At least one input column must stay routable:
+a root-only router whose columns are all leaf-only would need zero-feature
+support in the splitter and sampler, which this change leaves untouched.

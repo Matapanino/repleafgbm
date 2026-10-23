@@ -3,6 +3,9 @@
 Skipped when the optional ``repleafgbm_native`` extension is not built.
 """
 
+import importlib
+import importlib.util
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -14,8 +17,27 @@ from repleafgbm.backends import (
     make_split_backend,
 )
 from repleafgbm.backends.base import SplitCandidate
+from repleafgbm.core import leaf_models
+from repleafgbm.core.leaf_models import SelectLeafModel
 
-pytest.importorskip("repleafgbm_native", reason="Rust extension not built")
+_NATIVE_SPEC = importlib.util.find_spec("repleafgbm_native")
+pytestmark = pytest.mark.skipif(_NATIVE_SPEC is None, reason="Rust extension not built")
+_NATIVE_HAS_SELECT = (
+    _NATIVE_SPEC is not None
+    and hasattr(importlib.import_module("repleafgbm_native"), "leaf_select_stats")
+)
+
+
+class _SelectStatsCallCounter:
+    """Minimal native proxy that proves select parity tests use the fast path."""
+
+    def __init__(self, native):
+        self._native = native
+        self.calls = 0
+
+    def leaf_select_stats(self, *args, **kwargs):
+        self.calls += 1
+        return self._native.leaf_select_stats(*args, **kwargs)
 
 
 @pytest.fixture
@@ -59,6 +81,144 @@ def test_histogram_parity_parallel_branch():
     h_np = NumPySplitBackend().build_histograms(binned, rows, grad, hess, n_bins_max)
     h_rs = RustSplitBackend().build_histograms(binned, rows, grad, hess, n_bins_max)
     np.testing.assert_array_equal(h_np, h_rs)
+
+
+@pytest.mark.skipif(
+    not _NATIVE_HAS_SELECT, reason="native extension predates leaf_select_stats"
+)
+@pytest.mark.parametrize("block_dim", [3, 8, 16])
+def test_leaf_select_stats_matches_numpy(monkeypatch, block_dim):
+    """Fused ridge + weighted LOO preserves every select-leaf decision/output."""
+    rng = np.random.default_rng(20261023 + block_dim)
+    n, n_leaves = 6000, 7
+    Z = rng.normal(size=(n, 3 * block_dim))
+    leaf_id = rng.integers(0, n_leaves, size=n)
+    leaf_rows = [np.flatnonzero(leaf_id == leaf).astype(np.int64) for leaf in range(n_leaves)]
+    signal = np.empty(n)
+    for leaf, rows in enumerate(leaf_rows):
+        block = leaf % 3
+        signal[rows] = 1.7 * Z[rows, block * block_dim] - 0.6 * Z[
+            rows, block * block_dim + min(1, block_dim - 1)
+        ]
+    target = rng.binomial(1, 1.0 / (1.0 + np.exp(-signal)))
+    grad = np.full(n, 0.5) - target
+    hess = np.full(n, 0.25)
+    # Exercise the active-row filter without changing the Newton constant.
+    hess[::97] = 0.0
+    grad[::97] = 0.0
+    blocks = [slice(i * block_dim, (i + 1) * block_dim) for i in range(3)]
+
+    def fit(native):
+        monkeypatch.setattr(leaf_models, "_native", native)
+        model = SelectLeafModel(l2=0.7, min_samples_linear=12, leaf_gate_margin=0.01)
+        model.blocks = blocks
+        values = model.fit_leaves(leaf_rows, grad, hess, Z)
+        return model.last_selections_, values
+
+    expected_selection, expected = fit(None)
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    actual_selection, actual = fit(native)
+    assert native.calls == 1
+    assert actual_selection == expected_selection
+    np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(actual.z_min, expected.z_min, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(actual.z_max, expected.z_max, rtol=0.0, atol=0.0)
+
+
+@pytest.mark.skipif(
+    not _NATIVE_HAS_SELECT, reason="native extension predates leaf_select_stats"
+)
+def test_leaf_select_stats_large_offset_matches_numpy(monkeypatch):
+    """Centered native ridge statistics stay stable for large feature offsets."""
+    rng = np.random.default_rng(20261024)
+    n = 2000
+    centered = rng.normal(size=(n, 2))
+    Z = np.ascontiguousarray(1e8 + centered)
+    target = 2.0 * centered[:, 0] - centered[:, 1] + rng.normal(scale=0.05, size=n)
+    grad = np.ascontiguousarray(-target)
+    hess = np.ones(n, dtype=np.float64)
+    leaf_rows = [np.arange(n, dtype=np.int64)]
+
+    def fit(native):
+        monkeypatch.setattr(leaf_models, "_native", native)
+        model = SelectLeafModel(l2=0.5, min_samples_linear=10, leaf_gate_margin=0.01)
+        model.blocks = [slice(0, 2)]
+        values = model.fit_leaves(leaf_rows, grad, hess, Z)
+        return model.last_selections_, values
+
+    expected_selection, expected = fit(None)
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    actual_selection, actual = fit(native)
+    assert native.calls == 1
+    assert actual_selection == expected_selection
+    np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
+
+
+@pytest.mark.skipif(
+    not _NATIVE_HAS_SELECT, reason="native extension predates leaf_select_stats"
+)
+def test_leaf_select_stats_fallback_tie_and_determinism(monkeypatch):
+    """Small leaves stay constant, exact block ties choose first, repeats are exact."""
+    rng = np.random.default_rng(44)
+    n = 5000
+    base = rng.normal(size=(n, 2))
+    Z = np.ascontiguousarray(np.column_stack([base, base]))
+    target = (base[:, 0] + 0.1 * rng.normal(size=n) > 0.0).astype(float)
+    grad = np.ascontiguousarray(0.5 - target)
+    hess = np.full(n, 0.25)
+    # Leaf zero is deliberately below max(min_samples_linear, d + 2).
+    leaf_rows = [np.arange(3, dtype=np.int64), np.arange(3, n, dtype=np.int64)]
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    monkeypatch.setattr(leaf_models, "_native", native)
+
+    def fit():
+        model = SelectLeafModel(l2=1.0, min_samples_linear=10, leaf_gate_margin=0.0)
+        model.blocks = [slice(0, 2), slice(2, 4)]
+        values = model.fit_leaves(leaf_rows, grad, hess, Z)
+        return model.last_selections_, values
+
+    selection_a, first = fit()
+    selection_b, second = fit()
+    assert native.calls == 2
+    assert selection_a == selection_b == [None, 0]
+    np.testing.assert_array_equal(first.bias, second.bias)
+    np.testing.assert_array_equal(first.weights, second.weights)
+    np.testing.assert_array_equal(first.z_min, second.z_min)
+    np.testing.assert_array_equal(first.z_max, second.z_max)
+
+
+@pytest.mark.skipif(
+    not _NATIVE_HAS_SELECT, reason="native extension predates leaf_select_stats"
+)
+def test_leaf_select_stats_singular_block_falls_through(monkeypatch):
+    """A numerically failed candidate is skipped without hiding a valid block."""
+    rng = np.random.default_rng(8)
+    n = 2000
+    raw = rng.normal(size=(n, 4))
+    Z = np.ascontiguousarray(
+        np.column_stack([raw[:, 0], raw[:, 0], raw[:, 2], raw[:, 3]])
+    )
+    target = 2.0 * raw[:, 2] - raw[:, 3] + rng.normal(scale=0.1, size=n)
+    grad = np.ascontiguousarray(-target)
+    hess = np.ones(n)
+    rows = [np.arange(n, dtype=np.int64)]
+
+    def fit(native):
+        monkeypatch.setattr(leaf_models, "_native", native)
+        model = SelectLeafModel(l2=0.0, min_samples_linear=5, leaf_gate_margin=0.0)
+        model.blocks = [slice(0, 2), slice(2, 4)]
+        values = model.fit_leaves(rows, grad, hess, Z)
+        return model.last_selections_, values
+
+    expected_selection, expected = fit(None)
+    native = _SelectStatsCallCounter(importlib.import_module("repleafgbm_native"))
+    actual_selection, actual = fit(native)
+    assert native.calls == 1
+    assert actual_selection == expected_selection == [1]
+    np.testing.assert_allclose(actual.bias, expected.bias, rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(actual.weights, expected.weights, rtol=1e-9, atol=1e-11)
 
 
 def test_split_parity_numeric_and_categorical(node_data):

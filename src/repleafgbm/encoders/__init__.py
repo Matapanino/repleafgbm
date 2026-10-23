@@ -2,9 +2,10 @@
 
 Two families implement :class:`~repleafgbm.encoders.base.BaseEncoder`:
 
-* **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross``, plus
-  the experimental space bank (``pca``, ``quantile``, ``spline``, ``rff``,
-  ``row_stats``, ``prototype``) — fitted once and frozen.
+* **Fixed** (pure NumPy): ``identity``, ``plr``, ``periodic``, ``cross``,
+  ``target_encoding``, plus the experimental space bank (``pca``,
+  ``quantile``, ``spline``, ``rff``, ``row_stats``, ``prototype``) — fitted
+  once and frozen.
 * **Pretrained-then-frozen** (optional ``[torch]`` extra): ``torch_periodic``,
   ``torch_plr``, ``torch_periodic_plr``, ``torch_mlp`` — parameters are
   supervised-pretrained on the initial Newton residual and then frozen into
@@ -34,6 +35,7 @@ from repleafgbm.encoders.rff import RandomFourierEncoder
 from repleafgbm.encoders.row_stats import RowStatsEncoder
 from repleafgbm.encoders.spline import SplineEncoder
 from repleafgbm.encoders.subset import ColumnSubsetEncoder
+from repleafgbm.encoders.target_encoding import TargetEncodingEncoder
 from repleafgbm.encoders.target_reduction import TargetCorrelationEncoder
 from repleafgbm.encoders.torch_encoders import (
     TorchMLPEncoder,
@@ -53,6 +55,7 @@ _ENCODER_REGISTRY: dict[str, type[BaseEncoder]] = {
     "rff": RandomFourierEncoder,
     "row_stats": RowStatsEncoder,
     "prototype": PrototypeDistanceEncoder,
+    "target_encoding": TargetEncodingEncoder,
     "column_subset": ColumnSubsetEncoder,
     "expert_bundle": ExpertBundleEncoder,
     # Learned encoders: torch needed only at fit time (see torch_encoders).
@@ -137,6 +140,7 @@ __all__ = [
     "RandomFourierEncoder",
     "RowStatsEncoder",
     "PrototypeDistanceEncoder",
+    "TargetEncodingEncoder",
     "TorchPeriodicEncoder",
     "TorchPLREncoder",
     "TorchPeriodicPLREncoder",

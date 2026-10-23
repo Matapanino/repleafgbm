@@ -9,6 +9,8 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 
 ### Added
 
+- Added `repleafgbm-native` 0.3.1 with an optional rayon-parallel fused
+  `leaf_select_stats` fast path for per-block ridge and weighted-LOO selection.
 - Added `leaf_only_features`, named frozen `leaf_experts`, the fold-safe
   `BaseEncoder.fit_transform_train` hook, and `leaf_model="select"` with
   per-leaf weighted-LOO expert diagnostics. Models using leaf-only metadata or
@@ -16,6 +18,9 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
   The public `encoder="identity"` default is preserved; `leaf_experts` takes
   precedence over that exact default, while non-default encoder settings remain
   mutually exclusive.
+- Added the NumPy-only `target_encoding` expert with seeded K-fold OOF training
+  values, exact/round/quantile-bin scales, weighted empirical-Bayes smoothing,
+  optional count features, rare-key backoff, and recursive save/load support.
 - Add CPU-only NumPy space encoders `pca`, `quantile`, `spline`, `rff`,
   `row_stats`, and `prototype`, with deterministic seeded fitting and
   array-only save/load state; defaults are chosen and unbenchmarked.
