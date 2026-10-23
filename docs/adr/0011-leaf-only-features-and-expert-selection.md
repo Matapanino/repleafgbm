@@ -1,6 +1,11 @@
 # ADR 0011: Leaf-only features and per-leaf expert selection
 
-**Status:** Accepted (2026-10-22)
+**Status:** Accepted (2026-10-22). The `leaf_model="select"` part (per-leaf
+expert selection) is **Superseded** by
+[ADR 0012](0012-remove-leaf-select.md) (2026-10-23): `select` and its Rust
+fast path were removed in 1.14.0. Leaf-only features, expert bundles, and
+`fit_transform_train` remain in force. The text below is the original 1.13.0
+decision, kept unchanged.
 
 ## Context
 

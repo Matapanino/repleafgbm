@@ -125,7 +125,7 @@ model.fit(train_data, eval_set=[RepLeafDataset(df_valid, y_valid,
                                                metadata=train_data.metadata)])
 ```
 
-## MatGBM: leaf-only features, expert bundles, per-leaf selection
+## MatGBM: leaf-only features and fixed expert blocks
 
 [MatGBM](docs/matgbm/README.md) is an experimental composition for one fitted
 GBM: raw columns route the trees while selected numerical columns are available
@@ -134,13 +134,14 @@ feature sampling, and importance calculations.
 
 Pass named frozen spaces through `leaf_experts`; each block specifies an
 `encoder`, optional `columns`, and optional `encoder_params`. With
-`leaf_model="select"`, every scalar-regression or binary-classification leaf
-uses weighted LOO to choose a constant or one expert block. Inspect the fitted
-`expert_selection_fraction_` to see that selection across the ensemble.
+`leaf_model="embedded_linear"`, every leaf fits one ridge model over the fixed,
+concatenated blocks. The per-leaf block selection `leaf_model="select"` of
+1.13.0 was removed in 1.14.0 because fixed blocks beat it
+([ADR 0012](docs/adr/0012-remove-leaf-select.md)).
 
 `examples/matgbm_leaf_experts.py` runs a small regression and binary example
-using identity, fold-safe `target_encoding`, and `pca` experts, then compares
-constant, `embedded_linear`, and `select` on holdouts. These APIs and the
+with a fold-safe `target_encoding` block and a teacher-score block, comparing
+constant leaves with one and two fixed blocks on holdouts. These APIs and the
 experimental encoder bank may change before stabilization; see the
 [MatGBM guide](docs/matgbm/README.md) for scope and limitations.
 
@@ -185,7 +186,6 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"embedded_linear"` | Ridge linear model over `z_theta(x)` (default). |
 | `"raw_linear"` | Ridge linear model over the raw features. |
 | `"adaptive"` | Per-leaf weighted-LOO gate: keeps the `embedded_linear` leaf only where it beats a constant, else falls back. |
-| `"select"` | Per-leaf weighted-LOO choice among constant and named expert blocks; a directly supplied bundle contributes each block, while a single encoder contributes one adaptive-equivalent block (scalar regression/binary only). |
 
 **`encoder`**
 
@@ -215,7 +215,7 @@ exactly what is covered vs. experimental is in
 | Backends | NumPy reference (histogram split search, leaf-wise growth) + optional Rust kernels (`repleafgbm-native`, ~5.8x faster, parity-tested). |
 | Tasks | Regression, binary & multiclass classification, multi-output regression (vector leaves). |
 | Objectives | Squared error, `huber`, `quantile`, `poisson`, logistic, softmax (parameterized instances like `Quantile(alpha=0.9)` too). |
-| Leaf models | `constant`, `embedded_linear`, `raw_linear`, `adaptive`, `select`. |
+| Leaf models | `constant`, `embedded_linear`, `raw_linear`, `adaptive`. |
 | Encoders | `identity`, `plr`, `periodic`, `cross`, fold-safe `target_encoding`, learned `torch_*`. |
 | Training | Early stopping, eval metrics (rmse, mae, logloss, multi_logloss, auc, accuracy, or a custom callable via `make_metric`), feature importances, sample weights, `class_weight`, `label_smoothing`. |
 | Data | `RepLeafDataset` with pandas/categorical, leaf-only numerical columns, and embedding caching. |

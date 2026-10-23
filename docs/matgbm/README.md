@@ -14,42 +14,52 @@ MatGBM はその器である。ただし、単一 fitted GBM に移せない cro
 2. 分岐は既定で raw feature のみを使い、`leaf_only_features` が派生列を隠す。
 3. 葉には `leaf_experts` で凍結済みの小さな空間を渡す。
 4. 中核の葉解法は h 重み付き ridge、分類では 1 回 Newton 更新である。
-5. `leaf_model="select"` は constant を含む候補から weighted LOO と `leaf_gate_margin` で一つを選ぶ。
+5. 葉は `embedded_linear` が固定ブロックを連結して ridge を解く。葉ごとの block 選択（`leaf_model="select"`）は波 4 で固定ブロックに 0/5 で負け、1.14.0 で削除した。
 6. v1 の bank は identity、fold-safe TE、original-only teacher の最大 3 空間で始める。
 7. competition label を使う空間は `fit_transform_train` で OOF 化し、評価・予測行は凍結写像で変換する。
 8. 未ラベル参照は将来の `X_unlabeled`、pseudo は別引数・別損失として混ぜない。
 9. 動的 snapshot、複数反復 IRLS、pseudo 自動生成、内部 ensemble は中核から外す。
 10. 巨大 TE bank、mutable encoder、同一 train MLP の量産、provenance のない空間は採らない。
 
-判断源: `answer-C4int-sol.md` の統合設計（2026-10-22）。
+判断源: `answer-C4int-sol.md` の統合設計（2026-10-22）。5 行目だけは波 4 の判定で改訂（ADR 0012、2026-10-23）。
 
 ## 中核の 3 機構
 
 - **raw routing**: 木の分岐は raw 列で行う。派生列は `leaf_only_features` により分岐、列サンプリング、importance から除外する。
 - **凍結空間バンク**: `leaf_experts` の named encoder block を boosting 前に fit して固定する。教師あり空間は学習行だけ `fit_transform_train` の OOF 値を使う。
-- **ridge と選択**: 固定空間は `embedded_linear` の連結 ridge、局所比較は `select` の per-leaf weighted LOO で扱う。constant は常に候補である。
+- **固定ブロックの ridge**: 固定空間は `embedded_linear` の連結 ridge で扱う。per-leaf weighted LOO で block を選ぶ `select` は 1.14.0 で削除した。葉ごとに constant と線形を選びたいときは `adaptive` を使う。
 
-判断源: `answer-C4int-{sol,astra}.md` と ADR 0011。
+判断源: `answer-C4int-{sol,astra}.md`、ADR 0011、ADR 0012。
 
-## 最小 API 例
+## 最小 API 例（波 4 で残った固定ブロックのレシピ）
+
+波 1〜4 を通して残った形は「強い raw router ＋ 葉は S8（＋teacher O）の `embedded_linear` 固定ブロック、select なし、空間 encoder なし」である。
 
 ```python
-from repleafgbm import RepLeafClassifier, RepLeafRegressor
+from repleafgbm.external import LightGBMExternalModel, RouterExtractionClassifier
 
-clf = RepLeafClassifier(
-    leaf_model="select",
-    leaf_only_features=["te_feature", "teacher_probability"],
+te_columns = [...]  # S8: 単一キーの OOF target encoding 8 列（ハーネスが作る）
+clf = RouterExtractionClassifier(
+    # 強い raw router。波 1〜4 は 600 本上限・31 葉の LightGBM route を再生して測った。
+    base=LightGBMExternalModel(task="binary", n_estimators=600, num_leaves=31),
+    leaf_model="embedded_linear",
+    leaf_only_features=te_columns + ["teacher"],
     leaf_experts=[
-        {"name": "te", "encoder": "identity", "columns": ["te_feature"]},
-        {"name": "teacher", "encoder": "identity", "columns": ["teacher_probability"]},
+        {"name": "S8", "encoder": "identity", "columns": te_columns},
+        {"name": "O", "encoder": "identity", "columns": ["teacher"]},  # original 行で学習した teacher
     ],
-    leaf_gate_margin=0.01,
 ).fit(X_train, y_train)
-
-reg = RepLeafRegressor(leaf_model="embedded_linear").fit(X_train, y_train)
 ```
 
-この API は現物の公開クラス名・引数名に基づく。上の特徴量 producer と OOF/provenance の実装は、現時点では別ハーネスの責務である。
+| 対比（s6e10・波 4・5 fold） | mean Δ AUC（正の fold） | 判定 |
+|---|---:|---|
+| S8 − constant | +0.001459（5/5） | adopt |
+| S8+O − S8 | +0.000159（5/5） | adopt（bar 0.000128 超） |
+| select（S・O から葉ごとに選ぶ）− S8+O | −0.000722（0/5） | reject → 1.14.0 で削除 |
+
+bar は 600 本 router の seed 反復の最大差（0.000128）。出典: `ideas.md`「波 4 確定」節（原本はハーネスの `matgbm_decision/wave4-decision.md`）。
+
+この API は現物の公開クラス名・引数名に基づく。S8 と teacher 列の producer、OOF/provenance の実装は別ハーネスの責務である。波 1〜4 はすべて LightGBM route の再生（`RouterExtractionClassifier`）で測っており、native grower（`RepLeafClassifier`）で同じ効果が出るかは未検証である（判断源: `ideas.md` 波 3 確定の訂正 2）。
 
 ## 中核から外したもの
 
@@ -77,5 +87,5 @@ reg = RepLeafRegressor(leaf_model="embedded_linear").fit(X_train, y_train)
 | `answer-C5-sol.md` | multi-pass、nested OOF、diversity、original 行の設計。 |
 | `answer-C5-astra.md` | multi-pass の独立批評と最小実験案。 |
 | `answer-C3-sol.md` | 効いたレバー 38 件の棚卸しと MatGBM への写像。 |
-| `order-M12-leaf-experts-select.md` | leaf-only、expert bundle、select の実装仕様。 |
+| `order-M12-leaf-experts-select.md` | leaf-only、expert bundle、select の実装仕様（select は 1.14.0 で削除・ADR 0012）。 |
 | `log-M12-progress.md` | M12 実装・テスト・コミットの経過記録。 |
