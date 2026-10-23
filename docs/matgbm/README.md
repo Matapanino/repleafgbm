@@ -56,8 +56,9 @@ clf = RouterExtractionClassifier(
 | S8 − constant | +0.001459（5/5） | adopt |
 | S8+O − S8 | +0.000159（5/5） | adopt（bar 0.000128 超） |
 | select（S・O から葉ごとに選ぶ）− S8+O | −0.000722（0/5） | reject → 1.14.0 で削除 |
+| 空間 encoder 6 種（1 種 1 arm・既定値・raw 17 列）− constant | spline −0.000364（0/5）、他 5 種 −0.000033〜+0.000117 | 候補なし → 1.14.0 で 6 種とも削除（ADR 0013） |
 
-bar は 600 本 router の seed 反復の最大差（0.000128）。出典: `ideas.md`「波 4 確定」節（原本はハーネスの `matgbm_decision/wave4-decision.md`）。
+bar は 600 本 router の seed 反復の最大差（0.000128）。空間 encoder 6 種（`pca`・`quantile`・`spline`・`rff`・`row_stats`・`prototype`）は spline が constant より悪く、他 5 種は bar 内で、現行 stack への add-one も 6 種とも Δ ≤ 0 だった。出典: `ideas.md`「波 4 確定」節（原本はハーネスの `matgbm_decision/wave4-decision.md`）。
 
 この API は現物の公開クラス名・引数名に基づく。S8 と teacher 列の producer、OOF/provenance の実装は別ハーネスの責務である。波 1〜4 はすべて LightGBM route の再生（`RouterExtractionClassifier`）で測っており、native grower（`RepLeafClassifier`）で同じ効果が出るかは未検証である（判断源: `ideas.md` 波 3 確定の訂正 2）。
 

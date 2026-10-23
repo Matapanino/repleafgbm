@@ -27,6 +27,19 @@ in [docs/adr/0003-api-stability.md](docs/adr/0003-api-stability.md).
 - Removed the `select` null-calibration experiment script and the
   select-statistics benchmark; the 1.13.0 calibration report stays in
   `experiments/results/` as history.
+- Removed the experimental space encoders `pca`, `quantile`, `spline`, `rff`,
+  `row_stats`, and `prototype` (`PCAEncoder`, `QuantileEncoder`,
+  `SplineEncoder`, `RandomFourierEncoder`, `RowStatsEncoder`,
+  `PrototypeDistanceEncoder`) added in 1.13.0
+  ([ADR 0013](docs/adr/0013-remove-space-encoders.md)). In the S6E10 MatGBM
+  wave-4 encoder screen (5 folds, one arm per encoder) none beat constant
+  leaves by the 0.000128 bar: `spline` lost on every fold (mean AUC
+  −0.000364) and the other five stayed within the bar. Naming one now raises a
+  `ValueError` that lists the remaining encoders; loading a `save_model`
+  directory that used one raises a `ValueError` that points to repleafgbm
+  1.13.x (a pickled 1.13.x estimator holding one no longer unpickles). They
+  were Experimental (not SemVer-gated), so there is no deprecation cycle. The
+  `"quantile"` regression objective is unaffected.
 
 ## [1.13.0] - 2026-10-23
 

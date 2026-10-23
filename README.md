@@ -143,7 +143,7 @@ per-leaf block selection `leaf_model="select"` of
 `examples/matgbm_leaf_experts.py` runs a small regression and binary example
 with a fold-safe `target_encoding` block and a teacher-score block, comparing
 constant leaves with one and two fixed blocks on holdouts. These APIs and the
-experimental encoder bank may change before stabilization; see the
+experimental `target_encoding` encoder may change before stabilization; see the
 [MatGBM guide](docs/matgbm/README.md) for scope and limitations.
 
 ## API overview
@@ -198,12 +198,11 @@ The public API is scikit-learn compatible (`fit` / `predict` / `predict_proba`,
 | `"cross"` | Residual-correlated pairwise products (interactions). |
 | `"target_encoding"` | Fold-safe scalar-target means over exact, rounded, and quantile-bin numerical keys; direct and `leaf_experts` training values are OOF. |
 | `"torch_periodic"` / `"torch_plr"` / `"torch_periodic_plr"` / `"torch_mlp"` | Learned encoders (`[torch]` extra; supervised-pretrained on the initial residual then frozen — torch is needed only at fit time, not at predict). |
-| `"pca"` | NumPy standardized SVD projection (8 components, clipped to column count); optional whitening. |
-| `"quantile"` | NumPy interpolated ECDF ranks (100 quantiles), with uniform or normal scores. |
-| `"spline"` | NumPy standardized quantile hinges (4 knots per column) plus a linear extrapolation term. |
-| `"rff"` | NumPy seeded Gaussian Fourier features (16 cosine/sine pairs), with median-distance or fixed gamma. |
-| `"row_stats"` | Eight NumPy row aggregates over all or selected numerical columns, including slope and half-mean difference. |
-| `"prototype"` | NumPy seeded Lloyd centers (8 prototypes, 20 iterations); distances or RBF affinities. |
+
+The experimental space encoders of 1.13.0 (`"pca"`, `"quantile"`, `"spline"`,
+`"rff"`, `"row_stats"`, `"prototype"`) were removed in 1.14.0 because none beat
+constant leaves in the S6E10 wave-4 screen
+([ADR 0013](docs/adr/0013-remove-space-encoders.md)).
 
 API stability follows [Semantic Versioning](https://semver.org) from 1.0.0;
 exactly what is covered vs. experimental is in

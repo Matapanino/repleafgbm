@@ -611,8 +611,10 @@ Not implemented:
 
 Listed here because v0 deliberately freezes the encoder:
 
-- The experimental NumPy space bank (`pca`, `quantile`, `spline`, `rff`,
-  `row_stats`, `prototype`) is shipped; its defaults remain unbenchmarked.
+- ~~The experimental NumPy space bank (`pca`, `quantile`, `spline`, `rff`,
+  `row_stats`, `prototype`)~~ — shipped in 1.13.0, **removed in 1.14.0**: tried
+  in the S6E10 wave-4 encoder screen, none beat constant leaves by the bar
+  ([ADR 0013](adr/0013-remove-space-encoders.md)).
 - ~~PyTorch encoders (learned periodic frequencies, PLR projection)~~
   shipped in Phase 13; ~~interaction-aware features~~ shipped in Phase 16
   (`cross`, `torch_mlp` — negative on real data, see

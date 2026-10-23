@@ -101,4 +101,5 @@ Sources: the wave-4 decision audit `matgbm_decision/wave4-decision.md` and its
   cloned into a working fit. Rejected in favor of a clear error that names the
   version that can read the model.
 - **Remove the space encoders in the same change.** Out of scope: the encoder
-  decision is separate and still open.
+  decision is separate and still open. (It was settled later in
+  [ADR 0013](0013-remove-space-encoders.md): all six were removed in 1.14.0.)

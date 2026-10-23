@@ -48,7 +48,10 @@ at 1.0.0.
 - The **on-disk serialization format** (`docs/serialization.md`): a model
   saved by version X loads in every version ≥ X within the same major.
   Format changes bump `format_version` and ship a migration test; older
-  readers are never silently broken.
+  readers are never silently broken. A model that uses an Experimental feature
+  (below) loads only in versions that still have that feature: 1.14.0 cannot
+  load 1.13.x models that used `leaf_model="select"` (ADR 0012) or a removed
+  space encoder (ADR 0013).
 - scikit-learn estimator-contract conformance (`check_estimator`), enforced by
   `tests/test_sklearn_compat.py`, so the estimators stay usable in pipelines,
   `clone`, cross-validation, and grid search.
@@ -57,10 +60,9 @@ at 1.0.0.
 
 - The experimental MatGBM composition APIs: `leaf_only_features`,
   `leaf_experts`, and the `target_encoding` encoder. (The experimental
-  `leaf_model="select"` was removed in 1.14.0 under this rule; ADR 0012.)
-- The experimental space-encoder registry names (`pca`, `quantile`, `spline`,
-  `rff`, `row_stats`, `prototype`) and their parameters/defaults. Their
-  defaults have not been benchmarked and may change before stabilization.
+  `leaf_model="select"` was removed in 1.14.0 under this rule; ADR 0012.
+  So were the experimental space-encoder registry names `pca`, `quantile`,
+  `spline`, `rff`, `row_stats`, and `prototype`, added in 1.13.0; ADR 0013.)
 - `repleafgbm.external` (LightGBM/XGBoost/CatBoost integration), the
   `router_extraction` estimators, and `repleafgbm.backends` /
   `repleafgbm_native` internals — documented as **experimental**; changes are
