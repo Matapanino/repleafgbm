@@ -8,7 +8,12 @@ import pytest
 
 from repleafgbm import RepLeafRegressor
 from repleafgbm import encoders as encoders_module
-from repleafgbm.encoders import _ENCODER_REGISTRY, make_encoder
+from repleafgbm.encoders import (
+    _ENCODER_REGISTRY,
+    ColumnSubsetEncoder,
+    IdentityEncoder,
+    make_encoder,
+)
 
 REMOVED = ("pca", "quantile", "spline", "rff", "row_stats", "prototype")
 REMOVED_CLASSES = (
@@ -74,10 +79,13 @@ def _rename_top(info, name):
     info["name"] = name
 
 
-def _rename_projection_base(info, name):
-    assert info["name"] == "random_projection"
-    assert info["config"]["base_name"] == "identity"
-    info["config"]["base_name"] = name
+def _rename_base(wrapper):
+    def rename(info, name):
+        assert info["name"] == wrapper
+        assert info["config"]["base_name"] == "identity"
+        info["config"]["base_name"] = name
+
+    return rename
 
 
 def _rename_bundle_child(info, name):
@@ -90,7 +98,15 @@ _LAYOUTS = {
     "plain": (dict(encoder="identity", leaf_reduction="none"), _rename_top),
     "projected": (
         dict(encoder="identity", leaf_reduction="random_projection", max_leaf_emb_dim=2),
-        _rename_projection_base,
+        _rename_base("random_projection"),
+    ),
+    "target_correlation": (
+        dict(encoder="identity", leaf_reduction="target_correlation", max_leaf_emb_dim=2),
+        _rename_base("target_correlation"),
+    ),
+    "column_subset": (
+        dict(encoder=ColumnSubsetEncoder(IdentityEncoder(), columns=[0, 1]), leaf_reduction="none"),
+        _rename_base("column_subset"),
     ),
     "bundle_child": (
         dict(
@@ -113,7 +129,8 @@ def test_loading_a_model_saved_with_a_removed_encoder_raises_clear_error(
     """A 1.13.x model that used a removed encoder must fail with a clear error.
 
     1.13.x wrote the encoder tree to ``encoder_config.json`` (top-level
-    ``name``, a wrapper's ``base_name``, or a bundle child's ``name``). Such a
+    ``name``, a reduction or column-subset wrapper's ``base_name``, or a
+    bundle child's ``name``). Such a
     directory is emulated by saving an ``identity`` model and rewriting that
     one name; the check keys on the name, before any config or state is used.
     """
@@ -133,6 +150,24 @@ def test_loading_a_model_saved_with_a_removed_encoder_raises_clear_error(
         match=rf"The model at .* encoder '{name}', which {_REMOVED}.*repleafgbm 1\.13\.x.*retrain",
     ):
         RepLeafRegressor.load_model(path)
+
+
+@pytest.mark.parametrize("leaf_model", ["constant", "raw_linear"])
+@pytest.mark.parametrize("name", REMOVED)
+def test_removed_encoder_name_stays_inert_where_the_encoder_is_never_built(
+    tmp_path, leaf_model, name
+):
+    """Constant leaves build no encoder and raw_linear always builds identity.
+
+    Such models never resolve ``encoder``, so a removed name there fits, saves,
+    and loads as before (as any unregistered name always did); ADR 0013.
+    """
+    X, y = _data()
+    model = RepLeafRegressor(encoder=name, leaf_model=leaf_model, **_SMALL).fit(X, y)
+    model.save_model(tmp_path / "model")
+    restored = RepLeafRegressor.load_model(tmp_path / "model")
+    assert restored.encoder == name
+    np.testing.assert_array_equal(restored.predict(X), model.predict(X))
 
 
 @pytest.mark.parametrize(
