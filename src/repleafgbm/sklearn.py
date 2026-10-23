@@ -824,8 +824,8 @@ class BaseRepLeafModel(BaseEstimator):
                 raise ValueError("leaf expert name must be a non-empty string")
             if spec.name == "constant":
                 raise ValueError(
-                    "leaf expert name 'constant' is reserved for the implicit "
-                    "constant candidate"
+                    "leaf expert name 'constant' is reserved (it names the "
+                    "constant leaf model); choose another expert name"
                 )
             if spec.name in names:
                 raise ValueError(f"leaf expert name {spec.name!r} is duplicated")
