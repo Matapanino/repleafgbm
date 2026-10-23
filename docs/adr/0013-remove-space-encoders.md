@@ -79,8 +79,9 @@ S6E10 harness, transcribed in the MatGBM notes (`ideas.md`, section
   longer unpickles (`ModuleNotFoundError` for its module); only `save_model`
   directories get the clear error above.
 - A model whose `encoder` hyperparameter names a removed encoder but never
-  built it (`leaf_model="constant"` writes no encoder files) still loads and
-  predicts unchanged. Constant leaves never build the encoder, so its name is
+  built it still loads and predicts unchanged: `leaf_model="constant"` builds
+  no encoder (and writes no encoder files), and `leaf_model="raw_linear"`
+  always builds `identity`. Neither resolves `encoder`, so a removed name is
   not validated at fit either; that was already true for any encoder name.
 
 ## Alternatives considered
