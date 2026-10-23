@@ -2,10 +2,13 @@
 
 The first two columns route trees.  A discrete identifier and an external
 teacher score are leaf-only: they are unavailable to split search, but two
-frozen expert blocks expose them to ``embedded_linear`` leaves.  This is the
-recipe that survived the MatGBM experiments (ADR 0012): raw routing plus fixed
-blocks, a fold-safe target encoding of the key (plus a teacher score) in the
-leaves, and no per-leaf block selection.
+frozen expert blocks expose them to ``embedded_linear`` leaves.  This mirrors
+the leaf recipe that survived the MatGBM experiments (ADR 0012): raw routing
+plus fixed blocks, a fold-safe target encoding of the key (plus a teacher
+score) in the leaves, and no per-leaf block selection.  Those experiments
+replayed a LightGBM router (``RouterExtractionClassifier``, see
+docs/matgbm/README.md); this example uses the native router so that it runs
+without optional dependencies.
 
 Run from the repository root:
     PYTHONPATH=src python3 examples/matgbm_leaf_experts.py
