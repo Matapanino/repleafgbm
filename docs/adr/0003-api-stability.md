@@ -57,10 +57,9 @@ at 1.0.0.
 
 - The experimental MatGBM composition APIs: `leaf_only_features`,
   `leaf_experts`, and the `target_encoding` encoder. (The experimental
-  `leaf_model="select"` was removed in 1.14.0 under this rule; ADR 0012.)
-- The experimental space-encoder registry names (`pca`, `quantile`, `spline`,
-  `rff`, `row_stats`, `prototype`) and their parameters/defaults. Their
-  defaults have not been benchmarked and may change before stabilization.
+  `leaf_model="select"` was removed in 1.14.0 under this rule; ADR 0012.
+  So were the experimental space-encoder registry names `pca`, `quantile`,
+  `spline`, `rff`, `row_stats`, and `prototype`, added in 1.13.0; ADR 0013.)
 - `repleafgbm.external` (LightGBM/XGBoost/CatBoost integration), the
   `router_extraction` estimators, and `repleafgbm.backends` /
   `repleafgbm_native` internals — documented as **experimental**; changes are

@@ -43,12 +43,13 @@ stable encoder names plus objective/metric names, the serialization format, and
 `check_estimator` conformance.
 
 Experimental (not SemVer-gated): `leaf_only_features`, `leaf_experts`, and
-the `target_encoding`, `pca`, `quantile`, `spline`, `rff`, `row_stats`, and
-`prototype` encoder registry names and their changeable defaults;
+the `target_encoding` encoder registry name and its changeable defaults;
 `repleafgbm.external`; the `router_extraction` estimators; `backends` /
 `repleafgbm_native` internals; `core` internals; private names; and exact
 message text. The experimental `leaf_model="select"` (1.13.0) was removed in
-1.14.0 without a deprecation cycle (ADR 0012).
+1.14.0 without a deprecation cycle (ADR 0012), as were the experimental space
+encoders `pca`, `quantile`, `spline`, `rff`, `row_stats`, and `prototype`
+(1.13.0; ADR 0013).
 
 ## Serialization
 
