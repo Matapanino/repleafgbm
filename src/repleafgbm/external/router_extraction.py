@@ -204,7 +204,6 @@ class _RouterExtractionMixin:
     ):
         # Replay cannot honor weights; warn and ignore rather than raising.
         self._enforce_weight_capability(sample_weight)
-        self._validate_leaf_expert_options()
         dataset = self._build_dataset(X, y)
         dataset = self._prepare_target(dataset, is_train=True)
         self.metadata_ = dataset.metadata
@@ -227,6 +226,7 @@ class _RouterExtractionMixin:
             leaf_gate_margin=self.leaf_gate_margin,
             leaf_gate=self.leaf_gate,
         )
+        self._validate_leaf_expert_options()
         train = self._fit_leaf_encoder(dataset, leaf_model)
 
         base = self.base if self.base is not None else LightGBMExternalModel(

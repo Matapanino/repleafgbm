@@ -814,11 +814,21 @@ def test_select_leaf_model_is_removed_with_actionable_error(estimator_cls):
     assert not hasattr(leaf_models, "SelectLeafModel")
 
 
-def test_router_extraction_rejects_removed_select_leaf_model():
+@pytest.mark.parametrize("with_experts", [False, True])
+def test_router_extraction_rejects_removed_select_leaf_model(with_experts):
     pytest.importorskip("lightgbm")
     from repleafgbm.external import LightGBMExternalModel, RouterExtractionRegressor
 
     X = np.arange(120, dtype=np.float64).reshape(60, 2)
+    experts = (
+        dict(
+            leaf_experts=[{"name": "teacher", "encoder": "identity", "columns": [1]}],
+            leaf_only_features=[1],
+        )
+        if with_experts
+        else {}
+    )
+    # The removal error must win over the leaf_experts compatibility check.
     with pytest.raises(ValueError, match=_SELECT_REMOVED):
         RouterExtractionRegressor(
             base=LightGBMExternalModel(
@@ -827,6 +837,7 @@ def test_router_extraction_rejects_removed_select_leaf_model():
             ),
             leaf_model="select",
             min_samples_leaf=5,
+            **experts,
         ).fit(X, X[:, 0])
 
 
